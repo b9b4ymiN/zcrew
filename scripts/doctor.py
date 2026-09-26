@@ -47,6 +47,39 @@ def check_probe_output(stdout: str, stderr: str, returncode: int) -> CheckResult
     return CheckResult("bridge probe", False, f"zcode backend unavailable: {zcode.get('reason') or 'no reason given'}")
 
 
+def check_app_server_output(stdout: str, stderr: str, returncode: int | None) -> CheckResult:
+    for line in stdout.splitlines():
+        try:
+            message = json.loads(line)
+        except ValueError:
+            continue
+        if message.get("method") == "startup/storageState" and (message.get("params") or {}).get("phase") == "ready":
+            return CheckResult("zcode app-server", True, "started and storage ready")
+    detail = (stderr.strip() or f"no ready signal (exit {returncode})")[:600]
+    return CheckResult("zcode app-server", False, detail)
+
+
+def smoke_app_server(runtime: Path, bundle: Path, env: dict[str, str], timeout: float = 20) -> CheckResult:
+    env = {**env, "ELECTRON_RUN_AS_NODE": "1", "NO_COLOR": "1"}
+    try:
+        proc = subprocess.run(
+            [str(runtime), str(bundle), "app-server"],
+            env=env,
+            input="",
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        out = exc.stdout.decode("utf-8", "replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+        err = exc.stderr.decode("utf-8", "replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
+        return check_app_server_output(out, err, None)
+    return check_app_server_output(proc.stdout, proc.stderr, proc.returncode)
+
+
 def info(name: str, detail: str) -> None:
     print(f"[INFO] {name}: {detail}")
 
@@ -161,6 +194,7 @@ def main() -> int:
 
     if (BRIDGE / "server.py").is_file() and bundle and runtime:
         env = mod.build_env(os.environ, bundle, runtime)
+        ok &= report(smoke_app_server(runtime, bundle, env))
         try:
             probe = subprocess.run(
                 [sys.executable, str(BRIDGE / "server.py"), "--probe"],

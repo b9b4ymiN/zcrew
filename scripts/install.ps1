@@ -52,6 +52,7 @@ if (-not (Test-Path (Join-Path $BridgeRoot '.git'))) {
 Copy-Item -Force (Join-Path $KitRoot 'policy\COMMANDER.md') $PolicyTarget
 Copy-Item -Force (Join-Path $PSScriptRoot 'zcode_bridge_launcher.py') $LauncherTarget
 Copy-Item -Force (Join-Path $PSScriptRoot 'doctor.py') $DoctorTarget
+Copy-Item -Force (Join-Path $PSScriptRoot 'bridge_compat.py') (Join-Path $InstallRoot 'bridge_compat.py')
 
 # Optional provider/config bootstrap. This copies the locally configured
 # provider/API-key material from ZCode Desktop into ~/.zcode/cli/config.json

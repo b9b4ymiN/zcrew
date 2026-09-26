@@ -143,6 +143,58 @@ class BuildEnvTests(unittest.TestCase):
         env = launcher.build_env({"ZCODE_APP_PATH": "D:/Other"}, self.bundle, self.runtime)
         self.assertEqual(env["ZCODE_APP_PATH"], "D:/Other")
 
+    def _install_with_builtin(self, tmp: str) -> tuple[Path, Path]:
+        install = Path(tmp)
+        builtin = install / "resources" / "config" / "provider" / "zcode-builtin.json"
+        builtin.parent.mkdir(parents=True)
+        builtin.write_text("{}", encoding="utf-8")
+        return install, builtin
+
+    def test_builtin_provider_config_set_when_present(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            install, builtin = self._install_with_builtin(tmp)
+            bundle = install / "resources" / "glm" / "zcode.cjs"
+            v2 = Path(tmp) / "home" / ".zcode" / "v2"
+            env = launcher.build_env({}, bundle, install / "ZCode.exe", zcode_v2_dir=v2)
+            self.assertEqual(Path(env["ZCODE_BUILTIN_PROVIDER_CONFIG_FILE"]), builtin)
+            self.assertEqual(Path(env["ZCODE_PERSONAL_PROVIDER_CONFIG_FILE"]), v2 / "provider_config.json")
+
+    def test_personal_provider_config_defaults_to_home(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            install, _ = self._install_with_builtin(tmp)
+            env = launcher.build_env({}, install / "resources" / "glm" / "zcode.cjs", install / "ZCode.exe")
+            self.assertEqual(
+                Path(env["ZCODE_PERSONAL_PROVIDER_CONFIG_FILE"]),
+                Path.home() / ".zcode" / "v2" / "provider_config.json",
+            )
+
+    def test_builtin_provider_config_absent_is_not_set(self) -> None:
+        env = launcher.build_env({}, self.bundle, self.runtime)
+        self.assertNotIn("ZCODE_BUILTIN_PROVIDER_CONFIG_FILE", env)
+        self.assertNotIn("ZCODE_PERSONAL_PROVIDER_CONFIG_FILE", env)
+
+    def test_builtin_provider_config_absent_keeps_ambient(self) -> None:
+        env = launcher.build_env(
+            {"ZCODE_BUILTIN_PROVIDER_CONFIG_FILE": "D:/custom.json"}, self.bundle, self.runtime
+        )
+        self.assertEqual(env["ZCODE_BUILTIN_PROVIDER_CONFIG_FILE"], "D:/custom.json")
+
+    def test_derived_provider_config_overrides_ambient(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            install, builtin = self._install_with_builtin(tmp)
+            v2 = Path(tmp) / "v2"
+            env = launcher.build_env(
+                {
+                    "ZCODE_BUILTIN_PROVIDER_CONFIG_FILE": "D:/stale/runtime/zcode-builtin.json",
+                    "ZCODE_PERSONAL_PROVIDER_CONFIG_FILE": "D:/stale/provider_config.json",
+                },
+                install / "resources" / "glm" / "zcode.cjs",
+                install / "ZCode.exe",
+                zcode_v2_dir=v2,
+            )
+            self.assertEqual(Path(env["ZCODE_BUILTIN_PROVIDER_CONFIG_FILE"]), builtin)
+            self.assertEqual(Path(env["ZCODE_PERSONAL_PROVIDER_CONFIG_FILE"]), v2 / "provider_config.json")
+
     def test_concurrency_env_override_wins(self) -> None:
         env = launcher.build_env({"AGENT_MCP_MAX_CONCURRENCY": "2"}, self.bundle, self.runtime)
         self.assertEqual(env["AGENT_MCP_MAX_CONCURRENCY"], "2")

@@ -119,7 +119,12 @@ def find_zcode_runtime(bundle: Path) -> Path:
     )
 
 
-def build_env(base_env: Mapping[str, str], bundle: Path, runtime: Path) -> dict[str, str]:
+def build_env(
+    base_env: Mapping[str, str],
+    bundle: Path,
+    runtime: Path,
+    zcode_v2_dir: Path | None = None,
+) -> dict[str, str]:
     env = dict(base_env)
     env.setdefault("AGENT_MCP_DEFAULT_BACKEND", "zcode")
     env.setdefault("AGENT_MCP_TIMEOUT", "1800")
@@ -128,7 +133,20 @@ def build_env(base_env: Mapping[str, str], bundle: Path, runtime: Path) -> dict[
     env["ZCODE_CLI_BUNDLE"] = str(bundle)
     # Upstream discovery requires an app root before it honours the explicit
     # binary/bundle paths: <install>/resources/glm/zcode.cjs -> <install>.
-    env.setdefault("ZCODE_APP_PATH", str(bundle.parent.parent.parent))
+    install = bundle.parent.parent.parent
+    env.setdefault("ZCODE_APP_PATH", str(install))
+    # ZCode's headless CLI looks for the built-in provider config next to the
+    # bundle or five levels up; the Windows desktop layout keeps it under
+    # resources/config, so without this app-server exits on launch.
+    # Both provider vars are required together: with only the builtin one the
+    # CLI re-syncs the table into a version-keyed runtime copy and the account
+    # snapshot pushed by bridge_compat (which hashes THIS path) is ignored.
+    # Derived values override ambient ones, which go stale across app updates.
+    builtin = install / "resources" / "config" / "provider" / "zcode-builtin.json"
+    if builtin.is_file():
+        env["ZCODE_BUILTIN_PROVIDER_CONFIG_FILE"] = str(builtin)
+        v2_dir = zcode_v2_dir if zcode_v2_dir is not None else HOME / ".zcode" / "v2"
+        env["ZCODE_PERSONAL_PROVIDER_CONFIG_FILE"] = str(v2_dir / "provider_config.json")
     env.setdefault("PYTHONUTF8", "1")
     env.setdefault("PYTHONIOENCODING", "utf-8")
     return env
@@ -148,8 +166,11 @@ def main() -> int:
 
     env = build_env(os.environ, bundle, runtime)
 
-    # Use subprocess rather than importing upstream so updates remain isolated.
-    proc = subprocess.run([sys.executable, str(server)], env=env)
+    # Use subprocess rather than importing upstream so updates remain isolated;
+    # the compat shim applies ZCode-version fixes without forking the bridge.
+    compat = Path(__file__).resolve().parent / "bridge_compat.py"
+    argv = [sys.executable, str(compat), str(server)] if compat.is_file() else [sys.executable, str(server)]
+    proc = subprocess.run(argv, env=env)
     return int(proc.returncode)
 
 

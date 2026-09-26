@@ -119,6 +119,23 @@ class DesktopConfigTests(ConfigTestCase):
         self.assertIn("cannot read", doctor.describe_desktop_providers(self.path))
 
 
+class AppServerOutputTests(unittest.TestCase):
+    READY = '{"method":"startup/storageState","params":{"phase":"ready"}}'
+
+    def test_ready_signal_passes(self) -> None:
+        stdout = '{"method":"startup/storageState","params":{"phase":"checking"}}\n' + self.READY
+        self.assertTrue(doctor.check_app_server_output(stdout, "", 0).ok)
+
+    def test_launch_failure_reports_stderr(self) -> None:
+        result = doctor.check_app_server_output("", "cannot locate zcode-builtin.json", 1)
+        self.assertFalse(result.ok)
+        self.assertIn("zcode-builtin.json", result.detail)
+
+    def test_no_ready_signal_fails(self) -> None:
+        result = doctor.check_app_server_output("not json\n", "", None)
+        self.assertFalse(result.ok)
+
+
 class ProbeOutputTests(unittest.TestCase):
     @staticmethod
     def _payload(available: bool, reason: str | None = None) -> str:
