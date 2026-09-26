@@ -296,7 +296,7 @@ def find_templates_dir(script_dir: Path | None = None) -> Path | None:
 def _read_template(path: Path) -> str:
     """UTF-8 without BOM, LF newlines (a CRLF checkout must not change the hash)."""
     text = path.read_bytes().decode("utf-8")
-    if text.startswith("﻿"):
+    if text.startswith("\ufeff"):
         text = text[1:]
     return text.replace("\r\n", "\n")
 
