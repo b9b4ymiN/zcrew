@@ -1,11 +1,11 @@
 # Claude Commander × ZCode Executor
 ## SPEC / Request for Design (RFD)
 
-**Version:** 0.1.1  
-**Baseline implementation:** `zcode-claude-commander-kit-v0.1.1.zip`  
-**Original prototype:** `zcode-claude-commander-kit-v0.1.0.zip`  
+**Version:** 0.2.0  
+**Baseline implementation:** this repository (v0.2.0)  
+**Previous baselines:** `zcode-claude-commander-kit-v0.1.1.zip`, `zcode-claude-commander-kit-v0.1.0.zip`  
 **Date:** 2026-09-26  
-**Status:** Prototype / Integration Baseline
+**Status:** Validated on the target Windows workstation (see §26)
 
 ---
 
@@ -698,17 +698,15 @@ ZCode says "done"
 - initial ZIP prototype;
 - documentation baseline.
 
-### Not Yet Proven End-to-End
+### Proven End-to-End (v0.2.0)
 
-The full loop still requires validation on the real Windows machine with:
+The following passed on the real Windows workstation: integration validation (Phase 1), closed-loop validation (Phase 2), and a two-worker parallel run. Section 26 records the evidence and the compatibility fixes each one needed.
 
-- Claude Code installed and authenticated;
-- ZCode Desktop installed and authenticated;
-- valid ZCode/provider configuration;
-- compatible local Node/runtime dependencies;
-- a real target repository.
+### Not Yet Proven
 
-The next engineering milestone is therefore **integration validation**, not additional architecture invention.
+- A fresh Claude Code session in an enabled project following the v2 policy by itself (brief → plan approval → delegation), with no human-driven session steering it. The first real use counts as that validation.
+- ZCode versions other than 3.14.0.
+- Coding plans other than the individual GLM Coding Plan. Start, team and off-peak plans need the desktop host.
 
 ---
 
@@ -813,6 +811,7 @@ The kit currently uses a layout similar to:
 ```text
 zcode-claude-commander-kit/
 ├─ README.md
+├─ NOTICE
 ├─ SPEC-RFD.md
 ├─ RESEARCH-NOTES.md
 ├─ CHANGELOG.md
@@ -859,18 +858,75 @@ Validation findings should be recorded rather than silently changing the design.
 
 ## 25. Immediate Next Action
 
-Do **not** add more architecture before running the real integration validation.
+The v0.1.1 action list is complete: install, doctor, one controlled task, one forced review failure, a same-thread correction, and recorded results. Section 26 has the details.
 
-The next step is:
+Next:
 
 ```text
-1. Install v0.1.1 on the target Windows workstation.
-2. Run doctor diagnostics.
-3. Verify Claude can see the MCP executor.
-4. Execute one small controlled implementation task.
-5. Force or observe one review failure.
-6. Confirm correction returns to the same ZCode thread.
-7. Record results in a Validation Results section for the next release.
+1. Enable the policy in one real project and use it normally.
+2. Record whether a fresh session follows the brief -> plan -> approval -> delegation flow unaided.
+3. Re-run doctor after every ZCode update; treat a version warning as "validate with a small task first".
 ```
 
-If that succeeds, the next release should be based on empirical behavior rather than further speculation.
+---
+
+## 26. Validation Results (v0.2.0, 2026-09-26)
+
+**Environment:**
+
+- Windows 11, with Windows PowerShell 5.1 running the installer
+- Python 3.12.4
+- Claude Code 2.1.283
+- ZCode Desktop 3.14.0, installed per machine under `C:\Program Files\ZCode`
+- Z.ai individual GLM Coding Plan
+- `coder-mcp-bridge` pinned at `23ecf0a`
+
+### 26.1 Compatibility gates found and fixed
+
+The v0.1.x design assumed the upstream bridge would drive ZCode unchanged. On ZCode 3.14, five gates blocked the first run.
+
+All five were fixed in our thin layer (the launcher plus the `bridge_compat.py` shim). The bridge was not forked, and the protocol was not re-implemented.
+
+| # | Symptom | Root cause | Fix |
+|---|---|---|---|
+| 1 | Probe: "ZCode runtime not found" | Bridge discovery requires `ZCODE_APP_PATH` before it honours explicit binary/bundle paths (macOS/Linux layout logic) | Launcher sets `ZCODE_APP_PATH` to the install root |
+| 2 | app-server exits in <2 s: "无法定位 CLI ZCode Built-in Provider Config" | The headless CLI looks for `zcode-builtin.json` next to the bundle or five levels up; the Windows desktop layout keeps it in `resources\config\provider` | Launcher sets `ZCODE_BUILTIN_PROVIDER_CONFIG_FILE` and `ZCODE_PERSONAL_PROVIDER_CONFIG_FILE` (both are required together; otherwise the CLI re-syncs into a version-keyed copy) |
+| 3 | `Unrecognized key: "runtimeModel"` | ZCode ≥3.12 validates `session/create`/`send`/`resume` strictly; the `runtimeModel` overlay was removed | Shim disables the bridge's runtime-model derivation |
+| 4 | "Select a model before continuing" / "Provider Registry 中不存在 Model" | ZCode ≥3.12 builds the model registry from an account snapshot the desktop host pushes (`provider/updateAccountConfig`), and asks the host for per-request auth (`interaction/requestProviderRuntimeHeaders`); a headless app-server has no host | Shim pushes the snapshot after spawn and answers runtime-header requests with the individual plan's key (ported from `william0wang/zcode-acp`, Apache-2.0) |
+| 5 | "Reasoning level is required for …/GLM-5.3" | An object `model` must carry `options.reasoningLevel`; the bridge's MCP schema cannot pass options | Shim derives `reasoningLevel` from `thoughtLevel` (default `max`) |
+
+The registry model id on this machine is `account:zai-individual-coding-plan` / `GLM-5.3`. The desktop's `builtin:zai-coding-plan` maps to it.
+
+### 26.2 Closed-loop evidence (sandbox repository)
+
+- **Run 1:** worker contract "add `subtract`".
+  - GLM-5.3 at `max` finished in 65 s and changed 2 files, all within scope.
+  - Claude reviewed `git diff` itself and ran the tests itself: 3/3 passed.
+- **Review:** FAIL (intentional, per §18) because the float case was not covered.
+  - The correction went to the **same** `threadId`.
+  - `sessionUsage` kept accumulating from run 1, which shows the context was reused.
+- **Run 2:** changed only the test file, as instructed.
+  - Claude re-ran the tests (4/4 passed), accepted the work, and closed the run.
+
+User intervention during the loop: 0.
+
+### 26.3 Parallel workers
+
+Two workers ran at the same time in separate `git worktree`s, each with its own resource lease. Each finished in about 87 s.
+
+Each worktree was reviewed on its own. The branches were then merged one at a time, with the tests re-run after every merge (7 → 11 tests), and the worktrees were cleaned up.
+
+Lesson: on Windows, close the runs before removing their worktrees, because the bridge's app-server can keep the folder open.
+
+### 26.4 Visibility
+
+- **Live view inside the ZCode app is not possible.** The desktop app owns its own stdio app-servers.
+- **History view works with no database writes.** Headless runs are added to the app's task list automatically. They appear under the project after the app is restarted.
+- Runs scoped to a worktree were not seen in the list.
+
+### 26.5 Decisions recorded in v0.2.0
+
+- **Per-project activation.** A project gets the policy only when `commander.py enable` is run in it. The policy is never added to the user-global `CLAUDE.md`.
+- **Approval gate.** The user chose a plan-approval gate before delegation: a brief, then a 200–300 word plan with phases, tasks and DoD, then approval, then the autonomous delegate/review/correct loop. This keeps "zero intervention during the loop" (§7) and still gives the user control over direction.
+- **Account-provider path (option A) instead of a separate API-key provider (option B).** Option A uses the same entitlement path as the desktop app. The trade-off is that it can break when ZCode updates. That risk is reduced by pinning ZCode 3.14.0, a doctor version warning, and a doctor app-server smoke test.
+- **Model and limits** live in `~/.zcode-commander/config.json`, and a project can override them in `.claude/zcode-commander.json`. Defaults: GLM-5.3, `max`, 5 workers, 4 correction rounds.

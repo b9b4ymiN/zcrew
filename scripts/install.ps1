@@ -32,6 +32,9 @@ $git = Require-Command 'git'
 $python = Require-Command 'python'
 $claude = Require-Command 'claude'
 
+& $python -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)"
+if ($LASTEXITCODE -ne 0) { throw "Python 3.10 or newer is required ($python)." }
+
 New-Item -ItemType Directory -Force -Path $InstallRoot | Out-Null
 New-Item -ItemType Directory -Force -Path $PolicyDir | Out-Null
 

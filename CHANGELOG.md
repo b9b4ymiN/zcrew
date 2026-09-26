@@ -2,6 +2,58 @@
 
 All notable changes to the Claude Commander × ZCode Executor Kit are recorded here.
 
+## 0.2.0 — 2026-09-26
+
+First release validated end-to-end on the target Windows workstation (ZCode 3.14.0). See `SPEC-RFD.md` §26 for evidence.
+
+### Added
+
+- `scripts/bridge_compat.py`: a shim that runs the upstream bridge unchanged and fixes ZCode 3.14 compatibility:
+  - disables `runtimeModel`;
+  - pushes the account-provider snapshot;
+  - answers provider runtime-header requests;
+  - derives `options.reasoningLevel` from `thoughtLevel`.
+
+  The account-provider logic is ported from `william0wang/zcode-acp` (Apache-2.0); see `NOTICE`.
+- `scripts/commander.py`:
+  - `enable` / `disable` / `status`: per-project activation through a marked import block in `<project>/CLAUDE.md`, with byte-exact removal;
+  - `config`: prints the effective model/limits config and validates it.
+- `config/default-config.json`. The installer seeds `~/.zcode-commander/config.json` once and never overwrites it.
+- doctor additions:
+  - ZCode version pin (`3.14.0` tested; other versions give a non-fatal `[WARN]`);
+  - an app-server smoke test that makes no model call;
+  - a check that `model.main` is set in the CLI config;
+  - a list of desktop providers (secrets redacted);
+  - a structured bridge probe;
+  - a commander config check.
+- Unit tests (`tests/`, stdlib `unittest`, 119 tests).
+- `NOTICE` with third-party attribution.
+
+### Changed
+
+- **Policy v2 (`policy/COMMANDER.md`):**
+  - Per-project only.
+  - The flow is brief (plain-language questions, brain first) → 200–300 word plan with phases, tasks and DoD → user approval gate → autonomous ZCode delegate/review/same-thread-correction loop → per-task report.
+  - Adds config-driven model/limits, a worktree swarm of up to 5 workers with merge-back and re-verify, progress one-liners, and a pointer to the ZCode app history.
+- **Installer:**
+  - pins the bridge commit (`-BridgeRef`) and checks exit codes;
+  - is compatible with Windows PowerShell 5.1;
+  - no longer edits the user-global `~/.claude/CLAUDE.md`;
+  - copies the shim and `commander.py`.
+- **Launcher:**
+  - sets `ZCODE_APP_PATH`, `ZCODE_BUILTIN_PROVIDER_CONFIG_FILE` and `ZCODE_PERSONAL_PROVIDER_CONFIG_FILE`;
+  - discovers ZCode under `Program Files`/`ProgramW6432`;
+  - defaults to 5 concurrent workers;
+  - starts the bridge through the compat shim.
+- **Uninstall** removes the legacy global import line only if it is present, and never rewrites the global `CLAUDE.md` otherwise.
+
+### Known limitations
+
+- Windows only. Validated on ZCode 3.14.0 and on the individual GLM Coding Plan only.
+- ZCode runs cannot be watched live inside the ZCode app. Their history appears in the app after a restart.
+- Worktree sessions may not appear in the app's task list.
+- A new session in an enabled project following the v2 policy by itself has not been validated yet.
+
 ## 0.1.1 — 2026-09-26
 
 Documentation baseline release.

@@ -1,0 +1,15 @@
+Claude Commander x ZCode Executor Kit
+
+This kit runs third-party software that it downloads at install time; it does not bundle that software:
+- coder-mcp-bridge (https://github.com/Deslord319/coder-mcp-bridge), MIT License.
+  Cloned by scripts/install.ps1 into ~/.zcode-commander/coder-mcp-bridge.
+
+Portions of scripts/bridge_compat.py (account-provider snapshot, provider runtime
+headers, provider-table environment handling) are a Python port of logic from:
+- zcode-acp (https://github.com/william0wang/zcode-acp), Apache License 2.0.
+  Source files: src/config/account-provider.ts, src/handlers/server-requests.ts
+  (answerProviderRuntimeHeaders), src/backend/resolve.ts.
+  A copy of the Apache License 2.0 is available at https://www.apache.org/licenses/LICENSE-2.0
+
+ZCode and GLM are products of their respective owners. This kit is not affiliated
+with or endorsed by Zhipu AI / Z.ai, Anthropic, or the projects above.
