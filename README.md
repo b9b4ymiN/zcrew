@@ -1,207 +1,165 @@
-# Claude Commander × ZCode Executor (Windows) — v0.2.0
+<div align="center">
 
-คุยกับ **Claude Code** คนเดียวก็พอ เรื่องลงมือเขียนโค้ด Claude จะส่งต่อให้ **ZCode (GLM-5.3)** ทำ ระหว่างทาง Claude ตรวจงานเองทุกชิ้น สั่งแก้ใน session เดิมของ ZCode ซ้ำจนผ่าน แล้วค่อยรายงานคุณ
+# zcrew
 
-เปรียบเทียบง่ายๆ คือบริษัทรับเหมา:
+**Claude Code plans and reviews. A crew of ZCode (GLM) agents writes the code.**
 
-| บทบาท | ใคร | ทำอะไร |
+You work with one assistant, Claude Code. It hands implementation to ZCode workers and checks every diff itself. When something fails review, it sends the fix back to the same worker session, and it only reports to you once the work passes.
+
+[![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D6?logo=windows)](#requirements)
+[![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)](#tech-stack)
+[![Claude Code](https://img.shields.io/badge/Claude%20Code-MCP-D97757)](https://docs.anthropic.com/en/docs/claude-code)
+[![ZCode](https://img.shields.io/badge/ZCode-3.14.0%20tested-6E56CF)](#compatibility)
+[![Tests](https://img.shields.io/badge/tests-166%20passing-2EA44F)](#development)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+
+[Quick start](#quick-start) · [How it works](#how-it-works) · [Configuration](#configuration) · [Troubleshooting](#troubleshooting) · [ภาษาไทย](docs/README.th.md)
+
+</div>
+
+---
+
+## Why
+
+Frontier models are strongest at understanding, design and review. Coding agents are cheaper for the bulk of the typing. zcrew assigns each role to the model that fits it, and you still talk to a single assistant.
+
+| Role | Who | Responsibility |
 |---|---|---|
-| ลูกค้า | คุณ | บอกว่าอยากได้อะไร อนุมัติแผน |
-| เจ้าของบริษัท | Claude Code (Opus) | ถามให้ชัด → วางแผน → แจกงาน → ตรวจงาน → สั่งแก้ → รายงาน |
-| ช่าง (สูงสุด 5 คน) | ZCode (GLM-5.3, คิดระดับ max) | ลงมือเขียนโค้ด รัน test และแก้ตามที่สั่ง |
+| **Client** | You | State the goal, approve the plan |
+| **Commander** | Claude Code (Opus) | Clarify → plan with Definition of Done → delegate → review diff and run tests → correct → report |
+| **Crew** (up to 5) | ZCode · GLM-5.3 at `max` reasoning | Implement, write tests, fix what the reviewer rejects |
 
-> ช่างตัดสินเองไม่ได้ว่างานของตัวเองผ่าน Claude ต้องดู `git diff` และรัน test เองทุกครั้ง
+> **The executor never accepts its own work.** A worker saying "done" is a claim. Acceptance requires Claude to review `git diff` itself and run the tests itself.
 
----
+## Features
 
-## สารบัญ
+- **One conversation.** No `/zcode` command and no copy-paste relay. Claude decides when to delegate.
+- **Plan-first.** You get a short plan with phases, tasks and a Definition of Done. Nothing is delegated until you approve it.
+- **Independent review loop.** Claude inspects the diff and runs your tests/build/lint itself. A rejection goes back to the same ZCode thread, so the worker keeps its context. Each task has a correction budget (default 4 rounds).
+- **Parallel crew.** Up to 5 ZCode workers run on independent tasks in separate `git worktree`s. Branches are merged back one at a time, and tests are re-run after every merge.
+- **Per-project opt-in.** `zcrew enable` activates the policy for one repo. `zcrew disable` restores that repo's `CLAUDE.md` byte for byte.
+- **Configurable model.** GLM-5.3 at `max` by default. You can switch models globally, per project, or for a single task.
+- **Worker history.** Every ZCode run is saved in the ZCode app's own history, so you can read the worker's full conversation.
+- **One-command install** with a built-in `doctor` that checks readiness without making any model call.
 
-1. [ทำงานยังไง](#1-ทำงานยังไง)
-2. [สิ่งที่ต้องมีก่อนติดตั้ง](#2-สิ่งที่ต้องมีก่อนติดตั้ง)
-3. [ติดตั้งบนเครื่องใหม่ (ทีละขั้น)](#3-ติดตั้งบนเครื่องใหม่-ทีละขั้น)
-4. [เปิดใช้กับ project](#4-เปิดใช้กับ-project)
-5. [ใช้งานประจำวัน](#5-ใช้งานประจำวัน)
-6. [ตั้งค่า model และขีดจำกัด](#6-ตั้งค่า-model-และขีดจำกัด)
-7. [อ่านผล doctor](#7-อ่านผล-doctor)
-8. [อัปเดต](#8-อัปเดต)
-9. [ถอนการติดตั้ง](#9-ถอนการติดตั้ง)
-10. [แก้ปัญหา](#10-แก้ปัญหา)
-11. [ข้อจำกัดที่รู้แล้ว](#11-ข้อจำกัดที่รู้แล้ว)
-12. [โครงสร้าง repo และการพัฒนาต่อ](#12-โครงสร้าง-repo-และการพัฒนาต่อ)
+## Quick start
 
----
+**1. Install** (PowerShell, no admin needed):
 
-## 1. ทำงานยังไง
+```powershell
+irm https://raw.githubusercontent.com/b9b4ymiN/zcrew/main/get.ps1 | iex
+```
+
+**2. Restart Claude Code.** Quit it fully, including from the system tray, so it loads the `zcode_executor` MCP server.
+
+**3. Enable a project:**
+
+```powershell
+cd C:\path\to\your-repo
+zcrew enable
+```
+
+**4. Open a new Claude Code session in that repo and ask for work as usual:**
 
 ```text
-คุณ
- │  "เพิ่มปุ่ม export รายงาน"
- ▼
-Claude Code ──(อ่าน policy: ~/.claude/zcode-commander/COMMANDER.md)
- │  1. ถามให้ชัด (ภาษาง่าย ทีละ 1-2 ข้อ)
- │  2. ส่งแผน 200-300 คำ แบ่ง Phase/Task พร้อม DoD → รอคุณ approve
- │  3. เขียน Worker Contract ต่อ task
- ▼  MCP: zcode_executor (agent-start / agent-wait / agent-close)
-coder-mcp-bridge  ◄── bridge_compat.py (shim ที่ทำให้ใช้กับ ZCode 3.14 ได้)
- ▼
-ZCode app-server (GLM-5.3 @ max) ── แก้โค้ด, รัน test
- ▼
-Claude ตรวจเอง: git diff + รัน test/build เอง
- ├─ ไม่ผ่าน → สั่งแก้กลับไปที่ threadId เดิม (สูงสุด 4 รอบ)
- └─ ผ่าน   → ปิด run → รายงานคุณ
+> Add a /health endpoint that returns the app version as JSON.
 ```
 
-งานอิสระที่ไม่แตะไฟล์ร่วมกัน Claude จะแยก **git worktree** ให้ ZCode หลายตัวทำขนานกัน (สูงสุด 5 ตัว) แล้ว merge กลับทีละ branch โดยรัน test ซ้ำทุกครั้งหลัง merge
+Claude asks a clarifying question or two, sends a plan for your approval, and then runs the ZCode crew. It reports once every task has passed its review.
 
-ดูประวัติทุกงานที่ ZCode ทำได้ในแอป ZCode ใต้ชื่อ project (ต้องปิดแล้วเปิดแอปใหม่ รายการถึงจะอัปเดต)
+## Requirements
 
----
-
-## 2. สิ่งที่ต้องมีก่อนติดตั้ง
-
-| ของ | เวอร์ชัน | เช็คด้วย |
+| | Version | Notes |
 |---|---|---|
-| Windows | 10/11 | — |
-| ZCode Desktop | **3.14.0** (เวอร์ชันที่ทดสอบแล้ว) และ login ด้วย **Z.ai individual GLM Coding Plan** แล้ว | เปิดแอป ZCode แล้วลองสั่งงานได้ |
-| Claude Code | ติดตั้งและ login แล้ว | `claude --version` |
-| Python | 3.10 ขึ้นไป อยู่ใน PATH ในชื่อ `python` | `python --version` |
-| Git | อะไรก็ได้ที่ไม่เก่ามาก | `git --version` |
-| อินเทอร์เน็ต | ใช้ตอนติดตั้ง เพื่อ clone `coder-mcp-bridge` จาก GitHub | — |
+| Windows | 10 / 11 | PowerShell 5.1 or 7 |
+| [ZCode Desktop](https://z.ai) | **3.14.0** (tested) | Signed in with a **Z.ai individual GLM Coding Plan** |
+| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | recent | Installed and signed in |
+| Python | 3.10+ | Must be on `PATH` as `python`. zcrew uses the standard library only |
+| Git | any recent | Your projects must be git repos, because review relies on `git diff` |
 
-ZCode ติดตั้งได้ทั้ง `C:\Program Files\ZCode` (ติดตั้งให้ทั้งเครื่อง) และ `%LOCALAPPDATA%\Programs\ZCode` (ติดตั้งเฉพาะ user) ตัวติดตั้งหาเจอเองทั้งสองแบบ
+## How it works
 
-> **แพลนอื่น** (Start / Team / Off-peak): ยังใช้กับโหมดเบื้องหลังไม่ได้ ต้องใช้ผ่านแอป ZCode เท่านั้น (ดูข้อ 11)
-
----
-
-## 3. ติดตั้งบนเครื่องใหม่ (ทีละขั้น)
-
-### ขั้นที่ 1: เอา repo นี้ลงเครื่อง
-
-```powershell
-cd C:\Programing\PersonalAI
-git clone <URL ของ repo นี้> Claude2zcode
-cd Claude2zcode
+```mermaid
+flowchart LR
+    U([You]) -- brief / approve --> C["Claude Code<br/>Commander"]
+    C -- worker contract --> M["MCP: zcode_executor<br/>coder-mcp-bridge"]
+    M --- S["bridge_compat shim<br/>(ZCode 3.14 fixes)"]
+    M --> Z1["ZCode worker 1<br/>GLM-5.3"]
+    M --> Z2["ZCode worker 2..5"]
+    Z1 -- edits --> R[("git repo /<br/>worktrees")]
+    Z2 -- edits --> R
+    C -- "git diff + run tests" --> R
+    C -- report --> U
 ```
 
-(ถ้าไม่ได้ใช้ git ให้ copy ทั้งโฟลเดอร์มาวางแทนได้)
-
-### ขั้นที่ 2: รันตัวติดตั้ง
-
-เปิด **PowerShell ธรรมดา** (ไม่ต้อง Run as Administrator) ที่โฟลเดอร์ repo แล้วรัน:
-
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-.\scripts\install.ps1 -EnsureZCodeCliConfig
+```mermaid
+sequenceDiagram
+    participant You
+    participant Claude as Claude Code
+    participant ZCode as ZCode (same thread)
+    You->>Claude: Request
+    Claude->>You: Plan (phases, tasks, DoD) — approve?
+    You->>Claude: approve
+    loop per task, up to maxCorrectionRounds
+        Claude->>ZCode: Worker contract / correction
+        ZCode-->>Claude: "done" (a claim, not evidence)
+        Claude->>Claude: git diff + run VERIFY commands
+    end
+    Claude->>You: Per-task report (changes, evidence, DoD status)
 ```
 
-`-EnsureZCodeCliConfig` **ใส่แค่ครั้งแรกบนเครื่องใหม่เท่านั้น** มันคัดลอก provider ของ Coding Plan (รวม API key) จากการตั้งค่าของแอป ZCode ไปไว้ใน `~/.zcode/cli/config.json` และสำรองไฟล์เดิมไว้เป็น `.bak` API key อยู่ในเครื่องคุณ ไม่ถูกส่งไปไหน
+Every delegation carries a **worker contract** with these parts:
 
-> ถ้ารันซ้ำโดยใส่ flag นี้อีก ชื่อ provider จะกลายเป็น `...-1` ใช้งานได้ปกติแต่ชื่อไม่สวย รอบถัดไปให้รันโดย**ไม่ใส่** flag
+- `OBJECTIVE`
+- `CONTEXT`
+- `SCOPE`
+- `DO NOT`
+- `ACCEPTANCE CRITERIA`
+- `VERIFY`
+- `REPORT`
 
-ตัวติดตั้งทำสิ่งเหล่านี้:
+Claude reviews the result against that same contract. The full behaviour is defined in [`policy/COMMANDER.md`](policy/COMMANDER.md), and an example contract is in [`examples/worker-contract.md`](examples/worker-contract.md).
 
-1. เช็คว่ามี `git`, `python` (3.10 ขึ้นไป) และ `claude`
-2. clone `coder-mcp-bridge` ไปที่ `~/.zcode-commander/coder-mcp-bridge` แล้ว **pin ไว้ที่ commit ที่ทดสอบแล้ว** (`23ecf0a`)
-3. copy `zcode_bridge_launcher.py`, `bridge_compat.py`, `doctor.py`, `commander.py` ไปที่ `~/.zcode-commander/`
-4. copy policy ไปที่ `~/.claude/zcode-commander/COMMANDER.md` (copy ไว้เฉยๆ ยังไม่เปิดใช้ที่ไหน)
-5. สร้าง `~/.zcode-commander/config.json` จากค่า default (ถ้ามีไฟล์อยู่แล้ว จะไม่เขียนทับ)
-6. ลงทะเบียน MCP server `zcode_executor` ใน Claude Code (scope `user`)
-7. รัน doctor
+## Tech stack
 
-**ไม่แตะ** `~/.claude/CLAUDE.md` (คู่มือกลางของคุณ) เลย
+| Layer | Technology |
+|---|---|
+| Commander | Claude Code (Claude Opus), with its behaviour defined by a Markdown policy loaded via `CLAUDE.md` import |
+| Control plane | [Model Context Protocol](https://modelcontextprotocol.io) over stdio (JSON-RPC 2.0) |
+| MCP server | [`coder-mcp-bridge`](https://github.com/Deslord319/coder-mcp-bridge) (Python), pinned commit, used unmodified |
+| Compatibility layer | `bridge_compat.py`: a runtime shim that adapts the bridge to ZCode 3.12+ (account-provider snapshot, runtime auth headers, reasoning level) |
+| Executor | ZCode Desktop app-server (Electron/Node, headless), running GLM-5.3 on the Z.ai Coding Plan |
+| Isolation | `git worktree` per parallel worker, with cross-process resource leases in the bridge |
+| Tooling | PowerShell installer (5.1/7 compatible), Python 3.10+ standard-library CLI (`zcrew`), `unittest` (166 tests) |
 
-### ขั้นที่ 3: อ่านผล doctor
-
-ต้องจบด้วย `Result: READY` ถ้ายังไม่ได้ ให้ดู [ข้อ 7](#7-อ่านผล-doctor) และ [ข้อ 10](#10-แก้ปัญหา)
-
-รัน doctor ซ้ำได้ทุกเมื่อ (ไม่เสีย quota model):
-
-```powershell
-python "$HOME\.zcode-commander\doctor.py"
-```
-
-### ขั้นที่ 4: Restart Claude Code
-
-ปิดแอป Claude **ให้สนิท** (ถ้ามีไอคอนค้างใน system tray ให้คลิกขวาแล้วเลือก Quit) แล้วเปิดใหม่ Claude จะโหลดเครื่องมือ `zcode_executor` ตอนเริ่ม session
-
-เช็คได้จาก PowerShell:
-
-```powershell
-claude mcp get zcode_executor
-```
-
-ต้องขึ้น `Status: √ Connected`
-
----
-
-## 4. เปิดใช้กับ project
-
-policy **ไม่ทำงานทั้งเครื่อง** เปิดใช้เป็นราย project เท่านั้น project ต้องเป็น git repo เพราะ Claude ตรวจงานด้วย `git diff`
-
-```powershell
-# เปิดใช้
-python "$HOME\.zcode-commander\commander.py" enable C:\path\to\project
-
-# ดูสถานะ (เปิดอยู่ไหม, ใช้ config จากไหน, ค่าถูกต้องไหม)
-python "$HOME\.zcode-commander\commander.py" status C:\path\to\project
-
-# ปิดใช้ (ไฟล์ CLAUDE.md กลับเป็นเหมือนเดิมทุกไบต์)
-python "$HOME\.zcode-commander\commander.py" disable C:\path\to\project
-```
-
-`enable` เพิ่มบล็อกนี้ต่อท้าย `<project>\CLAUDE.md` (ถ้ายังไม่มีไฟล์ จะสร้างให้ และตอน `disable` จะลบไฟล์ที่สร้างไว้ทิ้ง):
-
-```markdown
-<!-- zcode-commander:begin -->
-@~/.claude/zcode-commander/COMMANDER.md
-<!-- zcode-commander:end -->
-```
-
-ตัวเลือกเพิ่มเติม:
-- `--with-project-config`: สร้าง `.claude/zcode-commander.json` ให้ project นี้ใช้ model/ค่าต่างจากค่ากลาง
-- `--force`: เปิดใช้แม้โฟลเดอร์ไม่ใช่ git repo (ไม่แนะนำ)
-
-หลัง enable ให้เปิด **session ใหม่** ของ Claude Code ใน project นั้น
-
----
-
-## 5. ใช้งานประจำวัน
-
-คุยกับ Claude ตามปกติ ไม่ต้องพิมพ์ `/zcode` และไม่ต้องสั่ง ZCode เอง ตัวอย่าง:
+## Usage
 
 ```text
-คุณ:    เพิ่ม endpoint /health ที่คืน version ของแอป
-Claude: (ค้น brain → ถาม 1-2 ข้อแบบง่าย) "อยากให้ตอบเป็น JSON หรือข้อความธรรมดา? เช่น {"version":"1.2.0"}"
-คุณ:    JSON
-Claude: (ส่งแผน 200-300 คำ: Phase/Task/DoD + ตัวอย่างผลลัพธ์) "approve ไหม?"
-คุณ:    approve
-Claude: → ส่ง ZCode ทำ → ตรวจ diff + รัน test เอง → ไม่ผ่านก็สั่งแก้ใน thread เดิม
-        → "ZCode แก้ routes.py แล้ว, test ผ่าน 12/12" (รายงานความคืบหน้าสั้นๆ ระหว่างทาง)
-        → รายงานสรุปต่อ task + บอกว่าดูประวัติเต็มได้ในแอป ZCode
+zcrew enable [DIR] [--with-project-config] [--force]   activate the policy for a repo (default: current dir)
+zcrew disable [DIR]                                    remove it; CLAUDE.md is restored byte for byte
+zcrew status [DIR]                                     enabled? which config? is it valid?
+zcrew config [--project DIR]                           print and validate the effective config
+zcrew doctor                                           readiness check (no model call)
+zcrew update                                           pull the latest release and re-run setup
+zcrew uninstall [--keep-config] [--yes]                remove zcrew
+zcrew version
 ```
 
-คำสั่งลัดที่ใช้ได้ (ตามคู่มือ THP):
-- `go` / `do it` / `ship` / `YOLO`: ข้ามการถามและ approve แล้วลงมือเลย
-- `ทำต่อ`: ทำงานที่ approve ไว้แล้วต่อ
+Useful phrases in chat:
 
-เปลี่ยน model เฉพาะงานนี้ได้ในแชท เช่น `งานนี้ใช้ Flash พอ` (Claude จะใช้ `GLM-5.3-Flash` แค่ task นั้น)
+- `use Flash for this task` switches to `GLM-5.3-Flash` for that task only.
+- `go` / `ship` skips the clarification and approval steps.
+- `switch the default model to …` makes Claude edit your config and validate it.
 
-**ดูว่า ZCode ทำอะไรไปบ้าง:** เปิดแอป ZCode แล้วดูใต้ชื่อ project ถ้าเพิ่งมีงานใหม่ ต้องปิดแล้วเปิดแอปใหม่ก่อน ดูสดระหว่างทำงานไม่ได้ (ดูข้อ 11)
+**Watching the crew:** Claude posts short progress lines while it works. To read a worker's full conversation, open the ZCode app: runs are listed under the project. Restart the app to refresh the list, because live view inside the app isn't possible.
 
----
+## Configuration
 
-## 6. ตั้งค่า model และขีดจำกัด
-
-ลำดับการอ่านค่า (ค่าที่อยู่บนกว่าชนะ):
-
-1. `<project>\.claude\zcode-commander.json`: เฉพาะ project
-2. `~/.zcode-commander/config.json`: ค่ากลางของเครื่อง
-3. ค่า default ในตัวโปรแกรม
+zcrew merges three layers, and the first one found wins: `<repo>/.claude/zcode-commander.json` → `~/.zcode-commander/config.json` → built-in defaults.
 
 ```json
 {
-  "model": {"providerId": "account:zai-individual-coding-plan", "modelId": "GLM-5.3"},
+  "model": { "providerId": "account:zai-individual-coding-plan", "modelId": "GLM-5.3" },
   "thoughtLevel": "max",
   "maxWorkers": 5,
   "maxCorrectionRounds": 4,
@@ -209,144 +167,95 @@ Claude: → ส่ง ZCode ทำ → ตรวจ diff + รัน test เอ
 }
 ```
 
-| ค่า | ความหมาย | ค่าที่รับได้ |
+| Key | Meaning | Allowed |
 |---|---|---|
-| `model.providerId` | แพลนใน ZCode (รูปแบบ `account:...`) | ต้องเป็นแพลนที่คุณมีสิทธิ์ใช้ |
-| `model.modelId` | ชื่อ model | ต้องอยู่ในแพลนนั้น เช่น `GLM-5.3`, `GLM-5.3-Flash` |
-| `thoughtLevel` | ระดับการคิด | `high`, `max` |
-| `maxWorkers` | จำนวน ZCode ที่รันพร้อมกันได้ | 1-5 |
-| `maxCorrectionRounds` | จำนวนรอบสั่งแก้ต่อ task ก่อนหยุดมาถามคุณ | 1-10 |
-| `timeoutSeconds` | เวลาสูงสุดต่อ run | 60-86400 |
+| `model.providerId` | ZCode account provider | An account provider your plan is entitled to |
+| `model.modelId` | Model name | A model offered by that provider, e.g. `GLM-5.3`, `GLM-5.3-Flash` |
+| `thoughtLevel` | Reasoning effort | `high`, `max` |
+| `maxWorkers` | Parallel ZCode workers | 1–5 |
+| `maxCorrectionRounds` | Review/correct rounds per task before Claude escalates to you | 1–10 |
+| `timeoutSeconds` | Per-run timeout | 60–86400 |
 
-ถ้าไม่มี `model` ใน project config ระบบจะใช้ `model` จากชั้นถัดไปทั้งก้อน
+`zcrew config` validates every value, including whether the model exists and whether your plan is entitled to it.
 
-เช็คว่าตั้งถูกไหม:
+## Compatibility
 
-```powershell
-python "$HOME\.zcode-commander\commander.py" config                       # ค่ากลาง
-python "$HOME\.zcode-commander\commander.py" config --project C:\path\to\project
-```
-
-**เปลี่ยน model ในอนาคต** เช่นมี GLM-6: แก้ `modelId` ใน `~/.zcode-commander/config.json` แล้วรัน `commander.py config` ถ้า model ยังไม่อยู่ในรายการของ ZCode เวอร์ชันนี้ จะขึ้นเตือนทันที หรือบอก Claude ว่า "เปลี่ยน default เป็น GLM-6" ก็ได้ Claude จะแก้ไฟล์และเช็คให้
-
----
-
-## 7. อ่านผล doctor
-
-| บรรทัด | ถ้าไม่ OK |
+| Component | Status |
 |---|---|
-| `python` / `git` / `claude` | ติดตั้งให้อยู่ใน PATH |
-| `bridge` | รัน `install.ps1` ใหม่ |
-| `zcode bundle` / `zcode runtime` | ยังไม่ได้ติดตั้ง ZCode หรือติดตั้งไว้ที่แปลก ให้ตั้ง env `ZCODE_CLI_BUNDLE` และ `ZCODE_BINARY` |
-| `zcode version` `[WARN]` | ZCode ไม่ใช่ 3.14.0 ที่ทดสอบไว้ ใช้ต่อได้ แต่ควรลองงานเล็กๆ ก่อน (ดูข้อ 8) |
-| `ZCode desktop config` | เปิดแอป ZCode แล้ว login ให้เรียบร้อยสักครั้ง |
-| `[INFO] ZCode desktop providers` | แสดงแพลนที่มี key (ไม่แสดง key) |
-| `ZCode CLI config: model.main is not set` | รัน `install.ps1 -EnsureZCodeCliConfig` |
-| `zcode app-server` | เครื่องยนต์ ZCode เปิดไม่ขึ้น ดูข้อความ error แล้วเทียบกับข้อ 10 |
-| `bridge probe` | bridge หา ZCode ไม่เจอ ดูข้อ 10 |
-| `Claude MCP registration` | รัน `install.ps1` ใหม่ แล้ว restart Claude |
-| `Commander policy` | รัน `install.ps1` ใหม่ |
-| `commander config` | ค่าใน config.json ผิด ข้อความจะบอกว่าผิดตรงไหน |
+| ZCode 3.14.0 | ✅ Validated end-to-end: single run, review/correction on the same thread, two parallel workers |
+| Other ZCode versions | ⚠️ `zcrew doctor` warns. Run a small task first, because ZCode's headless protocol changed in 3.12 |
+| Z.ai individual GLM Coding Plan | ✅ |
+| Start / Team / Off-peak plans | ❌ These need the desktop host (captcha or encrypted keys) |
+| macOS / Linux | ❌ Not yet. The bridge supports them; zcrew's installer and launcher are Windows-only |
 
----
+ZCode 3.14 needed five fixes in the headless path: provider-table env vars, the `runtimeModel` removal, the account-provider push, runtime auth headers, and a required reasoning level. They are documented, with evidence, in [SPEC-RFD §26](SPEC-RFD.md#26-validation-results-v020-2026-09-26).
 
-## 8. อัปเดต
+## Troubleshooting
 
-**อัปเดต kit นี้** (หลัง `git pull` repo นี้):
+Start with `zcrew doctor`. Every line says what to fix.
 
-```powershell
-.\scripts\install.ps1
-```
+| Symptom | Fix |
+|---|---|
+| `ZCode CLI config: model.main is not set` | Sign in to ZCode Desktop, then run `zcrew update` |
+| `[WARN] zcode version … untested` | ZCode was updated. Run a small task before relying on it |
+| `Select a model before continuing` / `Provider Registry 中不存在 Model` | Check that the ZCode app is signed in with an individual Coding Plan, and that `model.providerId` is `account:zai-individual-coding-plan` |
+| `Reasoning level is required …` | Make sure `~/.zcode-commander/bridge_compat.py` exists, then run `zcrew update` |
+| Claude doesn't see `zcode_executor` | Quit Claude Code completely and start it again. Check with `claude mcp get zcode_executor` |
+| Runs don't appear in the ZCode app | Restart the ZCode app, because it loads its task list at startup |
+| Can't remove a worktree ("busy") | Run `git worktree prune`. The folder frees up once Claude Code exits |
 
-ไฟล์ config ของคุณจะไม่ถูกเขียนทับ หลังรันเสร็จให้ restart Claude Code
+ZCode's own logs are in `~/.zcode/cli/log/`. Diagnostic switches (environment variables):
 
-**อัปเดต bridge** ให้ใช้ commit ที่ต้องการ (ปกติไม่ต้องทำ):
+- `ZCODE_COMMANDER_ACCOUNT_PROVIDER=off`
+- `ZCODE_COMMANDER_RUNTIME_MODEL=on`
+- `ZCODE_COMMANDER_DEFAULT_REASONING=high`
 
-```powershell
-.\scripts\install.ps1 -ForceBridgeUpdate -BridgeRef <commit>
-```
-
-**อัปเดตแอป ZCode:** ⚠️ ระวัง ZCode เปลี่ยนวิธีทำงานเบื้องหลังได้โดยไม่ประกาศ (เคยเปลี่ยนมาแล้วในรุ่น 3.12) หลังอัปเดตให้ทำ 2 ขั้นนี้:
-
-1. รัน doctor ถ้าขึ้น `[WARN] zcode version` แปลว่ายังไม่เคยทดสอบกับเวอร์ชันนี้
-2. ให้ Claude ลองงานเล็กๆ ใน repo ทดสอบก่อนใช้กับงานจริง ถ้าพัง ให้ดูข้อ 10 หรือกลับไปใช้ ZCode 3.14.0
-
----
-
-## 9. ถอนการติดตั้ง
-
-1. `disable` ทุก project ที่เคย enable ไว้ก่อน (ข้อ 4)
-2. รัน:
+## Uninstall
 
 ```powershell
-.\scripts\uninstall.ps1                 # เอา MCP กับ policy ออก
-.\scripts\uninstall.ps1 -RemoveBridge   # เอา ~/.zcode-commander ออกด้วย รวม bridge และ config
+zcrew disable C:\path\to\each\enabled\repo
+zcrew uninstall
 ```
 
-`uninstall.ps1` จะแก้ `~/.claude/CLAUDE.md` ก็ต่อเมื่อเจอบรรทัด import แบบเก่าของ v0.1.x เท่านั้น ถ้าไม่เจอ จะไม่แตะไฟล์นี้เลย
+zcrew never edits your global `~/.claude/CLAUDE.md`. The one exception is removing the import line left by a v0.1.x install, and only if that line is present.
 
----
-
-## 10. แก้ปัญหา
-
-ปัญหาทั้งหมดนี้เจอจริงบนเครื่อง Windows + ZCode 3.14 ตอนพัฒนา และแก้ไว้แล้วใน v0.2.0 ถ้าเจออีก แปลว่าอะไรบางอย่างเปลี่ยนไป
-
-| อาการ | สาเหตุ | ทางแก้ |
-|---|---|---|
-| `install.ps1` หยุดที่ `No MCP server named "zcode_executor"` | Windows PowerShell 5.1 หยุดสคริปต์เมื่อคำสั่งภายนอกพิมพ์ stderr | แก้ไว้แล้วใน v0.2.0 ให้รันด้วยเวอร์ชันล่าสุด |
-| probe: `ZCode runtime not found` | bridge ต้องมี `ZCODE_APP_PATH` ก่อน | launcher ตั้งให้อัตโนมัติ ให้รัน `install.ps1` ใหม่ |
-| app-server ปิดตัวทันที: `无法定位 CLI ZCode Built-in Provider Config` | ZCode หา `zcode-builtin.json` ผิดที่ | launcher ตั้ง `ZCODE_BUILTIN_PROVIDER_CONFIG_FILE` ให้ ถ้ายังพัง ให้เช็คว่ามีไฟล์ `<ZCode>\resources\config\provider\zcode-builtin.json` |
-| `Unrecognized key: "runtimeModel"` | ZCode 3.12 ขึ้นไปไม่รับค่านี้แล้ว | shim ปิดให้แล้ว ให้เช็คว่า `~/.zcode-commander/bridge_compat.py` มีอยู่ |
-| `Select a model before continuing` / `Provider Registry 中不存在 Model` | ZCode แบบเบื้องหลังไม่มีสิทธิ์ใช้ Coding Plan | shim ยื่นสิทธิ์ให้แล้ว ให้เช็คว่าแอป ZCode login ด้วย individual Coding Plan และ `model.providerId` เป็น `account:zai-individual-coding-plan` |
-| `Reasoning level is required for ...` | ZCode บังคับให้ระบุระดับการคิด | shim ใส่ค่าจาก `thoughtLevel` ให้ (default `max`) |
-| ลบ worktree ไม่ได้: `Permission denied` / `busy` | app-server ยังเปิดโฟลเดอร์ค้างอยู่ | `git worktree prune` แล้วปล่อยโฟลเดอร์ว่างไว้ ลบได้หลังปิด Claude |
-| งานไม่ขึ้นในแอป ZCode | แอปโหลดรายการงานเฉพาะตอนเปิด | ปิดแล้วเปิดแอป ZCode ใหม่ |
-| Claude บอกว่ารัน `install.ps1` ให้ไม่ได้ | ระบบความปลอดภัยของ Claude Code บล็อกการติดตั้งของถาวรนอก project | รันคำสั่งใน PowerShell ของคุณเอง |
-| session ใหม่ของ Claude ไม่เห็น `zcode_executor` | ยังไม่ได้ restart หลังติดตั้ง | Quit แอป Claude ให้สนิทแล้วเปิดใหม่ |
-| อยากปิดความสามารถบางส่วนของ shim | ใช้ทดสอบหรือหาสาเหตุ | env: `ZCODE_COMMANDER_ACCOUNT_PROVIDER=off`, `ZCODE_COMMANDER_RUNTIME_MODEL=on`, `ZCODE_COMMANDER_DEFAULT_REASONING=high` |
-
-ดู log ของ ZCode เองได้ที่ `~/.zcode/cli/log/`
-
----
-
-## 11. ข้อจำกัดที่รู้แล้ว
-
-- ใช้ได้บน **Windows เท่านั้น** และทดสอบกับ **ZCode 3.14.0** + **Z.ai individual GLM Coding Plan** เท่านั้น
-- แพลน Start / Team / Off-peak ใช้แบบเบื้องหลังไม่ได้ เพราะต้องยืนยันผ่านแอป (เช่น captcha หรือ key ที่เข้ารหัสไว้)
-- **ดูสดในแอป ZCode ไม่ได้** เพราะแอปคุมเครื่องยนต์ของตัวเอง ดูย้อนหลังได้หลังเปิดแอปใหม่
-- งานที่รันใน worktree (โหมดขนาน) อาจไม่ขึ้นในรายการของแอป ZCode
-- ยังไม่เคยทดสอบว่า Claude ใน session ใหม่ที่เปิด policy ไว้ ทำตาม flow ครบเองทั้งหมด (ครั้งแรกที่ใช้จริงนับเป็นการทดสอบ) ถ้า Claude ข้ามขั้นถามหรือขั้น approve ให้ปรับ `policy/COMMANDER.md`
-
----
-
-## 12. โครงสร้าง repo และการพัฒนาต่อ
-
-```text
-Claude2zcode/
-├─ README.md               ← ไฟล์นี้
-├─ SPEC-RFD.md             ← ทำไมถึงออกแบบแบบนี้ + ผลทดสอบจริง (§26)
-├─ CHANGELOG.md            ← การเปลี่ยนแปลงแต่ละเวอร์ชัน
-├─ RESEARCH-NOTES.md       ← prior art ที่ใช้อ้างอิง
-├─ NOTICE                  ← เครดิตโค้ดของบุคคลที่สาม
-├─ manifest.json           ← เวอร์ชัน, ZCode ที่ทดสอบแล้ว, bridge commit ที่ pin ไว้
-├─ config/default-config.json
-├─ policy/COMMANDER.md     ← คำสั่งที่ Claude อ่าน (หัวใจของระบบ)
-├─ examples/worker-contract.md
-├─ scripts/
-│  ├─ install.ps1 / uninstall.ps1
-│  ├─ zcode_bridge_launcher.py   ← หา ZCode, ตั้ง env, เรียก shim
-│  ├─ bridge_compat.py           ← แก้ให้ bridge ใช้กับ ZCode 3.14 ได้โดยไม่ fork
-│  ├─ commander.py               ← enable/disable/status/config
-│  └─ doctor.py                  ← ตรวจความพร้อม (ไม่เสีย quota)
-└─ tests/                  ← unittest (stdlib ล้วน)
-```
-
-รัน test:
+## Development
 
 ```powershell
+git clone https://github.com/b9b4ymiN/zcrew.git
+cd zcrew
 python -m unittest discover -s tests -v
 ```
 
-**กฎเวอร์ชัน** (SPEC ข้อ 24): ถ้าเปลี่ยนเรื่องที่กระทบการออกแบบ ต้องอัปเดต `SPEC-RFD.md` และ `CHANGELOG.md` ด้วยเสมอ เช่น การแบ่งหน้าที่ Claude/ZCode, สถาปัตยกรรม MCP, วิธีตรวจรับงาน, วงจรสั่งแก้, ขอบเขตสิทธิ์ หรือสมมติฐานเรื่อง Windows
+```text
+get.ps1                     one-command bootstrap (irm | iex)
+scripts/zcrew.py            CLI
+scripts/install.ps1         installer: bridge clone (pinned), MCP registration, policy, config seed
+scripts/zcode_bridge_launcher.py   finds ZCode, sets env, starts the shim
+scripts/bridge_compat.py    ZCode 3.12+ compatibility shim for coder-mcp-bridge
+scripts/commander.py        enable/disable/status/config
+scripts/doctor.py           readiness checks
+policy/COMMANDER.md         the commander policy Claude follows
+SPEC-RFD.md                 design rationale, decisions, validation results
+```
 
-เครดิต: [coder-mcp-bridge](https://github.com/Deslord319/coder-mcp-bridge) (MIT) คือ MCP control plane ส่วนวิธีจัดการ account provider ของ ZCode 3.12+ port มาจาก [zcode-acp](https://github.com/william0wang/zcode-acp) (Apache-2.0) ดูรายละเอียดใน `NOTICE`
+If a change affects roles, the MCP architecture, acceptance, the correction loop, security boundaries or Windows assumptions, update `SPEC-RFD.md` and `CHANGELOG.md` as well (SPEC §24).
+
+## Roadmap
+
+- [ ] Validate policy adherence in fresh sessions on real projects
+- [ ] macOS / Linux installer
+- [ ] Track upstream ZCode releases, with a compatibility matrix in CI
+- [ ] Optional OpenCode / Pi executors (already supported by the bridge)
+
+## Credits
+
+- [`coder-mcp-bridge`](https://github.com/Deslord319/coder-mcp-bridge) (MIT): the MCP control plane.
+- [`zcode-acp`](https://github.com/william0wang/zcode-acp) (Apache-2.0): its account-provider approach for ZCode 3.12+ is ported in `bridge_compat.py`.
+- [`zcode-executor`](https://github.com/KyoMio/zcode-executor): the commander/executor pattern with evidence-first acceptance.
+
+See [NOTICE](NOTICE). zcrew is not affiliated with Anthropic, Zhipu AI / Z.ai, or the projects above.
+
+## License
+
+[Apache-2.0](LICENSE)

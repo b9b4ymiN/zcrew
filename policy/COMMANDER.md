@@ -1,6 +1,6 @@
 # Claude Code Commander Policy — ZCode Executor (v2)
 
-This policy is active only in projects that imported it (see `commander.py enable`). It never applies globally.
+This policy is active only in projects that imported it (see `zcrew enable`). It never applies globally.
 
 ## Operating model
 
@@ -14,14 +14,14 @@ Claude may do tiny edits itself (≤3 lines, docs/config/metadata) when delegati
 
 ## Workflow for a new, non-trivial request
 
-1. **Brief (requirements).** Search the `brain` MCP first for past context. Then ask the user simple, plain-language questions, 1–2 at a time, each with a short example, until the requirement is genuinely clear. Never ask what the code, the brain, or earlier answers already tell you.
+1. **Brief (requirements).** If a personal knowledge MCP is available (e.g. `brain`), search it first for past context. Then ask the user simple, plain-language questions, 1–2 at a time, each with a short example, until the requirement is genuinely clear. Never ask what the code, the knowledge base, or earlier answers already tell you.
 2. **Plan for review.** Write a 200–300 word plan a non-specialist can follow, with a concrete example of the result. Split it into Phases → Tasks, each with a DoD. End by asking for approval.
 3. **Hard gate.** Do not delegate implementation until the user approves the plan. Skip steps 1–3 only for tiny edits, a clear bug with a known root cause in 1–2 files, or when the user says "go", "do it", "ship", "YOLO", or continues approved work ("ทำต่อ", "next step").
 4. **Execute task by task.** For each task: write a worker contract → delegate to ZCode → review against the DoD → correct on the same thread → accept. Do not run too many unrelated things at once.
 5. **Report per task.** What changed, evidence (diff/tests/build you ran yourself), DoD status, anything left.
 6. **Errors are feedback.** Feed the exact error message back into the next correction and retry within budget.
 7. **Unsure → ask.** One question that unblocks the most, in plain language.
-8. **Compound knowledge.** After a root-cause fix, a significant decision, or a milestone, offer to log it to `brain` (never write without approval, never secrets).
+8. **Compound knowledge.** After a root-cause fix, a significant decision, or a milestone, offer to log it to the knowledge MCP if one is available (never write without approval, never secrets).
 
 ## Model and limits configuration
 
@@ -39,7 +39,7 @@ Before the first `agent-start` in a session, read the effective config: the proj
 
 - Pass `model` and `thoughtLevel` on every `agent-start` that opens a new thread.
 - The user may override per task in chat ("use Flash for this" → `GLM-5.3-Flash`). Apply it to that task only.
-- If the user asks to change the default ("switch default to GLM-6"), edit the user config file (or the project file if they say "for this project"), then run `python ~/.zcode-commander/doctor.py` to confirm the model exists and the plan is entitled.
+- If the user asks to change the default ("switch default to GLM-6"), edit the user config file (or the project file if they say "for this project"), then run `zcrew doctor` (or `python ~/.zcode-commander/doctor.py`) to confirm the model exists and the plan is entitled.
 
 ## Worker contract
 

@@ -820,7 +820,13 @@ zcode-claude-commander-kit/
 │  └─ COMMANDER.md
 ├─ examples/
 │  └─ worker-contract.md
+├─ get.ps1                (v0.3.0: one-command bootstrap)
+├─ LICENSE                (v0.3.0: Apache-2.0)
+├─ docs/README.th.md      (v0.3.0: Thai guide)
 └─ scripts/
+   ├─ zcrew.py            (v0.3.0: CLI)
+   ├─ bridge_compat.py    (v0.2.0)
+   ├─ commander.py        (v0.2.0)
    ├─ install.ps1
    ├─ uninstall.ps1
    ├─ doctor.py

@@ -2,6 +2,28 @@
 
 All notable changes to the Claude Commander × ZCode Executor Kit are recorded here.
 
+## 0.3.0 — 2026-09-26
+
+Public release as **zcrew**.
+
+### Added
+
+- `get.ps1`: installs everything with one command (`irm https://raw.githubusercontent.com/b9b4ymiN/zcrew/main/get.ps1 | iex`).
+  - Checks the prerequisites and lists anything missing.
+  - Clones the repo into `~/.zcrew/src`.
+  - Bootstraps the ZCode CLI config automatically when `model.main` is missing.
+  - Adds the `zcrew` command to the user PATH, preserving the registry value type and any `%VAR%` entries.
+- `zcrew` CLI (`scripts/zcrew.py`) with the commands `enable`, `disable`, `status`, `config`, `doctor`, `update`, `uninstall` and `version`.
+- `install.ps1` / `uninstall.ps1`: new `-SkipMcpRegistration` switch; `install.ps1` also gains `-SkipDoctor`.
+- Apache-2.0 `LICENSE`.
+- An English README written for the public repo; the Thai guide moved to `docs/README.th.md`.
+
+### Changed
+
+- The policy no longer assumes a personal knowledge MCP; `brain` is used only when one is available.
+- The doctor's CLI-config hint now points to `zcrew update`.
+- Internal names are unchanged for compatibility: the MCP server `zcode_executor`, `~/.zcode-commander`, and the policy path.
+
 ## 0.2.0 — 2026-09-26
 
 First release validated end-to-end on the target Windows workstation (ZCode 3.14.0). See `SPEC-RFD.md` §26 for evidence.

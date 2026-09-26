@@ -2,19 +2,24 @@
 param(
     [ValidateSet('user','local','project')]
     [string]$Scope = 'user',
-    [switch]$RemoveBridge
+    [switch]$RemoveBridge,
+    [switch]$SkipMcpRegistration
 )
 $ErrorActionPreference = 'Stop'
 
 Write-Host 'Projects enabled with "commander.py enable" import the policy file removed below.'
-Write-Host 'Run "python ~/.zcode-commander/commander.py disable <project>" in each of them first.'
+Write-Host 'Run "zcrew disable <project>" (or "python ~/.zcode-commander/commander.py disable <project>") in each of them first.'
 
-$previousPreference = $ErrorActionPreference
-$ErrorActionPreference = 'Continue'
-try {
-    & claude mcp remove zcode_executor --scope $Scope 2>&1 | Out-Null
-} finally {
-    $ErrorActionPreference = $previousPreference
+if ($SkipMcpRegistration) {
+    Write-Host 'Skipping Claude MCP removal (-SkipMcpRegistration).'
+} else {
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & claude mcp remove zcode_executor --scope $Scope 2>&1 | Out-Null
+    } finally {
+        $ErrorActionPreference = $previousPreference
+    }
 }
 
 # v0.1.x imported the policy globally. Remove that line only if it is present,
@@ -38,4 +43,4 @@ if ($RemoveBridge) {
     if (Test-Path -LiteralPath $InstallRoot) { Remove-Item -Recurse -Force -LiteralPath $InstallRoot }
 }
 
-Write-Host 'Removed Claude MCP registration and commander policy.'
+if ($SkipMcpRegistration) { Write-Host 'Removed commander policy.' } else { Write-Host 'Removed Claude MCP registration and commander policy.' }

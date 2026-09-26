@@ -4,6 +4,8 @@ param(
     [string]$Scope = 'user',
     [switch]$EnsureZCodeCliConfig,
     [switch]$ForceBridgeUpdate,
+    [switch]$SkipMcpRegistration,
+    [switch]$SkipDoctor,
     [string]$BridgeRef = '23ecf0a5f3be1916bb856e56fac5d313e07a05c4'
 )
 
@@ -76,23 +78,29 @@ if ($EnsureZCodeCliConfig) {
     Invoke-Checked 'ensure-config' { & $python (Join-Path $BridgeRoot 'server.py') --ensure-config }
 }
 
-# Re-register idempotently. Remove only our own named server. Windows
-# PowerShell 5.1 turns redirected native stderr into a terminating error under
-# 'Stop', and "No MCP server named ..." on a first install is expected.
-$previousPreference = $ErrorActionPreference
-$ErrorActionPreference = 'Continue'
-try {
-    & $claude mcp remove zcode_executor --scope $Scope 2>&1 | Out-Null
-} finally {
-    $ErrorActionPreference = $previousPreference
+if ($SkipMcpRegistration) {
+    Write-Host 'Skipping Claude MCP registration (-SkipMcpRegistration).'
+} else {
+    # Re-register idempotently. Remove only our own named server. Windows
+    # PowerShell 5.1 turns redirected native stderr into a terminating error under
+    # 'Stop', and "No MCP server named ..." on a first install is expected.
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $claude mcp remove zcode_executor --scope $Scope 2>&1 | Out-Null
+    } finally {
+        $ErrorActionPreference = $previousPreference
+    }
+
+    Write-Host "Registering Claude MCP server 'zcode_executor' (scope=$Scope)..."
+    Invoke-Checked 'claude mcp add' { & $claude mcp add zcode_executor --scope $Scope -- $python $LauncherTarget }
 }
 
-Write-Host "Registering Claude MCP server 'zcode_executor' (scope=$Scope)..."
-Invoke-Checked 'claude mcp add' { & $claude mcp add zcode_executor --scope $Scope -- $python $LauncherTarget }
-
-Write-Host ''
-Write-Host 'Running zero-model-cost doctor...'
-& $python $DoctorTarget
+if (-not $SkipDoctor) {
+    Write-Host ''
+    Write-Host 'Running zero-model-cost doctor...'
+    & $python $DoctorTarget
+}
 
 Write-Host ''
 Write-Host 'Setup complete. Restart Claude Code, then enable the commander policy per project.'

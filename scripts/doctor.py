@@ -18,8 +18,8 @@ UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall"
 HOME = Path.home()
 BRIDGE = Path(os.environ.get("CODER_MCP_BRIDGE_ROOT", HOME / ".zcode-commander" / "coder-mcp-bridge"))
 CLI_CONFIG_HINT = (
-    "run install.ps1 -EnsureZCodeCliConfig "
-    "(copies provider credentials from ZCode Desktop into the CLI config)"
+    "sign in to ZCode Desktop, then run `zcrew update` (or install.ps1 -EnsureZCodeCliConfig); "
+    "it copies the Coding Plan provider from ZCode Desktop into the CLI config"
 )
 
 

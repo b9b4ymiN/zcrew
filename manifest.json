@@ -1,11 +1,16 @@
 {
-  "name": "zcode-claude-commander-kit",
-  "version": "0.2.0",
+  "name": "zcrew",
+  "version": "0.3.0",
   "target": "Windows + Claude Code + ZCode Desktop",
-  "tested_zcode_versions": ["3.14.0"],
+  "tested_zcode_versions": [
+    "3.14.0"
+  ],
   "upstream_bridge": "https://github.com/Deslord319/coder-mcp-bridge",
   "upstream_bridge_ref": "23ecf0a5f3be1916bb856e56fac5d313e07a05c4",
   "mcp_server_name": "zcode_executor",
   "design_spec": "SPEC-RFD.md",
-  "changelog": "CHANGELOG.md"
+  "changelog": "CHANGELOG.md",
+  "repository": "https://github.com/b9b4ymiN/zcrew",
+  "license": "Apache-2.0",
+  "bootstrap": "irm https://raw.githubusercontent.com/b9b4ymiN/zcrew/main/get.ps1 | iex"
 }
