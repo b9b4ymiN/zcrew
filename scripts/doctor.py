@@ -8,10 +8,13 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, Iterable, NamedTuple
 
 HERE = Path(__file__).resolve().parent
 LAUNCHER = HERE / "zcode_bridge_launcher.py"
+COMMANDER = HERE / "commander.py"
+TESTED_ZCODE_VERSIONS = {"3.14.0"}
+UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall"
 HOME = Path.home()
 BRIDGE = Path(os.environ.get("CODER_MCP_BRIDGE_ROOT", HOME / ".zcode-commander" / "coder-mcp-bridge"))
 CLI_CONFIG_HINT = (
@@ -78,6 +81,88 @@ def smoke_app_server(runtime: Path, bundle: Path, env: dict[str, str], timeout: 
         err = exc.stderr.decode("utf-8", "replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
         return check_app_server_output(out, err, None)
     return check_app_server_output(proc.stdout, proc.stderr, proc.returncode)
+
+
+def warn(name: str, detail: str) -> None:
+    print(f"[WARN] {name}: {detail}")
+
+
+def zcode_version_status(entries: Iterable[tuple[str, str]]) -> tuple[str, str]:
+    """(level, detail) from uninstall (DisplayName, DisplayVersion) pairs;
+    level is "OK" or "WARN" (never fatal)."""
+    versions = [
+        str(version).strip()
+        for name, version in entries
+        if isinstance(name, str) and name.startswith("ZCode") and version and str(version).strip()
+    ]
+    if not versions:
+        return "WARN", "ZCode Desktop not found in the Windows uninstall registry; version cannot be checked"
+    for version in versions:
+        if version in TESTED_ZCODE_VERSIONS:
+            return "OK", f"{version} (tested)"
+    return "WARN", (
+        f"{versions[0]} is untested; bridge compat was validated on "
+        f"{', '.join(sorted(TESTED_ZCODE_VERSIONS))} - run a small task before relying on it"
+    )
+
+
+def read_uninstall_entries() -> list[tuple[str, str]]:
+    """(DisplayName, DisplayVersion) from HKCU and HKLM (64- and 32-bit views)."""
+    try:
+        import winreg
+    except ImportError:
+        return []
+    entries: list[tuple[str, str]] = []
+    views = [
+        (winreg.HKEY_CURRENT_USER, 0),
+        (winreg.HKEY_LOCAL_MACHINE, winreg.KEY_WOW64_64KEY),
+        (winreg.HKEY_LOCAL_MACHINE, winreg.KEY_WOW64_32KEY),
+    ]
+    for hive, view in views:
+        try:
+            root = winreg.OpenKey(hive, UNINSTALL_KEY, 0, winreg.KEY_READ | view)
+        except OSError:
+            continue
+        with root:
+            index = 0
+            while True:
+                try:
+                    sub = winreg.EnumKey(root, index)
+                except OSError:
+                    break
+                index += 1
+                try:
+                    with winreg.OpenKey(root, sub) as key:
+                        name = winreg.QueryValueEx(key, "DisplayName")[0]
+                        version = winreg.QueryValueEx(key, "DisplayVersion")[0]
+                except OSError:
+                    continue
+                if isinstance(name, str) and isinstance(version, str):
+                    entries.append((name, version))
+    return entries
+
+
+def _load_module(name: str, path: Path) -> Any:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def check_commander_config(commander: Any, user_path: Path, table_path: str | None, v2_dir: Path) -> CheckResult:
+    cfg, problems = commander.check_config(user_path, None, table_path, v2_dir)
+    if problems:
+        return CheckResult("commander config", False, "; ".join(problems))
+    source = str(user_path) if user_path.is_file() else "defaults (no user config file)"
+    model = cfg["model"]
+    return CheckResult(
+        "commander config",
+        True,
+        f"{model['providerId']}/{model['modelId']} thoughtLevel={cfg['thoughtLevel']} from {source}",
+    )
 
 
 def info(name: str, detail: str) -> None:
@@ -171,11 +256,7 @@ def main() -> int:
     ok &= check("bridge", (BRIDGE / "server.py").is_file(), str(BRIDGE))
 
     # Import launcher functions without starting MCP.
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("launcher", LAUNCHER)
-    mod = importlib.util.module_from_spec(spec)
-    assert spec and spec.loader
-    spec.loader.exec_module(mod)
+    mod = _load_module("launcher", LAUNCHER)
     try:
         bundle = mod.find_zcode_bundle()
         runtime = mod.find_zcode_runtime(bundle)
@@ -184,6 +265,12 @@ def main() -> int:
     except Exception as exc:
         ok &= check("zcode discovery", False, str(exc))
         bundle = runtime = None
+
+    level, detail = zcode_version_status(read_uninstall_entries())
+    if level == "OK":
+        check("zcode version", True, detail)
+    else:
+        warn("zcode version", detail)
 
     gui_cfg = HOME / ".zcode" / "v2" / "config.json"
     cli_cfg = HOME / ".zcode" / "cli" / "config.json"
@@ -228,6 +315,17 @@ def main() -> int:
 
     policy = HOME / ".claude" / "zcode-commander" / "COMMANDER.md"
     ok &= check("Commander policy", policy.is_file(), str(policy))
+
+    try:
+        commander = _load_module("commander", COMMANDER)
+        table_path = os.environ.get("ZCODE_BUILTIN_PROVIDER_CONFIG_FILE") or (
+            str(commander.builtin_table_for_bundle(bundle)) if bundle else None
+        )
+        ok &= report(check_commander_config(
+            commander, commander.user_config_path(HOME), table_path, HOME / ".zcode" / "v2"
+        ))
+    except Exception as exc:
+        ok &= check("commander config", False, f"{type(exc).__name__}: {exc}")
 
     print("\nResult:", "READY" if ok else "NEEDS ATTENTION")
     return 0 if ok else 1

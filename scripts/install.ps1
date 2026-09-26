@@ -53,6 +53,16 @@ Copy-Item -Force (Join-Path $KitRoot 'policy\COMMANDER.md') $PolicyTarget
 Copy-Item -Force (Join-Path $PSScriptRoot 'zcode_bridge_launcher.py') $LauncherTarget
 Copy-Item -Force (Join-Path $PSScriptRoot 'doctor.py') $DoctorTarget
 Copy-Item -Force (Join-Path $PSScriptRoot 'bridge_compat.py') (Join-Path $InstallRoot 'bridge_compat.py')
+Copy-Item -Force (Join-Path $PSScriptRoot 'commander.py') (Join-Path $InstallRoot 'commander.py')
+
+# The user config is seeded once and never overwritten on reinstall.
+$UserConfig = Join-Path $InstallRoot 'config.json'
+if (-not (Test-Path -LiteralPath $UserConfig)) {
+    Copy-Item (Join-Path $KitRoot 'config\default-config.json') $UserConfig
+    Write-Host "Created default commander config: $UserConfig"
+} else {
+    Write-Host "Keeping existing commander config: $UserConfig"
+}
 
 # Optional provider/config bootstrap. This copies the locally configured
 # provider/API-key material from ZCode Desktop into ~/.zcode/cli/config.json

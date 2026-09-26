@@ -1,0 +1,7 @@
+{
+  "model": {"providerId": "account:zai-individual-coding-plan", "modelId": "GLM-5.3"},
+  "thoughtLevel": "max",
+  "maxWorkers": 5,
+  "maxCorrectionRounds": 4,
+  "timeoutSeconds": 1800
+}

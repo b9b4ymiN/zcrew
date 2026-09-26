@@ -157,5 +157,89 @@ class ProbeOutputTests(unittest.TestCase):
         self.assertIn("boom", result.detail)
 
 
+class ZCodeVersionTests(unittest.TestCase):
+    def test_tested_version_ok(self) -> None:
+        level, detail = doctor.zcode_version_status([("Git", "2.45"), ("ZCode 3.14.0", "3.14.0")])
+        self.assertEqual(level, "OK")
+        self.assertEqual(detail, "3.14.0 (tested)")
+
+    def test_untested_version_warns(self) -> None:
+        level, detail = doctor.zcode_version_status([("ZCode 3.15.1", "3.15.1")])
+        self.assertEqual(level, "WARN")
+        self.assertIn("3.15.1 is untested", detail)
+        self.assertIn("validated on 3.14.0", detail)
+        self.assertIn("run a small task", detail)
+
+    def test_missing_warns(self) -> None:
+        level, detail = doctor.zcode_version_status([("Other", "1.0"), ("ZCode", "")])
+        self.assertEqual(level, "WARN")
+        self.assertIn("not found", detail)
+
+    def test_name_must_start_with_zcode(self) -> None:
+        self.assertEqual(doctor.zcode_version_status([("Not ZCode", "3.14.0")])[0], "WARN")
+
+    def test_warn_line_format(self) -> None:
+        import contextlib
+        import io
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            doctor.warn("zcode version", "x")
+        self.assertEqual(out.getvalue(), "[WARN] zcode version: x\n")
+
+    def test_registry_reader_returns_pairs(self) -> None:
+        entries = doctor.read_uninstall_entries()
+        self.assertIsInstance(entries, list)
+        for name, version in entries:
+            self.assertIsInstance(name, str)
+            self.assertIsInstance(version, str)
+
+
+class CommanderConfigCheckTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        base = Path(self._tmp.name)
+        self.commander = _load("commander")
+        rule = {
+            "providerId": "account:zai-individual-coding-plan",
+            "config": {
+                "builtinModelIds": ["GLM-5.3"],
+                "access": {"type": "zhipu-account", "mode": "individual-coding-plan", "accountType": "zai"},
+            },
+        }
+        self.table = base / "zcode-builtin.json"
+        self.table.write_text(json.dumps({"config": {"providerConfigRules": {"providerRules": [rule]}}}), encoding="utf-8")
+        self.v2 = base / "v2"
+        self.v2.mkdir()
+        (self.v2 / "coding-plan-cache.json").write_text(
+            json.dumps({"entryStatus": {"items": {PROVIDER_ID: {"status": "available"}}}}), encoding="utf-8"
+        )
+        self.user = base / "config.json"
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def run_check(self) -> "doctor.CheckResult":
+        return doctor.check_commander_config(self.commander, self.user, str(self.table), self.v2)
+
+    def test_missing_user_file_is_defaults_ok(self) -> None:
+        result = self.run_check()
+        self.assertTrue(result.ok, result.detail)
+        self.assertIn("defaults", result.detail)
+        self.assertIn("GLM-5.3", result.detail)
+
+    def test_invalid_user_config_fails(self) -> None:
+        self.user.write_text(json.dumps({"thoughtLevel": "low"}), encoding="utf-8")
+        result = self.run_check()
+        self.assertFalse(result.ok)
+        self.assertIn("thoughtLevel", result.detail)
+
+    def test_unentitled_fails(self) -> None:
+        (self.v2 / "coding-plan-cache.json").unlink()
+        result = self.run_check()
+        self.assertFalse(result.ok)
+        self.assertIn("not entitled", result.detail)
+
+
 if __name__ == "__main__":
     unittest.main()
