@@ -1,0 +1,876 @@
+# Claude Commander × ZCode Executor
+## SPEC / Request for Design (RFD)
+
+**Version:** 0.1.1  
+**Baseline implementation:** `zcode-claude-commander-kit-v0.1.1.zip`  
+**Original prototype:** `zcode-claude-commander-kit-v0.1.0.zip`  
+**Date:** 2026-09-26  
+**Status:** Prototype / Integration Baseline
+
+---
+
+## 1. Executive Summary
+
+This project exists to let the user work with **Claude Code / Opus as the single conversational interface and technical commander**, while delegating implementation-heavy work to **ZCode / GLM as an executor**.
+
+The intended relationship is:
+
+> **Claude Code = Commander / Architect / Reviewer**  
+> **ZCode = Executor / Implementer**
+
+The user should not manually relay tasks between the two agents. Claude is responsible for understanding the request, deciding what should be built, delegating implementation, independently checking the resulting code and verification evidence, sending corrective instructions back to the same ZCode session when necessary, and only then reporting completion.
+
+The design deliberately reuses existing prior art instead of inventing a new ZCode protocol or MCP server. The initial implementation uses `coder-mcp-bridge` as the MCP control plane, draws orchestration ideas from `zcode-executor`, and uses `zcode-acp` / `zcode-open-bridge` as protocol and lifecycle references.
+
+---
+
+## 2. Why This Project Exists
+
+The original requirement was not simply “let Claude call ZCode.” The actual goal is to create a **closed implementation loop** in which Claude remains the only AI the user needs to talk to.
+
+The desired user experience is:
+
+```text
+User
+  ↓
+Claude Code / Opus
+  ↓
+ZCode Executor
+  ↓
+Claude Review
+  ↓
+ZCode Correction (if needed)
+  ↓
+Claude Acceptance
+  ↓
+User
+```
+
+The user should be able to say something natural such as:
+
+```text
+We agreed on the Plan Inspector direction.
+Implement it completely and verify it.
+```
+
+From that point onward, Claude should autonomously:
+
+1. inspect the project;
+2. understand the requirement and current architecture;
+3. decide the implementation approach;
+4. define scope and acceptance criteria;
+5. delegate implementation to ZCode;
+6. wait for execution to finish;
+7. inspect the actual diff and repository state;
+8. run or inspect appropriate tests/build/typecheck/lint checks;
+9. review architecture and requirement compliance;
+10. send corrective instructions back to the same ZCode thread if the work is incomplete or incorrect;
+11. repeat verification until the task passes or a genuine blocker requires human input;
+12. report the result to the user.
+
+The user should **not** have to type `/zcode`, “send this to ZCode,” or manually babysit each iteration.
+
+---
+
+## 3. Initial Idea and Why It Changed
+
+The first idea was a manual Claude Code command such as:
+
+```text
+/zcode implement the plan we just agreed on
+```
+
+That would technically connect Claude and ZCode, but it still puts orchestration responsibility on the user. The user would have to decide when to invoke ZCode, when to ask Claude to review, and when to send corrections.
+
+That does not satisfy the real requirement.
+
+The design therefore changed from a **manual command** into an **automatic commander/executor relationship**:
+
+```text
+User talks normally to Claude
+        ↓
+Claude decides when implementation should be delegated
+        ↓
+Claude invokes ZCode through MCP
+        ↓
+Claude independently validates the result
+        ↓
+Claude controls any repair loop
+```
+
+Slash commands may remain useful for diagnostics or explicit overrides, but they are not part of the normal user experience.
+
+---
+
+## 4. Product Definition
+
+> **Claude Commander × ZCode Executor is a local agent orchestration layer that allows the user to work only with Claude Code / Opus while Claude delegates implementation to ZCode, independently reviews the resulting changes, sends corrections, and loops until the agreed acceptance criteria pass.**
+
+---
+
+## 5. Core Responsibility Split
+
+### 5.1 Claude Code Owns
+
+Claude is the commander and acceptance authority. It owns:
+
+- conversation with the user;
+- requirement discovery and clarification;
+- repository investigation;
+- research and prior-art analysis;
+- architecture and design decisions;
+- task decomposition;
+- implementation strategy;
+- worker contract creation;
+- scope control;
+- acceptance criteria;
+- code and diff inspection;
+- test/build/typecheck/lint verification;
+- architecture review;
+- deciding pass/fail;
+- deciding whether to reuse an existing worker session;
+- corrective instructions;
+- deciding when a blocker truly requires user input;
+- final reporting to the user.
+
+Claude may read and inspect code freely. The policy should bias Claude away from routine implementation when ZCode can execute it effectively.
+
+### 5.2 ZCode Owns
+
+ZCode is the executor. It owns:
+
+- routine coding;
+- file editing;
+- component creation;
+- implementation refactoring;
+- writing tests;
+- fixing compilation/type/lint errors;
+- running implementation-related commands;
+- applying corrective instructions from Claude;
+- reporting what it changed and what commands it ran.
+
+ZCode must **not** independently:
+
+- change product requirements;
+- expand scope without approval;
+- make major architecture changes without Claude approval;
+- perform destructive migrations without approval;
+- deploy to production;
+- declare its own work accepted.
+
+---
+
+## 6. Independent Acceptance Principle
+
+A central rule of this design is:
+
+> **The executor cannot accept its own work.**
+
+Messages from ZCode such as:
+
+```text
+Done.
+All tests pass.
+Implementation completed.
+```
+
+are useful status signals, but they are not acceptance evidence by themselves.
+
+Claude must independently inspect appropriate evidence, which may include:
+
+- `git diff`;
+- `git status`;
+- changed files;
+- tests;
+- typecheck;
+- build;
+- lint;
+- runtime/UI behavior where available;
+- acceptance criteria;
+- architecture constraints;
+- absence of unrelated changes.
+
+Only Claude can decide that the task is complete from the commander's perspective.
+
+---
+
+## 7. Autonomous Review / Repair Loop
+
+The required control loop is:
+
+```text
+                 ┌──────────────┐
+                 │     User     │
+                 └──────┬───────┘
+                        │
+                        ▼
+                 Claude Commander
+                        │
+                        │ Worker Contract
+                        ▼
+                  ZCode Executor
+                        │
+                        │ Code changes
+                        ▼
+                  Claude Review
+                   ┌────┴────┐
+                   │         │
+                 PASS       FAIL
+                   │         │
+                   │         ▼
+                   │   Corrective Task
+                   │         │
+                   │         ▼
+                   │   Same ZCode Thread
+                   │         │
+                   │         └────────┐
+                   │                  │
+                   └──────────────◄───┘
+                        │
+                        ▼
+                       User
+```
+
+The normal loop is:
+
+```text
+Plan
+→ Delegate
+→ Implement
+→ Inspect
+→ Verify
+→ Review
+→ Correct if necessary
+→ Verify again
+→ Accept
+```
+
+User intervention should be zero during routine implementation iterations.
+
+---
+
+## 8. Worker Contract
+
+Claude should not normally delegate with a vague one-line prompt such as:
+
+```text
+Implement feature X.
+```
+
+Instead it should establish a bounded **Worker Contract** containing enough information for ZCode to execute without taking product authority.
+
+Recommended structure:
+
+```text
+OBJECTIVE
+Implement Scenario Comparison in Plan Inspector.
+
+CONTEXT
+Planner needs to compare current allocation with a proposed lot allocation
+before committing a change.
+
+SCOPE
+- components/PlanInspector/*
+- hooks/useScenario.ts
+
+DO NOT
+- change backend API contracts
+- modify Memgraph schema
+- introduce another UI framework
+- refactor unrelated modules
+
+ACCEPTANCE CRITERIA
+1. Current and proposed scenarios are visible.
+2. PDD delta is displayed.
+3. Capacity violations are clearly identified.
+4. Existing planner behavior remains unchanged.
+5. New behavior has appropriate tests.
+
+VERIFY
+- npm test
+- npm run typecheck
+- npm run build
+```
+
+Working principle:
+
+> **Task/contract = source of truth**  
+> **Prompt = instruction to execute the contract**
+
+This makes later review deterministic: Claude checks the result against the same contract it used to delegate the work.
+
+---
+
+## 9. Session Continuity
+
+The executor should not be treated as stateless when a task requires multiple corrections.
+
+A conceptual session registry may look like:
+
+```text
+frontend → ZCode thread A
+backend  → ZCode thread B
+graph    → ZCode thread C
+tests    → ZCode thread D
+```
+
+If Claude reviews frontend work from thread A and finds three defects, the preferred behavior is to send the correction back to **thread A**, not create a fresh worker with no memory of the implementation.
+
+Benefits:
+
+- less repeated context;
+- lower token usage;
+- faster corrective turns;
+- stronger continuity;
+- easier iterative refinement.
+
+Session reuse should be task-aware rather than permanent. Claude decides whether new work is a continuation of an existing thread or deserves a new executor context.
+
+---
+
+## 10. Prior-Art Research
+
+The project follows the principle:
+
+> **Do not reinvent infrastructure when mature prior art already exists.**
+
+Research identified four especially relevant projects.
+
+### 10.1 `KyoMio/zcode-executor`
+
+This project is the closest prior art for the desired workflow. Its design demonstrates the pattern:
+
+```text
+Claude plans
+→ ZCode implements
+→ Claude reviews diff/tests
+→ Claude sends corrections
+→ same ZCode session fixes
+```
+
+Key ideas adopted conceptually:
+
+- task contracts;
+- evidence-first acceptance;
+- correction loops;
+- same-session repair;
+- worker self-report is not acceptance evidence;
+- worktree/isolation thinking.
+
+Constraint for this project: its primary implementation targets macOS/Linux, while our target workstation is Windows.
+
+Repository: <https://github.com/KyoMio/zcode-executor>
+
+### 10.2 `Deslord319/coder-mcp-bridge`
+
+This project supplies the control-plane architecture we need and supports coding-agent backends including ZCode.
+
+Relevant MCP concepts include tools such as:
+
+```text
+agent-start
+agent-wait
+agent-observe
+agent-control
+agent-recover
+agent-branch
+agent-context
+agent-close
+```
+
+Decision:
+
+> **Reuse this bridge rather than create a new MCP server or ZCode protocol wrapper.**
+
+Repository: <https://github.com/Deslord319/coder-mcp-bridge>
+
+### 10.3 `william0wang/zcode-acp`
+
+Used as a reference for ZCode session lifecycle and protocol behavior, including concepts such as:
+
+```text
+session/create
+session/send
+session/update
+session/resume
+session/cancel
+session/fork
+session/goal
+session/compact
+```
+
+It demonstrates that ZCode already exposes sufficient session infrastructure for persistent executor workflows.
+
+Repository: <https://github.com/william0wang/zcode-acp>
+
+### 10.4 `tizerluo/zcode-open-bridge`
+
+Useful as a reference for ZCode CLI/app-server integration and MCP-related patterns. Its MCP use cases are more review-oriented than the autonomous implementation loop targeted here, so it is treated as reference material rather than the primary control plane.
+
+Repository: <https://github.com/tizerluo/zcode-open-bridge>
+
+---
+
+## 11. Architecture Decision
+
+### 11.1 Architecture Rejected
+
+Do not build this from scratch:
+
+```text
+Claude
+  ↓
+Our custom ZCode MCP server
+  ↓
+Our custom ZCode protocol implementation
+  ↓
+ZCode
+```
+
+This would duplicate already-solved protocol work and create unnecessary maintenance debt.
+
+### 11.2 Selected Architecture
+
+```text
+              ┌───────────────────────────┐
+              │ Claude Code / Opus        │
+              │                           │
+              │ Commander                 │
+              │ Architect                 │
+              │ Reviewer                  │
+              └────────────┬──────────────┘
+                           │
+                    Commander Policy
+                           │
+                           ▼
+              ┌───────────────────────────┐
+              │ coder-mcp-bridge          │
+              │                           │
+              │ MCP Control Plane         │
+              └────────────┬──────────────┘
+                           │
+                     ZCode app-server
+                           │
+                           ▼
+              ┌───────────────────────────┐
+              │ ZCode / GLM               │
+              │                           │
+              │ Executor                  │
+              │ Implementer               │
+              └───────────────────────────┘
+```
+
+Our custom code remains intentionally thin:
+
+1. Windows launcher / discovery compatibility;
+2. Claude Commander policy;
+3. install / doctor / uninstall tooling;
+4. documentation and examples.
+
+---
+
+## 12. Why MCP
+
+MCP gives Claude a structured control surface rather than forcing it to generate arbitrary shell commands for each worker interaction.
+
+Advantages:
+
+- structured tool input/output;
+- clearer semantics for the model;
+- session lifecycle can be represented explicitly;
+- less quoting/path/escaping complexity;
+- less coupling between Claude policy and ZCode internals;
+- easier substitution of another executor later;
+- clearer security and permission boundaries;
+- easier diagnostics.
+
+The user still sees one conversation with Claude; MCP is an implementation detail behind that UX.
+
+---
+
+## 13. Windows Constraint and Compatibility Layer
+
+The target machine is Windows.
+
+The upstream MCP bridge contains Windows-compatible stdio handling, but its ZCode discovery logic has historically focused on macOS/Linux layouts. The kit therefore adds a thin Windows launcher that searches likely local ZCode Desktop paths, including layouts such as:
+
+```text
+%LOCALAPPDATA%\Programs\ZCode\
+    ZCode.exe
+    resources\
+        glm\
+            zcode.cjs
+```
+
+The launcher then passes explicit environment variables such as:
+
+```text
+ZCODE_BINARY
+ZCODE_CLI_BUNDLE
+```
+
+to the upstream bridge.
+
+Design rule:
+
+> **Do not fork or duplicate the ZCode protocol just to solve path discovery.**
+
+---
+
+## 14. v0.1.1 Artifact Scope
+
+The current kit is an integration baseline rather than a finished production agent platform.
+
+### Included
+
+- Windows-aware bridge launcher;
+- installer;
+- diagnostics/doctor utility;
+- uninstall utility;
+- Claude Commander policy;
+- Worker Contract example;
+- upstream bridge reuse;
+- research notes;
+- this SPEC/RFD baseline;
+- changelog.
+
+### Not Included Yet
+
+- cloud orchestration;
+- multi-machine workers;
+- autonomous deployment;
+- automatic PR merging;
+- persistent worker-history database;
+- GUI dashboard;
+- production CI integration;
+- model performance scoring;
+- automatic executor/model selection;
+- full multi-worker scheduler.
+
+The first priority is to prove the smallest useful closed loop reliably on the real Windows workstation.
+
+---
+
+## 15. Correction Budget / Runaway Protection
+
+An autonomous loop must be bounded.
+
+The initial policy uses a default correction budget of approximately:
+
+```text
+MAX_CORRECTION_ROUNDS = 4
+```
+
+This is a policy-level guardrail rather than a permanent magic number.
+
+If repeated attempts fail, Claude should stop the loop and report:
+
+- what has already been attempted;
+- which checks pass;
+- which checks fail;
+- the likely blocker/root cause;
+- what evidence was collected;
+- what decision or access is needed from the user.
+
+The purpose is to prevent silent infinite agent loops while still avoiding unnecessary human interruption for routine fixes.
+
+---
+
+## 16. When Claude Should Ask the User
+
+Claude should **not** ask questions such as:
+
+```text
+Should I send this to ZCode?
+Should I review ZCode's changes now?
+Should I ask ZCode to fix the test?
+```
+
+Those are internal orchestration decisions.
+
+Claude should return to the user when the blocker is materially human-owned, for example:
+
+- a requirement ambiguity changes product behavior;
+- two architectural choices have materially different trade-offs;
+- a destructive or irreversible migration is required;
+- a significant security/privacy implication appears;
+- required credentials/permissions are missing;
+- scope must expand substantially;
+- an external dependency cannot be accessed;
+- repeated correction attempts fail and require a strategic decision.
+
+---
+
+## 17. Security / Authority Model
+
+Use least privilege where practical.
+
+ZCode should not automatically gain authority to:
+
+- deploy production;
+- modify credentials/secrets;
+- push or merge remote branches without policy approval;
+- perform destructive database migrations;
+- edit unrelated workspaces;
+- alter architecture outside the worker contract.
+
+Claude remains the gatekeeper for high-impact actions, while user approval remains authoritative where required.
+
+---
+
+## 18. Prototype Success Criteria
+
+The prototype is considered validated when the following real workflow succeeds on the target Windows environment.
+
+### User request
+
+```text
+Implement feature X according to the direction we agreed on.
+Finish it and verify it.
+```
+
+### Required behavior
+
+Claude:
+
+1. inspects the source;
+2. establishes the implementation approach;
+3. defines a Worker Contract;
+4. invokes ZCode through MCP;
+5. ZCode modifies the source;
+6. Claude inspects the actual diff;
+7. Claude performs independent verification;
+8. Claude identifies at least one defect or intentionally simulated acceptance failure during validation testing;
+9. Claude sends corrective instructions to the **same** ZCode thread;
+10. ZCode applies the correction;
+11. Claude re-verifies;
+12. Claude accepts the work;
+13. Claude reports completion to the user.
+
+During the implementation/review loop:
+
+```text
+User intervention required = 0
+```
+
+unless a genuine blocker occurs.
+
+---
+
+## 19. Definition of Done for an Individual Task
+
+A delegated implementation is done only when relevant evidence supports all required conditions:
+
+```text
+✓ Requirement satisfied
+✓ Acceptance criteria satisfied
+✓ Diff independently reviewed by Claude
+✓ Relevant tests pass
+✓ Typecheck/build/lint pass where applicable
+✓ No unexplained architecture deviation
+✓ No unrelated modifications
+✓ Executor claims have been independently verified
+```
+
+This is explicitly **not** sufficient:
+
+```text
+ZCode says "done"
+```
+
+---
+
+## 20. Current Validation Status
+
+### Completed / Designed
+
+- prior-art research;
+- Commander vs Executor responsibility split;
+- decision not to create a new ZCode protocol;
+- decision to reuse `coder-mcp-bridge`;
+- autonomous review/correction-loop design;
+- Worker Contract pattern;
+- same-thread correction policy;
+- Windows bootstrap design;
+- Commander policy;
+- install/doctor/uninstall tooling;
+- bounded correction-loop concept;
+- initial ZIP prototype;
+- documentation baseline.
+
+### Not Yet Proven End-to-End
+
+The full loop still requires validation on the real Windows machine with:
+
+- Claude Code installed and authenticated;
+- ZCode Desktop installed and authenticated;
+- valid ZCode/provider configuration;
+- compatible local Node/runtime dependencies;
+- a real target repository.
+
+The next engineering milestone is therefore **integration validation**, not additional architecture invention.
+
+---
+
+## 21. Planned Phases
+
+### Phase 1 — Integration Validation
+
+Prove:
+
+```text
+Claude → MCP → ZCode
+```
+
+Checks:
+
+- MCP server registers correctly;
+- Windows ZCode runtime is detected;
+- ZCode app-server starts;
+- executor start/wait/observe operations work;
+- ZCode can modify a controlled test repository;
+- result events return reliably to Claude.
+
+### Phase 2 — Closed-Loop Validation
+
+Prove:
+
+```text
+Claude
+→ ZCode implementation
+→ Claude rejection
+→ same-thread ZCode correction
+→ Claude acceptance
+```
+
+This is the most important functional milestone.
+
+### Phase 3 — Commander Intelligence
+
+Tune policy for:
+
+- when to delegate;
+- when Claude should perform tiny edits itself;
+- when to reuse a worker session;
+- when to create a new session;
+- when to stop a failing loop;
+- when to ask the user;
+- how much verification is appropriate by task type.
+
+### Phase 4 — Multi-Worker (Only If Needed)
+
+Potential roles:
+
+```text
+frontend worker
+backend worker
+graph worker
+test worker
+```
+
+Do not add this complexity before the single-worker closed loop is proven reliable.
+
+---
+
+## 22. Design Principles
+
+1. **One conversational interface**  
+   The user talks to Claude Code, not a collection of agents.
+
+2. **Reasoning and execution have different owners**  
+   Claude spends expensive reasoning on understanding, design, review, and decisions; ZCode absorbs implementation workload.
+
+3. **No manual relay**  
+   Internal agent handoffs are Claude's responsibility.
+
+4. **Independent verification**  
+   The worker cannot approve itself.
+
+5. **Evidence over self-report**  
+   Diff/tests/build/acceptance evidence matters more than agent narration.
+
+6. **Reuse before reinvent**  
+   Existing bridges/protocol implementations are preferred over custom infrastructure.
+
+7. **Thin integration layer**  
+   Custom code should remain small enough that upstream improvements can be adopted easily.
+
+8. **Bounded autonomy**  
+   Automatic correction is desirable; infinite loops are not.
+
+9. **Session continuity when useful**  
+   Corrections should normally remain on the same executor thread.
+
+10. **Complexity must earn its place**  
+    Multi-agent scheduling, dashboards, CI automation, and advanced persistence are future work only if real usage justifies them.
+
+---
+
+## 23. Repository / Artifact Layout
+
+The kit currently uses a layout similar to:
+
+```text
+zcode-claude-commander-kit/
+├─ README.md
+├─ SPEC-RFD.md
+├─ RESEARCH-NOTES.md
+├─ CHANGELOG.md
+├─ manifest.json
+├─ policy/
+│  └─ COMMANDER.md
+├─ examples/
+│  └─ worker-contract.md
+└─ scripts/
+   ├─ install.ps1
+   ├─ uninstall.ps1
+   ├─ doctor.py
+   └─ zcode_bridge_launcher.py
+```
+
+Relationship between artifacts:
+
+- `README.md` — setup and usage entry point;
+- `SPEC-RFD.md` — why the system exists, architecture, responsibilities, decisions, boundaries, next phases;
+- `RESEARCH-NOTES.md` — concise prior-art notes;
+- `COMMANDER.md` — executable behavioral policy for Claude;
+- `worker-contract.md` — example delegation format;
+- scripts — Windows integration/bootstrap and diagnostics;
+- `CHANGELOG.md` — version-to-version decisions and changes.
+
+---
+
+## 24. Versioning Rule Going Forward
+
+Any version that changes one of the following should update this SPEC/RFD and the changelog:
+
+- Commander/Executor ownership;
+- MCP/control-plane architecture;
+- acceptance model;
+- session lifecycle;
+- correction-loop behavior;
+- security/authority boundaries;
+- Windows integration assumptions;
+- major supported workflows.
+
+Validation findings should be recorded rather than silently changing the design. This document is intended to preserve the reasoning behind the system, not just describe its current files.
+
+---
+
+## 25. Immediate Next Action
+
+Do **not** add more architecture before running the real integration validation.
+
+The next step is:
+
+```text
+1. Install v0.1.1 on the target Windows workstation.
+2. Run doctor diagnostics.
+3. Verify Claude can see the MCP executor.
+4. Execute one small controlled implementation task.
+5. Force or observe one review failure.
+6. Confirm correction returns to the same ZCode thread.
+7. Record results in a Validation Results section for the next release.
+```
+
+If that succeeds, the next release should be based on empirical behavior rather than further speculation.

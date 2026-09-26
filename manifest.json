@@ -1,0 +1,9 @@
+{
+  "name": "zcode-claude-commander-kit",
+  "version": "0.1.1",
+  "target": "Windows + Claude Code + ZCode Desktop",
+  "upstream_bridge": "https://github.com/Deslord319/coder-mcp-bridge",
+  "mcp_server_name": "zcode_executor",
+  "design_spec": "SPEC-RFD.md",
+  "changelog": "CHANGELOG.md"
+}
