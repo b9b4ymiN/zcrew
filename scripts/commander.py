@@ -2,7 +2,7 @@
 """Commander config and per-project activation.
 
     python commander.py config  [--project DIR]
-    python commander.py enable  [DIR] [--force] [--with-project-config]
+    python commander.py enable  [DIR] [--force] [--with-project-config] [--with-templates]
     python commander.py disable [DIR]
     python commander.py status  [DIR]
 
@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import importlib.util
 import json
 import os
@@ -45,6 +46,8 @@ IMPORT_LINE = "@~/.claude/zcode-commander/COMMANDER.md"
 BLOCK_LINES = (BEGIN_MARKER, IMPORT_LINE, END_MARKER)
 PROJECT_CONFIG_REL = Path(".claude") / "zcode-commander.json"
 CREATED_SIDECAR_REL = Path(".claude") / "zcode-commander.created-claude-md"
+TEMPLATES_SIDECAR_REL = Path(".claude") / "zcode-commander.templates.json"
+TEMPLATE_FILES = ("CLAUDE.md", "AGENTS.md")
 
 
 class ConfigError(ValueError):
@@ -277,7 +280,88 @@ def is_enabled(project_dir: Path) -> bool:
     return claude_md.is_file() and _block_span(_read_text(claude_md)) is not None
 
 
-def enable(project_dir: Path, force: bool = False, with_project_config: bool = False) -> tuple[bool, str]:
+# --- starter templates (enable --with-templates) ----------------------------
+
+
+def find_templates_dir(script_dir: Path | None = None) -> Path | None:
+    """<scripts>/../templates (repo or ~/.zcrew/src), then <scripts>/templates
+    (installed copy in ~/.zcode-commander). A candidate must hold every template."""
+    base = Path(script_dir) if script_dir is not None else HERE
+    for candidate in (base.parent / "templates", base / "templates"):
+        if all((candidate / name).is_file() for name in TEMPLATE_FILES):
+            return candidate
+    return None
+
+
+def _read_template(path: Path) -> str:
+    """UTF-8 without BOM, LF newlines (a CRLF checkout must not change the hash)."""
+    text = path.read_bytes().decode("utf-8")
+    if text.startswith("﻿"):
+        text = text[1:]
+    return text.replace("\r\n", "\n")
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _read_templates_sidecar(path: Path) -> tuple[dict[str, str], bool]:
+    """(recorded {relpath: sha256}, createdClaudeDir). Only known template names
+    are accepted, so a damaged sidecar can never make disable delete other files."""
+    if not path.is_file():
+        return {}, False
+    try:
+        data = json.loads(_read_text(path))
+    except (OSError, ValueError):
+        return {}, False
+    if not isinstance(data, dict):
+        return {}, False
+    files = data.get("files")
+    recorded = {
+        rel: digest
+        for rel, digest in (files.items() if isinstance(files, dict) else ())
+        if rel in TEMPLATE_FILES and isinstance(digest, str)
+    }
+    return recorded, bool(data.get("createdClaudeDir"))
+
+
+def _templates_sidecar_text(recorded: Mapping[str, str], created_dir: bool) -> str:
+    ordered = {rel: recorded[rel] for rel in TEMPLATE_FILES if rel in recorded}
+    return json.dumps({"createdClaudeDir": created_dir, "files": ordered}, indent=2) + "\n"
+
+
+def template_state(project_dir: Path, name: str) -> str:
+    """'missing', 'template' (unedited zcrew template), 'edited' (created from the
+    template, changed since) or 'user' (not created by zcrew). For CLAUDE.md the
+    commander block is ignored."""
+    project_dir = Path(project_dir)
+    path = project_dir / name
+    if not path.is_file():
+        return "missing"
+    recorded, _ = _read_templates_sidecar(project_dir / TEMPLATES_SIDECAR_REL)
+    if name not in recorded:
+        return "user"
+    data = path.read_bytes()
+    if name == "CLAUDE.md":
+        data = remove_block(data.decode("utf-8")).encode("utf-8")
+    return "template" if _sha256(data) == recorded[name] else "edited"
+
+
+TEMPLATE_STATE_LABELS = {
+    "missing": "none",
+    "template": "from the zcrew template (unedited; disable deletes it)",
+    "edited": "from the zcrew template, edited (disable keeps it)",
+    "user": "yours (not created by zcrew; disable keeps it)",
+}
+
+
+def enable(
+    project_dir: Path,
+    force: bool = False,
+    with_project_config: bool = False,
+    with_templates: bool = False,
+    templates_dir: Path | None = None,
+) -> tuple[bool, str]:
     """Returns (success, message)."""
     project_dir = Path(project_dir)
     if not project_dir.is_dir():
@@ -287,7 +371,24 @@ def enable(project_dir: Path, force: bool = False, with_project_config: bool = F
             f"{project_dir} is not inside a git repository. Commander reviews every worker result "
             "with git diff, so it needs git. Run 'git init' first, or pass --force to enable anyway."
         )
+    templates: dict[str, str] = {}
+    if with_templates:
+        if templates_dir is None:
+            templates_dir = find_templates_dir()
+        if templates_dir is None or not all((Path(templates_dir) / n).is_file() for n in TEMPLATE_FILES):
+            where = templates_dir or f"{HERE.parent / 'templates'} or {HERE / 'templates'}"
+            return False, (
+                f"cannot find the zcrew templates ({', '.join(TEMPLATE_FILES)}) in {where}; "
+                "reinstall zcrew (zcrew update) and retry. Nothing was changed."
+            )
+        templates = {name: _read_template(Path(templates_dir) / name) for name in TEMPLATE_FILES}
+
+    claude_dir_existed = (project_dir / ".claude").exists()
+    templates_sidecar = project_dir / TEMPLATES_SIDECAR_REL
+    recorded, templates_created_dir = _read_templates_sidecar(templates_sidecar)
+    recorded_before = dict(recorded)
     messages: list[str] = []
+    notes: list[str] = []
     claude_md = project_dir / "CLAUDE.md"
     if claude_md.is_file():
         text = _read_text(claude_md)
@@ -298,14 +399,42 @@ def enable(project_dir: Path, force: bool = False, with_project_config: bool = F
         else:
             _write_text(claude_md, add_block(text))
             messages.append(f"enabled: added the commander import block to {claude_md}")
+        if with_templates:
+            if "CLAUDE.md" in recorded:
+                notes.append("CLAUDE.md came from the zcrew template earlier (no change)")
+            else:
+                notes.append("kept your existing CLAUDE.md (template not applied)")
     else:
         claude_dir = project_dir / ".claude"
         created_dir = not claude_dir.exists()
         claude_dir.mkdir(parents=True, exist_ok=True)
         sidecar = project_dir / CREATED_SIDECAR_REL
         _write_text(sidecar, json.dumps({"createdClaudeDir": created_dir}) + "\n")
-        _write_text(claude_md, add_block(""))
-        messages.append(f"enabled: created {claude_md} with the commander import block")
+        if with_templates:
+            base = templates["CLAUDE.md"]
+            _write_text(claude_md, add_block(base))
+            recorded["CLAUDE.md"] = _sha256(base.encode("utf-8"))
+            messages.append(f"enabled: created {claude_md} from the zcrew template with the commander import block")
+        else:
+            _write_text(claude_md, add_block(""))
+            messages.append(f"enabled: created {claude_md} with the commander import block")
+    if with_templates:
+        agents_md = project_dir / "AGENTS.md"
+        if agents_md.is_file():
+            if "AGENTS.md" in recorded and _sha256(agents_md.read_bytes()) == recorded["AGENTS.md"]:
+                notes.append("AGENTS.md came from the zcrew template earlier (no change)")
+            else:
+                notes.append("kept your existing AGENTS.md (template not applied)")
+        else:
+            data = templates["AGENTS.md"].encode("utf-8")
+            agents_md.write_bytes(data)
+            recorded["AGENTS.md"] = _sha256(data)
+            notes.append(f"created {agents_md} from the zcrew template (fill in its 'Project specifics')")
+        if recorded != recorded_before:
+            templates_created_dir = templates_created_dir or not claude_dir_existed
+            templates_sidecar.parent.mkdir(parents=True, exist_ok=True)
+            _write_text(templates_sidecar, _templates_sidecar_text(recorded, templates_created_dir))
+    messages.extend(notes)
     if with_project_config:
         target = project_config_path(project_dir)
         if target.exists():
@@ -323,22 +452,42 @@ def disable(project_dir: Path) -> tuple[bool, str]:
     project_dir = Path(project_dir)
     claude_md = project_dir / "CLAUDE.md"
     sidecar = project_dir / CREATED_SIDECAR_REL
-    if not claude_md.is_file() or _block_span(_read_text(claude_md)) is None:
+    templates_sidecar = project_dir / TEMPLATES_SIDECAR_REL
+    enabled = claude_md.is_file() and _block_span(_read_text(claude_md)) is not None
+    if not enabled and not templates_sidecar.is_file():
         return True, f"not enabled in {project_dir} (no change)"
-    _write_text(claude_md, remove_block(_read_text(claude_md)))
-    messages = [f"disabled: removed the commander import block from {claude_md}"]
-    if sidecar.is_file():
-        try:
-            created_dir = bool(json.loads(_read_text(sidecar)).get("createdClaudeDir"))
-        except (OSError, ValueError, AttributeError):
-            created_dir = False
-        if claude_md.read_bytes() == b"":
-            claude_md.unlink()
-            messages.append(f"deleted {claude_md} (enable had created it and it is now empty)")
-        sidecar.unlink()
-        claude_dir = sidecar.parent
-        if created_dir and claude_dir.is_dir() and not any(claude_dir.iterdir()):
-            claude_dir.rmdir()
+    messages: list[str] = []
+    created_dir = False
+    if enabled:
+        _write_text(claude_md, remove_block(_read_text(claude_md)))
+        messages.append(f"disabled: removed the commander import block from {claude_md}")
+        if sidecar.is_file():
+            try:
+                created_dir = bool(json.loads(_read_text(sidecar)).get("createdClaudeDir"))
+            except (OSError, ValueError, AttributeError):
+                created_dir = False
+            if claude_md.read_bytes() == b"":
+                claude_md.unlink()
+                messages.append(f"deleted {claude_md} (enable had created it and it is now empty)")
+            sidecar.unlink()
+    else:
+        messages.append(f"not enabled in {project_dir} (no import block to remove)")
+    if templates_sidecar.is_file():
+        recorded, templates_created_dir = _read_templates_sidecar(templates_sidecar)
+        created_dir = created_dir or templates_created_dir
+        for rel, digest in recorded.items():
+            path = project_dir / rel
+            if not path.is_file():
+                continue
+            if _sha256(path.read_bytes()) == digest:
+                path.unlink()
+                messages.append(f"deleted {path} (created from the zcrew template, unedited)")
+            else:
+                messages.append(f"kept {rel} (you edited it)")
+        templates_sidecar.unlink()
+    claude_dir = sidecar.parent
+    if created_dir and claude_dir.is_dir() and not any(claude_dir.iterdir()):
+        claude_dir.rmdir()
     return True, "\n".join(messages)
 
 
@@ -372,6 +521,10 @@ def main(
     p_enable.add_argument("dir", nargs="?", default=".")
     p_enable.add_argument("--force", action="store_true", help="enable even if DIR is not a git repository")
     p_enable.add_argument("--with-project-config", action="store_true", help="also create .claude/zcode-commander.json")
+    p_enable.add_argument(
+        "--with-templates", action="store_true",
+        help="also create CLAUDE.md and AGENTS.md from the zcrew templates when the project has none",
+    )
     p_disable = sub.add_parser("disable", help="remove the commander import block from DIR/CLAUDE.md")
     p_disable.add_argument("dir", nargs="?", default=".")
     p_status = sub.add_parser("status", help="show whether DIR is enabled and its effective config")
@@ -380,7 +533,10 @@ def main(
 
     try:
         if args.command == "enable":
-            ok, message = enable(Path(args.dir), force=args.force, with_project_config=args.with_project_config)
+            ok, message = enable(
+                Path(args.dir), force=args.force, with_project_config=args.with_project_config,
+                with_templates=args.with_templates,
+            )
             print(message)
             return 0 if ok else 1
         if args.command == "disable":
@@ -388,7 +544,7 @@ def main(
             print(message)
             return 0 if ok else 1
     except UnicodeDecodeError:
-        print("CLAUDE.md is not UTF-8 text; convert it to UTF-8 and retry (nothing was changed)")
+        print("CLAUDE.md or a zcrew template is not UTF-8 text; convert it to UTF-8 and retry (nothing was changed)")
         return 1
 
     user_path = user_config_path(home)
@@ -401,6 +557,14 @@ def main(
         project_dir = Path(args.dir)
         print(f"project: {project_dir.resolve()}")
         print(f"enabled: {'yes' if is_enabled(project_dir) else 'no'}")
+        for name in TEMPLATE_FILES:
+            try:
+                state = template_state(project_dir, name)
+            except UnicodeDecodeError:
+                state = "user"
+            if name == "CLAUDE.md" and state in ("missing", "user"):
+                continue
+            print(f"{name}: {TEMPLATE_STATE_LABELS[state]}")
         if find_git_root(project_dir) is None:
             print("warning: not a git repository; commander review needs git diff")
     project_path = project_config_path(project_dir) if project_dir is not None else None

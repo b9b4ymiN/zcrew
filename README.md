@@ -10,7 +10,7 @@ You work with one assistant, Claude Code. It hands implementation to ZCode worke
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)](#tech-stack)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-MCP-D97757)](https://docs.anthropic.com/en/docs/claude-code)
 [![ZCode](https://img.shields.io/badge/ZCode-3.14.0%20tested-6E56CF)](#compatibility)
-[![Tests](https://img.shields.io/badge/tests-166%20passing-2EA44F)](#development)
+[![Tests](https://img.shields.io/badge/tests-185%20passing-2EA44F)](#development)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
 [Quick start](#quick-start) · [How it works](#how-it-works) · [Configuration](#configuration) · [Troubleshooting](#troubleshooting) · [ภาษาไทย](docs/README.th.md)
@@ -130,12 +130,13 @@ Claude reviews the result against that same contract. The full behaviour is defi
 | Compatibility layer | `bridge_compat.py`: a runtime shim that adapts the bridge to ZCode 3.12+ (account-provider snapshot, runtime auth headers, reasoning level) |
 | Executor | ZCode Desktop app-server (Electron/Node, headless), running GLM-5.3 on the Z.ai Coding Plan |
 | Isolation | `git worktree` per parallel worker, with cross-process resource leases in the bridge |
-| Tooling | PowerShell installer (5.1/7 compatible), Python 3.10+ standard-library CLI (`zcrew`), `unittest` (166 tests) |
+| Tooling | PowerShell installer (5.1/7 compatible), Python 3.10+ standard-library CLI (`zcrew`), `unittest` (185 tests) |
 
 ## Usage
 
 ```text
-zcrew enable [DIR] [--with-project-config] [--force]   activate the policy for a repo (default: current dir)
+zcrew enable [DIR] [--with-templates] [--with-project-config] [--force]
+                                                       activate the policy for a repo (default: current dir)
 zcrew disable [DIR]                                    remove it; CLAUDE.md is restored byte for byte
 zcrew status [DIR]                                     enabled? which config? is it valid?
 zcrew config [--project DIR]                           print and validate the effective config
@@ -152,6 +153,26 @@ Useful phrases in chat:
 - `switch the default model to …` makes Claude edit your config and validate it.
 
 **Watching the crew:** Claude posts short progress lines while it works. To read a worker's full conversation, open the ZCode app: runs are listed under the project. Restart the app to refresh the list, because live view inside the app isn't possible.
+
+## Project instruction files
+
+Each role reads its own file, so every agent gets only the instructions meant for it:
+
+| File | Read by | Put here |
+|---|---|---|
+| `CLAUDE.md` | **Claude Code** (commander) | What the project is, its architecture and boundaries, the **VERIFY commands** (test/typecheck/lint/build), what never changes without asking, and the zcrew import block |
+| `AGENTS.md` | **ZCode** (workers). ZCode loads it automatically from the working directory and its parents | Standing worker rules (no git commits, stay in SCOPE, never weaken tests, no secrets), the **report format**, and project commands and style |
+
+Start from the templates:
+
+```powershell
+zcrew enable --with-templates
+```
+
+- Creates `CLAUDE.md` and `AGENTS.md` from [`templates/`](templates/). A file that already exists is never overwritten.
+- Fill in the `<...>` placeholders, then **commit `AGENTS.md`**. Parallel workers run in `git worktree`s and only see committed files.
+- `zcrew disable` deletes a template file only if you never edited it. Edited files are kept.
+- `zcrew status` shows whether `AGENTS.md` is still the unedited template.
 
 ## Configuration
 
@@ -235,6 +256,7 @@ scripts/zcode_bridge_launcher.py   finds ZCode, sets env, starts the shim
 scripts/bridge_compat.py    ZCode 3.12+ compatibility shim for coder-mcp-bridge
 scripts/commander.py        enable/disable/status/config
 scripts/doctor.py           readiness checks
+templates/                  CLAUDE.md + AGENTS.md starters for projects
 policy/COMMANDER.md         the commander policy Claude follows
 SPEC-RFD.md                 design rationale, decisions, validation results
 ```

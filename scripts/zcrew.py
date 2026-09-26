@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """zcrew - command line front end for the Claude Commander -> ZCode kit.
 
-    zcrew enable  [DIR] [--force] [--with-project-config]
+    zcrew enable  [DIR] [--force] [--with-project-config] [--with-templates]
     zcrew disable [DIR]
     zcrew status  [DIR]
     zcrew config  [--project DIR]
@@ -261,6 +261,7 @@ def cmd_commander(args: argparse.Namespace) -> int:
     if args.command == "enable":
         argv += ["--force"] if args.force else []
         argv += ["--with-project-config"] if args.with_project_config else []
+        argv += ["--with-templates"] if args.with_templates else []
     return int(_load_sibling("commander").main(argv))
 
 
@@ -387,7 +388,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=PROG,
         description="Let Claude Code command ZCode workers (GLM Coding Plan) as a crew.",
-        epilog="Typical use: cd your-project; zcrew enable; then open a new Claude Code session there.",
+        epilog=(
+            "Typical use: cd your-project; zcrew enable (or zcrew enable --with-templates for starter "
+            "CLAUDE.md/AGENTS.md); then open a new Claude Code session there."
+        ),
     )
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
     sub.required = True
@@ -396,9 +400,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("dir", nargs="?", default=None, metavar="DIR")
     p.add_argument("--force", action="store_true", help="enable even if DIR is not a git repository")
     p.add_argument("--with-project-config", action="store_true", help="also create .claude/zcode-commander.json")
-    p = sub.add_parser("disable", help="turn the commander policy off for a project")
+    p.add_argument(
+        "--with-templates", action="store_true",
+        help="also create starter CLAUDE.md and AGENTS.md from the zcrew templates (existing files are kept)",
+    )
+    p = sub.add_parser("disable", help="turn the commander policy off (and remove unedited template files)")
     p.add_argument("dir", nargs="?", default=None, metavar="DIR")
-    p = sub.add_parser("status", help="show whether a project is enabled and its effective config")
+    p = sub.add_parser("status", help="show whether a project is enabled, its AGENTS.md and its effective config")
     p.add_argument("dir", nargs="?", default=None, metavar="DIR")
     p = sub.add_parser("config", help="print and validate the effective config")
     p.add_argument("--project", default=None, metavar="DIR", help="include DIR/.claude/zcode-commander.json")

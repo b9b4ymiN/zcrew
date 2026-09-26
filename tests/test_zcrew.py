@@ -231,12 +231,12 @@ class DispatchTests(TempDir):
     def test_commander_dispatch_defaults_to_cwd(self) -> None:
         fake = SimpleNamespace(main=mock.Mock(return_value=0))
         with mock.patch.object(zcrew, "_load_sibling", return_value=fake):
-            zcrew.main(["enable", "--force", "--with-project-config"], env={}, run=FakeRun(), paths=self.make_layout())
+            zcrew.main(["enable", "--force", "--with-project-config", "--with-templates"], env={}, run=FakeRun(), paths=self.make_layout())
             zcrew.main(["status", "X"], env={}, run=FakeRun(), paths=self.make_layout())
             zcrew.main(["config", "--project", "P"], env={}, run=FakeRun(), paths=self.make_layout())
             zcrew.main(["config"], env={}, run=FakeRun(), paths=self.make_layout())
         calls = [c.args[0] for c in fake.main.call_args_list]
-        self.assertEqual(calls[0], ["enable", os.getcwd(), "--force", "--with-project-config"])
+        self.assertEqual(calls[0], ["enable", os.getcwd(), "--force", "--with-project-config", "--with-templates"])
         self.assertEqual(calls[1], ["status", "X"])
         self.assertEqual(calls[2], ["config", "--project", "P"])
         self.assertEqual(calls[3], ["config"])
@@ -370,6 +370,17 @@ class EnableDisableIntegrationTests(TempDir):
         self.assertFalse(claude_md.exists())
         self.assertFalse((project / ".claude").exists())
         self.assertEqual(run.calls, [])
+
+    def test_enable_with_templates_round_trip(self) -> None:
+        project = self.base / "proj3"
+        (project / ".git").mkdir(parents=True)
+        code, out = _quiet(zcrew.main, ["enable", str(project), "--with-templates"], env={}, run=FakeRun())
+        self.assertEqual(code, 0, out)
+        self.assertTrue((project / "AGENTS.md").is_file())
+        self.assertTrue((project / "CLAUDE.md").is_file())
+        code, out = _quiet(zcrew.main, ["disable", str(project)], env={}, run=FakeRun())
+        self.assertEqual(code, 0, out)
+        self.assertEqual([p.name for p in project.iterdir()], [".git"])
 
     def test_enable_defaults_to_cwd(self) -> None:
         project = self.base / "proj2"

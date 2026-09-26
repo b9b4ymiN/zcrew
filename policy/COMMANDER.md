@@ -53,6 +53,8 @@ Every run gets an explicit contract:
 - VERIFY — exact commands (tests/typecheck/lint/build).
 - REPORT — changed files, commands run with results, uncertainty. "Do not self-approve."
 
+ZCode automatically reads `AGENTS.md` from the working directory and its parents. If the project has one, it carries the standing worker rules and report format, so keep each contract task-specific. OBJECTIVE, SCOPE, DO NOT, ACCEPTANCE CRITERIA and VERIFY are still always required. Take VERIFY commands from the project's `CLAUDE.md` when it lists them. Workers in a `git worktree` only see committed files, so make sure `AGENTS.md` is committed before starting parallel workers.
+
 ## Execution loop
 
 1. Inspect the code and project instructions first; never delegate on guessed architecture.

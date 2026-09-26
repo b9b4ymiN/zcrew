@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import ModuleType
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = ROOT / "scripts"
@@ -330,6 +331,194 @@ class EnableDisableTests(TempDir):
         self.assertFalse((self.proj / commander.PROJECT_CONFIG_REL).exists())
 
 
+class TemplateTests(TempDir):
+    CLAUDE_TMPL = "# Template CLAUDE\n\nproject rules here\n"
+    AGENTS_TMPL = "# Template AGENTS\n\nworker rules here\n"
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.proj = self.base / "proj"
+        (self.proj / ".git").mkdir(parents=True)
+        self.tmpl = self.base / "tmpl"
+        self.tmpl.mkdir()
+        (self.tmpl / "CLAUDE.md").write_bytes(self.CLAUDE_TMPL.encode("utf-8"))
+        (self.tmpl / "AGENTS.md").write_bytes(self.AGENTS_TMPL.encode("utf-8"))
+        self.claude_md = self.proj / "CLAUDE.md"
+        self.agents_md = self.proj / "AGENTS.md"
+
+    def enable(self, **kwargs: object) -> tuple[bool, str]:
+        return commander.enable(self.proj, with_templates=True, templates_dir=self.tmpl, **kwargs)
+
+    def snapshot(self) -> dict[str, bytes | None]:
+        return {
+            str(p.relative_to(self.proj)): (p.read_bytes() if p.is_file() else None)
+            for p in sorted(self.proj.rglob("*"))
+        }
+
+    def test_creates_both_files_from_templates(self) -> None:
+        ok, msg = self.enable()
+        self.assertTrue(ok, msg)
+        self.assertEqual(self.claude_md.read_bytes(), commander.add_block(self.CLAUDE_TMPL).encode("utf-8"))
+        self.assertEqual(self.agents_md.read_bytes(), self.AGENTS_TMPL.encode("utf-8"))
+        self.assertTrue(commander.is_enabled(self.proj))
+        sidecar = json.loads((self.proj / commander.TEMPLATES_SIDECAR_REL).read_text(encoding="utf-8"))
+        self.assertEqual(sorted(sidecar["files"]), ["AGENTS.md", "CLAUDE.md"])
+        self.assertTrue(sidecar["createdClaudeDir"])
+        self.assertIn("from the zcrew template", msg)
+        self.assertIn("restart Claude Code", msg)
+        self.assertEqual(commander.template_state(self.proj, "AGENTS.md"), "template")
+        self.assertEqual(commander.template_state(self.proj, "CLAUDE.md"), "template")
+
+    def test_crlf_template_checkout_written_as_lf(self) -> None:
+        (self.tmpl / "AGENTS.md").write_bytes(b"a\r\nb\r\n")
+        self.enable()
+        self.assertEqual(self.agents_md.read_bytes(), b"a\nb\n")
+
+    def test_existing_files_untouched(self) -> None:
+        claude = b"# Mine\r\n\r\nrules\r\n"
+        agents = b"my agents\n"
+        self.claude_md.write_bytes(claude)
+        self.agents_md.write_bytes(agents)
+        ok, msg = self.enable()
+        self.assertTrue(ok)
+        self.assertIn("kept your existing CLAUDE.md (template not applied)", msg)
+        self.assertIn("kept your existing AGENTS.md", msg)
+        self.assertEqual(self.agents_md.read_bytes(), agents)
+        self.assertEqual(self.claude_md.read_bytes(), commander.add_block(claude.decode()).encode())
+        self.assertIn(b"<!-- zcode-commander:end -->\r\n", self.claude_md.read_bytes())
+        self.assertFalse((self.proj / commander.TEMPLATES_SIDECAR_REL).exists())
+        self.assertFalse((self.proj / ".claude").exists())
+        commander.disable(self.proj)
+        self.assertEqual(self.claude_md.read_bytes(), claude)
+        self.assertEqual(self.agents_md.read_bytes(), agents)
+
+    def test_existing_claude_md_only_agents_created_and_removed(self) -> None:
+        self.claude_md.write_bytes(b"x\n")
+        before = self.snapshot()
+        self.enable()
+        self.assertTrue(self.agents_md.is_file())
+        self.assertEqual(commander.template_state(self.proj, "AGENTS.md"), "template")
+        commander.disable(self.proj)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_idempotent(self) -> None:
+        self.enable()
+        first = self.snapshot()
+        ok, msg = self.enable()
+        self.assertTrue(ok)
+        self.assertEqual(self.snapshot(), first)
+        self.assertIn("already enabled", msg)
+        self.assertIn("came from the zcrew template earlier", msg)
+        self.assertNotIn("restart", msg)
+
+    def test_round_trip_leaves_only_git(self) -> None:
+        before = self.snapshot()
+        self.enable()
+        ok, msg = commander.disable(self.proj)
+        self.assertTrue(ok)
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual([p.name for p in self.proj.iterdir()], [".git"])
+        self.assertIn("deleted", msg)
+
+    def test_existing_claude_dir_kept_on_round_trip(self) -> None:
+        (self.proj / ".claude").mkdir()
+        self.enable()
+        commander.disable(self.proj)
+        self.assertTrue((self.proj / ".claude").is_dir())
+        self.assertEqual(list((self.proj / ".claude").iterdir()), [])
+
+    def test_disable_keeps_edited_agents_md(self) -> None:
+        self.enable()
+        self.agents_md.write_bytes(self.agents_md.read_bytes() + b"- Test: pytest\n")
+        self.assertEqual(commander.template_state(self.proj, "AGENTS.md"), "edited")
+        ok, msg = commander.disable(self.proj)
+        self.assertTrue(ok)
+        self.assertIn("kept AGENTS.md (you edited it)", msg)
+        self.assertTrue(self.agents_md.is_file())
+        self.assertFalse(self.claude_md.exists())
+        self.assertFalse((self.proj / ".claude").exists())
+
+    def test_disable_keeps_edited_claude_md(self) -> None:
+        self.enable()
+        edited = self.claude_md.read_bytes().replace(b"project rules here", b"my real rules")
+        self.claude_md.write_bytes(edited)
+        self.assertEqual(commander.template_state(self.proj, "CLAUDE.md"), "edited")
+        ok, msg = commander.disable(self.proj)
+        self.assertIn("kept CLAUDE.md (you edited it)", msg)
+        self.assertEqual(self.claude_md.read_bytes(), b"# Template CLAUDE\n\nmy real rules\n")
+        self.assertFalse(self.agents_md.exists())
+        self.assertFalse((self.proj / commander.TEMPLATES_SIDECAR_REL).exists())
+        self.assertFalse((self.proj / commander.CREATED_SIDECAR_REL).exists())
+        self.assertFalse((self.proj / ".claude").exists())
+
+    def test_disable_cleans_templates_even_without_block(self) -> None:
+        self.claude_md.write_bytes(b"x\n")
+        self.enable()
+        self.claude_md.write_bytes(b"x\n")  # user removed the block by hand
+        ok, msg = commander.disable(self.proj)
+        self.assertTrue(ok)
+        self.assertIn("no import block", msg)
+        self.assertFalse(self.agents_md.exists())
+        self.assertFalse((self.proj / ".claude").exists())
+
+    def test_sidecar_with_foreign_paths_never_deletes_them(self) -> None:
+        self.claude_md.write_bytes(b"x\n")
+        self.enable()
+        other = self.proj / "keep.txt"
+        other.write_bytes(b"k")
+        sidecar = self.proj / commander.TEMPLATES_SIDECAR_REL
+        data = json.loads(sidecar.read_text(encoding="utf-8"))
+        data["files"]["keep.txt"] = commander._sha256(b"k")
+        sidecar.write_text(json.dumps(data), encoding="utf-8")
+        commander.disable(self.proj)
+        self.assertTrue(other.is_file())
+
+    def test_template_resolution_repo_layout(self) -> None:
+        root = self.base / "src"
+        (root / "scripts").mkdir(parents=True)
+        (root / "templates").mkdir()
+        for name in commander.TEMPLATE_FILES:
+            (root / "templates" / name).write_text("t", encoding="utf-8")
+        self.assertEqual(commander.find_templates_dir(root / "scripts"), root / "templates")
+
+    def test_template_resolution_installed_layout(self) -> None:
+        install = self.base / ".zcode-commander"
+        (install / "templates").mkdir(parents=True)
+        for name in commander.TEMPLATE_FILES:
+            (install / "templates" / name).write_text("t", encoding="utf-8")
+        self.assertEqual(commander.find_templates_dir(install), install / "templates")
+
+    def test_template_resolution_prefers_parent_and_requires_all_files(self) -> None:
+        install = self.base / "inst" / "scripts"
+        (install / "templates").mkdir(parents=True)
+        (self.base / "inst" / "templates").mkdir()
+        (self.base / "inst" / "templates" / "CLAUDE.md").write_text("t", encoding="utf-8")  # incomplete
+        for name in commander.TEMPLATE_FILES:
+            (install / "templates" / name).write_text("t", encoding="utf-8")
+        self.assertEqual(commander.find_templates_dir(install), install / "templates")
+        self.assertIsNone(commander.find_templates_dir(self.base / "nowhere"))
+
+    def test_repo_templates_are_found(self) -> None:
+        self.assertEqual(commander.find_templates_dir(SCRIPTS), ROOT / "templates")
+
+    def test_missing_templates_error_changes_nothing(self) -> None:
+        before = self.snapshot()
+        ok, msg = commander.enable(self.proj, with_templates=True, templates_dir=self.base / "missing")
+        self.assertFalse(ok)
+        self.assertIn("cannot find the zcrew templates", msg)
+        self.assertEqual(self.snapshot(), before)
+        with mock.patch.object(commander, "find_templates_dir", return_value=None):
+            ok, msg = commander.enable(self.proj, with_templates=True)
+        self.assertFalse(ok)
+        self.assertIn("Nothing was changed", msg)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_without_templates_unchanged(self) -> None:
+        commander.enable(self.proj)
+        self.assertFalse(self.agents_md.exists())
+        self.assertFalse((self.proj / commander.TEMPLATES_SIDECAR_REL).exists())
+
+
 class CliTests(TempDir):
     def setUp(self) -> None:
         super().setUp()
@@ -381,6 +570,25 @@ class CliTests(TempDir):
         code, out = self.run_cli("disable", str(self.proj))
         self.assertEqual(code, 0)
         self.assertFalse((self.proj / "CLAUDE.md").exists())
+
+    def test_cli_with_templates_and_status(self) -> None:
+        code, out = self.run_cli("status", str(self.proj))
+        self.assertIn("AGENTS.md: none", out)
+        self.assertNotIn("CLAUDE.md:", out)
+        code, out = self.run_cli("enable", str(self.proj), "--with-templates")
+        self.assertEqual(code, 0, out)
+        self.assertEqual((self.proj / "AGENTS.md").read_bytes(),
+                         commander._read_template(ROOT / "templates" / "AGENTS.md").encode("utf-8"))
+        code, out = self.run_cli("status", str(self.proj))
+        self.assertIn("AGENTS.md: from the zcrew template (unedited", out)
+        self.assertIn("CLAUDE.md: from the zcrew template (unedited", out)
+        (self.proj / "AGENTS.md").write_bytes(b"changed\n")
+        code, out = self.run_cli("status", str(self.proj))
+        self.assertIn("AGENTS.md: from the zcrew template, edited", out)
+        code, out = self.run_cli("disable", str(self.proj))
+        self.assertIn("kept AGENTS.md (you edited it)", out)
+        code, out = self.run_cli("status", str(self.proj))
+        self.assertIn("AGENTS.md: yours", out)
 
     def test_enable_non_git_exit_code(self) -> None:
         plain = self.base / "plain"

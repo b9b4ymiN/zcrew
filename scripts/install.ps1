@@ -60,6 +60,13 @@ Copy-Item -Force (Join-Path $PSScriptRoot 'doctor.py') $DoctorTarget
 Copy-Item -Force (Join-Path $PSScriptRoot 'bridge_compat.py') (Join-Path $InstallRoot 'bridge_compat.py')
 Copy-Item -Force (Join-Path $PSScriptRoot 'commander.py') (Join-Path $InstallRoot 'commander.py')
 
+# Starter CLAUDE.md / AGENTS.md for 'enable --with-templates'. The folder is
+# replaced on every install so removed templates do not linger.
+$TemplatesTarget = Join-Path $InstallRoot 'templates'
+if (Test-Path -LiteralPath $TemplatesTarget) { Remove-Item -LiteralPath $TemplatesTarget -Recurse -Force }
+New-Item -ItemType Directory -Force -Path $TemplatesTarget | Out-Null
+Copy-Item -Force -Recurse (Join-Path $KitRoot 'templates\*') $TemplatesTarget
+
 # The user config is seeded once and never overwritten on reinstall.
 $UserConfig = Join-Path $InstallRoot 'config.json'
 if (-not (Test-Path -LiteralPath $UserConfig)) {

@@ -1,4 +1,4 @@
-# zcrew — คู่มือภาษาไทย (v0.3.0)
+# zcrew — คู่มือภาษาไทย (v0.4.0)
 
 > English: [README.md](../README.md)
 
@@ -146,10 +146,29 @@ zcrew disable       # ปิดใช้ (CLAUDE.md กลับเป็นเ�
 ```
 
 ตัวเลือกเพิ่มเติม:
+- `--with-templates`: สร้าง `CLAUDE.md` + `AGENTS.md` ตัวอย่างให้ (ดูหัวข้อถัดไป)
 - `--with-project-config`: สร้าง `.claude/zcode-commander.json` ให้ project นี้ใช้ model/ค่าต่างจากค่ากลาง
 - `--force`: เปิดใช้แม้โฟลเดอร์ไม่ใช่ git repo (ไม่แนะนำ)
 
 หลัง enable ให้เปิด **session ใหม่** ของ Claude Code ใน project นั้น
+
+### ไฟล์คำสั่งของ project: ไฟล์ไหน ใครอ่าน
+
+| ไฟล์ | ใครอ่าน | ควรใส่อะไร |
+|---|---|---|
+| `CLAUDE.md` | **Claude** (หัวหน้า) | project นี้คืออะไร, สถาปัตยกรรม, สิ่งที่ห้ามแตะ, **คำสั่ง VERIFY** (test/typecheck/lint/build), บล็อก zcrew |
+| `AGENTS.md` | **ZCode** (ช่าง) อ่านเองอัตโนมัติจากโฟลเดอร์งานและโฟลเดอร์แม่ | กฎของช่าง (ห้าม commit, ห้ามแก้นอก SCOPE, ห้ามลด test, ห้ามแตะ secret), **รูปแบบรายงาน**, คำสั่งและ style ของ project |
+
+เริ่มจากไฟล์ตัวอย่าง:
+
+```powershell
+zcrew enable --with-templates
+```
+
+- สร้าง `CLAUDE.md` และ `AGENTS.md` จากโฟลเดอร์ `templates/` ถ้ามีไฟล์ชื่อนั้นอยู่แล้ว จะไม่เขียนทับ
+- เติมช่อง `<...>` ให้ครบ แล้ว **commit `AGENTS.md`** เพราะช่างที่ทำงานขนานกันใน worktree จะเห็นเฉพาะไฟล์ที่ commit แล้ว
+- `zcrew disable` จะลบไฟล์ตัวอย่างที่ zcrew สร้างให้ก็ต่อเมื่อคุณยังไม่ได้แก้ไฟล์นั้นเลย ถ้าแก้แล้วจะเก็บไว้ให้
+- `zcrew status` บอกได้ว่า `AGENTS.md` ยังเป็นไฟล์ตัวอย่างเดิมอยู่หรือถูกแก้แล้ว
 
 ---
 
@@ -313,6 +332,7 @@ zcrew/
 ├─ manifest.json           ← เวอร์ชัน, ZCode ที่ทดสอบแล้ว, bridge commit ที่ pin ไว้
 ├─ config/default-config.json
 ├─ policy/COMMANDER.md     ← คำสั่งที่ Claude อ่าน (หัวใจของระบบ)
+├─ templates/              ← CLAUDE.md + AGENTS.md ตัวอย่างสำหรับ project
 ├─ examples/worker-contract.md
 ├─ scripts/
 │  ├─ zcrew.py                    ← คำสั่ง zcrew

@@ -2,6 +2,22 @@
 
 All notable changes to the Claude Commander × ZCode Executor Kit are recorded here.
 
+## 0.4.0 — 2026-09-26
+
+### Added
+
+- Project instruction templates in `templates/`:
+  - `CLAUDE.md` is for the commander. It covers architecture, boundaries and VERIFY commands, plus the zcrew block.
+  - `AGENTS.md` is for the ZCode workers. It covers the worker rules and the report format, and ZCode loads it automatically from the working directory and its parents.
+- `zcrew enable --with-templates` creates the missing files from those templates and never overwrites existing ones.
+  - `disable` deletes a template file only if it is unedited, which it checks with a sha256 stored in a sidecar file.
+  - `status` shows the template state.
+- The installer copies the templates to `~/.zcode-commander/templates`.
+
+### Changed
+
+- The policy tells Claude to keep contracts task-specific when the project has an `AGENTS.md`. It also says to take VERIFY commands from the project `CLAUDE.md`, and to commit `AGENTS.md` before starting parallel worktrees.
+
 ## 0.3.0 — 2026-09-26
 
 Public release as **zcrew**.

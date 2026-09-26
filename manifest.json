@@ -1,6 +1,6 @@
 {
   "name": "zcrew",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "target": "Windows + Claude Code + ZCode Desktop",
   "tested_zcode_versions": [
     "3.14.0"
