@@ -249,6 +249,11 @@ def describe_desktop_providers(path: Path) -> str:
 
 
 def main() -> int:
+    # Tool output (e.g. Claude's check mark) may not fit a non-UTF-8 pipe; never
+    # let printing a detail turn a passing check into a failure.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
     ok = True
     ok &= check("python", bool(sys.executable), sys.executable)
     ok &= check("git", shutil.which("git") is not None, shutil.which("git") or "not found")
@@ -287,6 +292,8 @@ def main() -> int:
                 [sys.executable, str(BRIDGE / "server.py"), "--probe"],
                 env=env,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 timeout=30,
@@ -304,6 +311,8 @@ def main() -> int:
             cp = subprocess.run(
                 argv,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 timeout=20,
