@@ -126,6 +126,9 @@ def build_env(base_env: Mapping[str, str], bundle: Path, runtime: Path) -> dict[
     env.setdefault("AGENT_MCP_MAX_CONCURRENCY", DEFAULT_MAX_CONCURRENCY)
     env["ZCODE_BINARY"] = str(runtime)
     env["ZCODE_CLI_BUNDLE"] = str(bundle)
+    # Upstream discovery requires an app root before it honours the explicit
+    # binary/bundle paths: <install>/resources/glm/zcode.cjs -> <install>.
+    env.setdefault("ZCODE_APP_PATH", str(bundle.parent.parent.parent))
     env.setdefault("PYTHONUTF8", "1")
     env.setdefault("PYTHONIOENCODING", "utf-8")
     return env

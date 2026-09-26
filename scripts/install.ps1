@@ -3,7 +3,8 @@ param(
     [ValidateSet('user','local','project')]
     [string]$Scope = 'user',
     [switch]$EnsureZCodeCliConfig,
-    [switch]$ForceBridgeUpdate
+    [switch]$ForceBridgeUpdate,
+    [string]$BridgeRef = '23ecf0a5f3be1916bb856e56fac5d313e07a05c4'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -12,7 +13,6 @@ $InstallRoot = Join-Path $HOME '.zcode-commander'
 $BridgeRoot = Join-Path $InstallRoot 'coder-mcp-bridge'
 $PolicyDir = Join-Path $HOME '.claude\zcode-commander'
 $PolicyTarget = Join-Path $PolicyDir 'COMMANDER.md'
-$ClaudeMemory = Join-Path $HOME '.claude\CLAUDE.md'
 $LauncherTarget = Join-Path $InstallRoot 'zcode_bridge_launcher.py'
 $DoctorTarget = Join-Path $InstallRoot 'doctor.py'
 
@@ -22,6 +22,11 @@ function Require-Command([string]$Name) {
     return $cmd.Source
 }
 
+function Invoke-Checked([string]$What, [scriptblock]$Block) {
+    & $Block
+    if ($LASTEXITCODE -ne 0) { throw "$What failed (exit $LASTEXITCODE)." }
+}
+
 Write-Host '=== Claude Commander -> ZCode Executor setup ==='
 $git = Require-Command 'git'
 $python = Require-Command 'python'
@@ -29,53 +34,51 @@ $claude = Require-Command 'claude'
 
 New-Item -ItemType Directory -Force -Path $InstallRoot | Out-Null
 New-Item -ItemType Directory -Force -Path $PolicyDir | Out-Null
-New-Item -ItemType Directory -Force -Path (Split-Path -Parent $ClaudeMemory) | Out-Null
 
 if (-not (Test-Path (Join-Path $BridgeRoot '.git'))) {
     Write-Host "Cloning coder-mcp-bridge -> $BridgeRoot"
-    & git clone https://github.com/Deslord319/coder-mcp-bridge.git $BridgeRoot
+    Invoke-Checked 'git clone' { & $git clone --quiet https://github.com/Deslord319/coder-mcp-bridge.git $BridgeRoot }
+    Invoke-Checked 'git checkout' { & $git -C $BridgeRoot checkout --quiet $BridgeRef }
 } elseif ($ForceBridgeUpdate) {
-    Write-Host 'Updating coder-mcp-bridge...'
-    & git -C $BridgeRoot pull --ff-only
+    Write-Host "Updating coder-mcp-bridge to $BridgeRef..."
+    Invoke-Checked 'git fetch' { & $git -C $BridgeRoot fetch --quiet origin }
+    Invoke-Checked 'git checkout' { & $git -C $BridgeRoot checkout --quiet $BridgeRef }
 } else {
     Write-Host 'coder-mcp-bridge already installed; leaving pinned working tree unchanged.'
 }
 
+# The policy is copied only. It is activated per project (see README), never
+# imported into the user-global ~/.claude/CLAUDE.md.
 Copy-Item -Force (Join-Path $KitRoot 'policy\COMMANDER.md') $PolicyTarget
 Copy-Item -Force (Join-Path $PSScriptRoot 'zcode_bridge_launcher.py') $LauncherTarget
 Copy-Item -Force (Join-Path $PSScriptRoot 'doctor.py') $DoctorTarget
 
-$ImportLine = '@~/.claude/zcode-commander/COMMANDER.md'
-if (-not (Test-Path $ClaudeMemory)) {
-    Set-Content -Encoding UTF8 -Path $ClaudeMemory -Value "# User instructions`r`n`r`n$ImportLine`r`n"
-} else {
-    $memoryText = Get-Content -Raw -Path $ClaudeMemory
-    if ($memoryText -notmatch [regex]::Escape($ImportLine)) {
-        Add-Content -Encoding UTF8 -Path $ClaudeMemory -Value "`r`n# ZCode executor commander policy`r`n$ImportLine`r`n"
-    }
-}
-
-# Optional provider/config bootstrap. This may copy the locally configured
-# provider/API-key material from ZCode Desktop into ~/.zcode/cli/config.json.
+# Optional provider/config bootstrap. This copies the locally configured
+# provider/API-key material from ZCode Desktop into ~/.zcode/cli/config.json
+# (the bridge keeps a .bak of the previous file).
 if ($EnsureZCodeCliConfig) {
     Write-Host 'Bootstrapping ZCode CLI config from local ZCode Desktop config...'
-    $env:ZCODE_CLI_BUNDLE = Join-Path $env:LOCALAPPDATA 'Programs\ZCode\resources\glm\zcode.cjs'
-    $env:ZCODE_BINARY = Join-Path $env:LOCALAPPDATA 'Programs\ZCode\ZCode.exe'
-    & $python (Join-Path $BridgeRoot 'server.py') --ensure-config
+    $env:PYTHONUTF8 = '1'
+    Invoke-Checked 'ensure-config' { & $python (Join-Path $BridgeRoot 'server.py') --ensure-config }
 }
 
-# Re-register idempotently. Remove only our own named server.
-& claude mcp remove zcode_executor 2>$null | Out-Null
+# Re-register idempotently. Remove only our own named server. Windows
+# PowerShell 5.1 turns redirected native stderr into a terminating error under
+# 'Stop', and "No MCP server named ..." on a first install is expected.
+$previousPreference = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+try {
+    & $claude mcp remove zcode_executor --scope $Scope 2>&1 | Out-Null
+} finally {
+    $ErrorActionPreference = $previousPreference
+}
 
 Write-Host "Registering Claude MCP server 'zcode_executor' (scope=$Scope)..."
-& $claude mcp add zcode_executor --scope $Scope -- `
-    $python $LauncherTarget
+Invoke-Checked 'claude mcp add' { & $claude mcp add zcode_executor --scope $Scope -- $python $LauncherTarget }
 
 Write-Host ''
 Write-Host 'Running zero-model-cost doctor...'
 & $python $DoctorTarget
 
 Write-Host ''
-Write-Host 'Setup complete. Restart Claude Code, then ask naturally, e.g.:'
-Write-Host '  > Implement the agreed plan and verify it end-to-end.'
-Write-Host 'Claude should delegate implementation to ZCode automatically; no /zcode step is required.'
+Write-Host 'Setup complete. Restart Claude Code, then enable the commander policy per project.'

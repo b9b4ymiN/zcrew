@@ -35,6 +35,18 @@ def report(result: CheckResult) -> bool:
     return check(result.name, result.ok, result.detail)
 
 
+def check_probe_output(stdout: str, stderr: str, returncode: int) -> CheckResult:
+    try:
+        payload = json.loads(stdout)
+        zcode = payload["availableBackends"]["zcode"]
+    except (ValueError, KeyError, TypeError):
+        detail = (stderr.strip() or stdout.strip() or f"exit {returncode}")[:600]
+        return CheckResult("bridge probe", False, detail)
+    if zcode.get("available") is True:
+        return CheckResult("bridge probe", returncode == 0, f"zcode backend available (exit {returncode})")
+    return CheckResult("bridge probe", False, f"zcode backend unavailable: {zcode.get('reason') or 'no reason given'}")
+
+
 def info(name: str, detail: str) -> None:
     print(f"[INFO] {name}: {detail}")
 
@@ -148,10 +160,7 @@ def main() -> int:
     ok &= report(check_cli_config(cli_cfg))
 
     if (BRIDGE / "server.py").is_file() and bundle and runtime:
-        env = dict(os.environ)
-        env["ZCODE_BINARY"] = str(runtime)
-        env["ZCODE_CLI_BUNDLE"] = str(bundle)
-        env["AGENT_MCP_DEFAULT_BACKEND"] = "zcode"
+        env = mod.build_env(os.environ, bundle, runtime)
         try:
             probe = subprocess.run(
                 [sys.executable, str(BRIDGE / "server.py"), "--probe"],
@@ -161,8 +170,7 @@ def main() -> int:
                 stderr=subprocess.PIPE,
                 timeout=30,
             )
-            detail = probe.stdout.strip() or probe.stderr.strip() or f"exit {probe.returncode}"
-            ok &= check("bridge probe", probe.returncode == 0, detail[:1200])
+            ok &= report(check_probe_output(probe.stdout, probe.stderr, probe.returncode))
         except Exception as exc:
             ok &= check("bridge probe", False, str(exc))
 
@@ -185,14 +193,7 @@ def main() -> int:
             ok &= check("Claude MCP registration", False, str(exc))
 
     policy = HOME / ".claude" / "zcode-commander" / "COMMANDER.md"
-    root_memory = HOME / ".claude" / "CLAUDE.md"
-    imported = False
-    if root_memory.is_file():
-        try:
-            imported = "@~/.claude/zcode-commander/COMMANDER.md" in root_memory.read_text(encoding="utf-8")
-        except OSError:
-            pass
-    ok &= check("Commander policy", policy.is_file() and imported, f"policy={policy}; import={imported}")
+    ok &= check("Commander policy", policy.is_file(), str(policy))
 
     print("\nResult:", "READY" if ok else "NEEDS ATTENTION")
     return 0 if ok else 1

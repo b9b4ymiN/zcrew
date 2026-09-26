@@ -119,5 +119,26 @@ class DesktopConfigTests(ConfigTestCase):
         self.assertIn("cannot read", doctor.describe_desktop_providers(self.path))
 
 
+class ProbeOutputTests(unittest.TestCase):
+    @staticmethod
+    def _payload(available: bool, reason: str | None = None) -> str:
+        zcode = {"available": available, **({"reason": reason} if reason else {})}
+        return json.dumps({"availableBackends": {"zcode": zcode}})
+
+    def test_available_backend_passes(self) -> None:
+        result = doctor.check_probe_output(self._payload(True), "", 0)
+        self.assertTrue(result.ok)
+
+    def test_unavailable_backend_fails_with_reason(self) -> None:
+        result = doctor.check_probe_output(self._payload(False, "ZCode runtime not found"), "", 0)
+        self.assertFalse(result.ok)
+        self.assertIn("ZCode runtime not found", result.detail)
+
+    def test_non_json_output_fails(self) -> None:
+        result = doctor.check_probe_output("", "Traceback: boom", 1)
+        self.assertFalse(result.ok)
+        self.assertIn("boom", result.detail)
+
+
 if __name__ == "__main__":
     unittest.main()

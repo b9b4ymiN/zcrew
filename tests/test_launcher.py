@@ -135,6 +135,14 @@ class BuildEnvTests(unittest.TestCase):
         self.assertEqual(env["ZCODE_CLI_BUNDLE"], str(self.bundle))
         self.assertEqual(env["ZCODE_BINARY"], str(self.runtime))
 
+    def test_app_path_is_install_root(self) -> None:
+        env = launcher.build_env({}, self.bundle, self.runtime)
+        self.assertEqual(Path(env["ZCODE_APP_PATH"]), Path("C:/ZCode"))
+
+    def test_app_path_env_override_wins(self) -> None:
+        env = launcher.build_env({"ZCODE_APP_PATH": "D:/Other"}, self.bundle, self.runtime)
+        self.assertEqual(env["ZCODE_APP_PATH"], "D:/Other")
+
     def test_concurrency_env_override_wins(self) -> None:
         env = launcher.build_env({"AGENT_MCP_MAX_CONCURRENCY": "2"}, self.bundle, self.runtime)
         self.assertEqual(env["AGENT_MCP_MAX_CONCURRENCY"], "2")
