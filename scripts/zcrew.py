@@ -10,6 +10,7 @@
     zcrew runs   [DIR] [--limit N] [--all] [--json]
     zcrew show   SESSION [--json]
     zcrew watch  [DIR] [--all] [--interval SECONDS] [--since MINUTES]
+    zcrew dashboard [DIR] [--all] [--port N] [--no-open]
     zcrew update  [--commander auto|claude|codex|both]
     zcrew uninstall [--keep-config] [--yes]
     zcrew version
@@ -478,6 +479,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--all", action="store_true", help="every directory, not just DIR (default: current dir)")
     p.add_argument("--interval", type=float, default=1.5, metavar="SECONDS", help="poll interval (default 1.5)")
     p.add_argument("--since", type=float, default=10, metavar="MINUTES", help="window of recent sessions (default 10)")
+    p = sub.add_parser(
+        "dashboard", help="local web dashboard of worker activity (read-only; Ctrl+C to stop)",
+        description=(
+            "Serve dashboard.html plus a JSON API of ZCode worker sessions on "
+            "127.0.0.1 (default port 8765) and open it in a browser. Read-only; "
+            "shows the sessions of DIR (default: current dir), or every directory with --all."
+        ),
+    )
+    p.add_argument("dir", nargs="?", default=None, metavar="DIR")
+    p.add_argument("--all", action="store_true", help="every directory, not just DIR (default: current dir)")
+    p.add_argument("--port", type=int, default=8765, metavar="N", help="port to listen on (default 8765)")
+    p.add_argument("--no-open", action="store_true", help="do not open the browser automatically")
     p = sub.add_parser("update", help="pull the latest zcrew and re-run the installer")
     p.add_argument(
         "--commander", choices=INSTALL_COMMANDERS, default=None,
@@ -515,6 +528,8 @@ def main(
         return int(_load_sibling("context_report").run(
             args.dir, session=args.session, top=args.top, as_json=args.json, commander=args.commander, env=env,
         ))
+    if args.command == "dashboard":
+        return int(_load_sibling("dashboard").run(args, env=env))
     if args.command in ("runs", "show", "watch"):
         return int(_load_sibling("activity_cli").run(args, env=env))
     if args.command == "update":
