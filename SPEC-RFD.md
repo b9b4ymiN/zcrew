@@ -968,3 +968,9 @@ Lesson: on Windows, close the runs before removing their worktrees, because the 
 
 Measured fixed context of a Claude Code session in MSOM: 58.4K tokens. It breaks down as about 39K Claude Code core, 8.5K skill listings, 3.9K MCP server instructions, and 3.7K project files. Only the skill and MCP parts are reducible, and those are user-environment choices outside zcrew.
 
+### 27.3 v0.6.0 addendum: measuring and reducing commander context
+
+- The policy's *Context hygiene* rules target the biggest measured consumers. In the MSOM session, shell output was 45% of tool output and whole-file reads were 20–37%.
+- `zcrew context` turns the manual analysis into a read-only command. Run against the MSOM session, it reported a peak of 420,915 tokens and showed `agent-wait` at 31% (72 calls). That session had started before `zcrew update`, so it still used the old waiting rule, which demonstrates the effect of economical waiting and compact output. The command's numbers were independently recomputed and matched exactly.
+- Not adopted, per the owner's decision: third-party context filtering (context-mode) and trimming the user environment's skills/MCP (T4/T5).
+

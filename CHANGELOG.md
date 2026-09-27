@@ -2,6 +2,31 @@
 
 All notable changes to the Claude Commander × ZCode Executor Kit are recorded here.
 
+## 0.6.0 — 2026-09-27
+
+Context economy, part 2.
+
+### Added
+
+- `zcrew context [DIR] [--session ID|PATH] [--top N] [--json] [--commander claude|codex]` reports where a commander session's context went:
+  - first, peak and last context tokens (turns de-duplicated by API message id);
+  - tool-output characters per tool and per MCP server;
+  - hints derived from the numbers.
+
+  It reads Claude Code transcripts (`~/.claude/projects/<slug>/*.jsonl`) or Codex rollouts (`~/.codex/sessions`, matched by `cwd`). The output contains only numbers and tool names. It is read-only.
+
+### Changed
+
+- The policy gains a **Context hygiene** section:
+  - redirect long command output to a log file and read the verdict or tail;
+  - read file ranges, not whole files, and locate with codegraph or grep first;
+  - delegate broad exploration to a subagent;
+  - review with `git diff --stat` then per-file diffs;
+  - ask workers for short reports;
+  - summarize after large investigations.
+
+  The evidence rules are unchanged.
+
 ## 0.5.0 — 2026-09-27
 
 > Validation update (after release): the Codex review → same-thread correction loop has now been validated live, with 3 `agent-wait` calls instead of the earlier 18. See SPEC §27.2.

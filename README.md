@@ -11,7 +11,7 @@ You work with one assistant, either Claude Code or OpenAI Codex. It hands implem
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-commander-D97757)](https://docs.anthropic.com/en/docs/claude-code)
 [![Codex](https://img.shields.io/badge/Codex-commander-111111?logo=openai)](https://github.com/openai/codex)
 [![ZCode](https://img.shields.io/badge/ZCode-3.14.0%20tested-6E56CF)](#compatibility)
-[![Tests](https://img.shields.io/badge/tests-276%20passing-2EA44F)](#development)
+[![Tests](https://img.shields.io/badge/tests-294%20passing-2EA44F)](#development)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
 [Quick start](#quick-start) · [How it works](#how-it-works) · [Configuration](#configuration) · [Troubleshooting](#troubleshooting) · [ภาษาไทย](docs/README.th.md)
@@ -40,6 +40,7 @@ Frontier models are strongest at understanding, design and review. Coding agents
 - **Independent review loop.** The commander inspects the diff and runs your tests/build/lint itself. A rejection goes back to the same ZCode thread, so the worker keeps its context. Each task has a correction budget (default 4 rounds).
 - **Parallel crew.** Up to 5 ZCode workers run on independent tasks in separate `git worktree`s. Branches are merged back one at a time, and tests are re-run after every merge.
 - **Per-project opt-in.** `zcrew enable --commander claude|codex|both` activates the policy for one repo. `zcrew disable` restores its files byte for byte.
+- **Context-aware.** Compact worker output (−70%), wait-until-done polling, context-hygiene rules for the commander, and `zcrew context` to measure what a session actually spent.
 - **Configurable model.** GLM-5.3 at `max` by default. You can switch models globally, per project, or for a single task.
 - **Worker history.** Every ZCode run is saved in the ZCode app's own history, so you can read the worker's full conversation.
 - **One-command install** with a built-in `doctor` that checks readiness without making any model call.
@@ -136,7 +137,7 @@ The commander reviews the result against that same contract. The full behaviour 
 | Compatibility layer | `bridge_compat.py`: a runtime shim that adapts the bridge to ZCode 3.12+ (account-provider snapshot, runtime auth headers, reasoning level) |
 | Executor | ZCode Desktop app-server (Electron/Node, headless), running GLM-5.3 on the Z.ai Coding Plan |
 | Isolation | `git worktree` per parallel worker, with cross-process resource leases in the bridge |
-| Tooling | PowerShell installer (5.1/7 compatible), Python 3.10+ standard-library CLI (`zcrew`), `unittest` (276 tests) |
+| Tooling | PowerShell installer (5.1/7 compatible), Python 3.10+ standard-library CLI (`zcrew`), `unittest` (294 tests) |
 
 ## Usage
 
@@ -147,6 +148,7 @@ zcrew disable [DIR] [--commander claude|codex]         remove it (default: every
 zcrew status [DIR]                                     enabled? which config? is it valid?
 zcrew config [--project DIR]                           print and validate the effective config
 zcrew doctor                                           readiness check (no model call)
+zcrew context [DIR] [--session ID|PATH] [--json]       where the last commander session's context went (per tool)
 zcrew update [--commander auto|claude|codex|both]     pull the latest release and re-run setup
 zcrew uninstall [--keep-config] [--yes]                remove zcrew
 zcrew version
@@ -157,6 +159,8 @@ Useful phrases in chat:
 - `use Flash for this task` switches to `GLM-5.3-Flash` for that task only.
 - `go` / `ship` skips the clarification and approval steps.
 - `switch the default model to …` makes the commander edit your config and validate it.
+
+**Context budget:** `zcrew context` reads the latest Claude Code session for the project (`--commander codex` for Codex) and reports the first, peak and last context size, plus tool-output share per tool and per MCP server, with hints. It shows only numbers and tool names, and it never writes anything. The policy's *Context hygiene* rules (log long output to a file, read ranges, delegate exploration, review diffs) target the biggest consumers it finds.
 
 **Watching the crew:** the commander posts short progress lines while it works. To read a worker's full conversation, open the ZCode app: runs are listed under the project. Restart the app to refresh the list, because live view inside the app isn't possible.
 

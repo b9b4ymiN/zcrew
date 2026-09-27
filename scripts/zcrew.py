@@ -6,6 +6,7 @@
     zcrew status  [DIR]
     zcrew config  [--project DIR]
     zcrew doctor
+    zcrew context [DIR] [--session ID|PATH] [--top N] [--json] [--commander claude|codex]
     zcrew update  [--commander auto|claude|codex|both]
     zcrew uninstall [--keep-config] [--yes]
     zcrew version
@@ -445,6 +446,21 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("config", help="print and validate the effective config")
     p.add_argument("--project", default=None, metavar="DIR", help="include DIR/.claude/zcode-commander.json")
     sub.add_parser("doctor", help="zero-model-cost health check of the whole setup")
+    p = sub.add_parser(
+        "context",
+        help="report where a commander session's context went (read-only; numbers and tool names only)",
+        description=(
+            "Aggregate a commander session transcript: context tokens per turn and tool output per tool. "
+            "Claude Code: newest ~/.claude/projects/<slug>/*.jsonl for DIR. Codex (best effort): newest "
+            "rollout under $CODEX_HOME/sessions or ~/.codex/sessions whose recorded cwd is DIR; old "
+            "rollouts without a recorded cwd need --session PATH. Nothing is written."
+        ),
+    )
+    p.add_argument("dir", nargs="?", default=None, metavar="DIR")
+    p.add_argument("--session", default=None, metavar="ID|PATH", help="session id (file stem) or transcript path")
+    p.add_argument("--top", type=int, default=12, metavar="N", help="tool rows to show (default 12)")
+    p.add_argument("--json", action="store_true", help="machine-readable output")
+    p.add_argument("--commander", choices=("claude", "codex"), default="claude", help="whose transcript (default claude)")
     p = sub.add_parser("update", help="pull the latest zcrew and re-run the installer")
     p.add_argument(
         "--commander", choices=INSTALL_COMMANDERS, default=None,
@@ -478,6 +494,10 @@ def main(
         return 0
     if args.command == "doctor":
         return _run_doctor(paths, run)
+    if args.command == "context":
+        return int(_load_sibling("context_report").run(
+            args.dir, session=args.session, top=args.top, as_json=args.json, commander=args.commander, env=env,
+        ))
     if args.command == "update":
         return cmd_update(paths, run, args.commander)
     if args.command == "uninstall":

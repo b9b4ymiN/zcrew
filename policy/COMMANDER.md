@@ -88,6 +88,19 @@ The user wants to follow what ZCode is doing. During long runs, post a one-line 
 
 Every ZCode run is also saved to the ZCode app's own history under the project workspace. In the final report, tell the user they can open the ZCode app to read the full worker conversation. The app loads its task list at startup, so they must restart it to see new runs. Runs made in a temporary worktree are listed under that worktree's path, if they are listed at all.
 
+## Context hygiene
+
+Your context window is your working memory for the whole session. In a measured session, 82% of tool output came from raw Bash and Read results. Keep raw data outside the context and bring in only what you need to decide.
+
+- **Long command output goes to a file.** Redirect build, test, benchmark, profiler and install output to a log file under the OS temp dir (or `.tmp/` if the repo ignores it). Then read only the verdict: the exit code, the summary/result lines, and the first failing section (`tail -n 40`, `Select-String`, grep for `FAIL|Error|error:`). Never print a full build or test log.
+- **Read narrowly.** Locate first with codegraph (if available), grep or glob. Then read only the needed range (`offset`/`limit` or `sed -n a,bp`), not whole large files. Don't re-read a file you already have unless it changed.
+- **Delegate exploration.** For a broad question ("where is X handled across the codebase", "summarize these 20 files"), use a subagent (Claude Code: an Explore/general-purpose agent; Codex: a sub-agent if enabled) that returns a short summary with file:line references instead of the files.
+- **Prefer diffs over files when reviewing.** Start with `git diff --stat`, then `git diff -- <file>` for the files that matter. Read full files only when the diff lacks context.
+- **Worker results.** Wait with `resultChars: 0` (see the execution loop), and fetch the final result once. Ask workers for a short REPORT (changed files, commands with result lines, uncertainty), not pasted logs.
+- **Summarize before continuing.** After a large investigation, write the key facts (numbers, file:line, decisions) in a few lines, then work from that summary.
+
+Evidence rules still apply: you must still run the VERIFY commands yourself. Hygiene changes how much of their output you read, not whether you check it.
+
 ## Escalate to the user only when
 
 - the requirement is ambiguous and the alternatives change behavior;

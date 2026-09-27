@@ -1,4 +1,4 @@
-# zcrew — คู่มือภาษาไทย (v0.5.0)
+# zcrew — คู่มือภาษาไทย (v0.6.0)
 
 > English: [README.md](../README.md)
 
@@ -151,6 +151,20 @@ zcrew disable       # ปิดใช้ (CLAUDE.md กลับเป็นเ�
 - `--force`: เปิดใช้แม้โฟลเดอร์ไม่ใช่ git repo (ไม่แนะนำ)
 
 หลัง enable ให้เปิด **session ใหม่** ของ Claude Code หรือ Codex ใน project นั้น
+
+### ดูว่า context หมดไปกับอะไร
+
+```powershell
+cd C:\path\to\project
+zcrew context                      # session ล่าสุดของ Claude Code ใน project นี้
+zcrew context --commander codex    # session ล่าสุดของ Codex
+```
+
+รายงานนี้บอก:
+- context ตอนเริ่ม session, ตอนสูงสุด และตอนล่าสุด
+- output ของ tool แต่ละตัวกินไปกี่ %
+
+พร้อมคำแนะนำ เช่น "Bash กิน 46% ให้เก็บ log ลงไฟล์" ในรายงานมีแค่ตัวเลขกับชื่อ tool ไม่แสดงเนื้อหาของบทสนทนา และคำสั่งนี้ไม่เขียนอะไรเลย ใช้เทียบผลก่อนและหลังปรับวิธีทำงานได้
 
 ### เลือกหัวหน้า: Claude Code, Codex หรือทั้งคู่
 
