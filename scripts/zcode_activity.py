@@ -354,6 +354,21 @@ def _summarize(conn: sqlite3.Connection, row: tuple[Any, ...], now_ms: int) -> S
     )
 
 
+def session_summary(db: Db, session_id: str, *, now_ms: int | None = None) -> SessionSummary:
+    """Summary for one session (id or unique prefix) via the same status logic
+    ``list_sessions`` uses; ActivityError when the id is unknown or ambiguous."""
+    now = int(time.time() * 1000) if now_ms is None else now_ms
+    with _session(db) as conn:
+        sid = _resolve(conn, session_id.strip())
+        row = conn.execute(
+            "SELECT id, directory, title, time_created, time_updated, parent_id FROM session WHERE id = ?",
+            (sid,),
+        ).fetchone()
+        if row is None:
+            raise ActivityError(f"no ZCode session matches {session_id!r}")
+        return _summarize(conn, row, now)
+
+
 # --- activity ---------------------------------------------------------------------------
 
 

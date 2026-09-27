@@ -7,6 +7,9 @@
     zcrew config  [--project DIR]
     zcrew doctor
     zcrew context [DIR] [--session ID|PATH] [--top N] [--json] [--commander claude|codex]
+    zcrew runs   [DIR] [--limit N] [--all] [--json]
+    zcrew show   SESSION [--json]
+    zcrew watch  [DIR] [--all] [--interval SECONDS] [--since MINUTES]
     zcrew update  [--commander auto|claude|codex|both]
     zcrew uninstall [--keep-config] [--yes]
     zcrew version
@@ -252,6 +255,7 @@ def _load_sibling(name: str) -> ModuleType:
     if spec is None or spec.loader is None:
         raise ImportError(f"cannot load {name}.py next to {HERE}")
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # dataclasses resolve annotations via sys.modules
     spec.loader.exec_module(module)
     return module
 
@@ -461,6 +465,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--top", type=int, default=12, metavar="N", help="tool rows to show (default 12)")
     p.add_argument("--json", action="store_true", help="machine-readable output")
     p.add_argument("--commander", choices=("claude", "codex"), default="claude", help="whose transcript (default claude)")
+    p = sub.add_parser("runs", help="list recent ZCode worker sessions (read-only)")
+    p.add_argument("dir", nargs="?", default=None, metavar="DIR")
+    p.add_argument("--limit", type=int, default=20, metavar="N", help="sessions to list (default 20)")
+    p.add_argument("--all", action="store_true", help="every directory, not just DIR (default: current dir)")
+    p.add_argument("--json", action="store_true", help="machine-readable output")
+    p = sub.add_parser("show", help="print one session's activity timeline (read-only)")
+    p.add_argument("session", metavar="SESSION", help="session id or unique prefix")
+    p.add_argument("--json", action="store_true", help="machine-readable output")
+    p = sub.add_parser("watch", help="follow live worker activity (read-only; Ctrl+C to stop)")
+    p.add_argument("dir", nargs="?", default=None, metavar="DIR")
+    p.add_argument("--all", action="store_true", help="every directory, not just DIR (default: current dir)")
+    p.add_argument("--interval", type=float, default=1.5, metavar="SECONDS", help="poll interval (default 1.5)")
+    p.add_argument("--since", type=float, default=10, metavar="MINUTES", help="window of recent sessions (default 10)")
     p = sub.add_parser("update", help="pull the latest zcrew and re-run the installer")
     p.add_argument(
         "--commander", choices=INSTALL_COMMANDERS, default=None,
@@ -498,6 +515,8 @@ def main(
         return int(_load_sibling("context_report").run(
             args.dir, session=args.session, top=args.top, as_json=args.json, commander=args.commander, env=env,
         ))
+    if args.command in ("runs", "show", "watch"):
+        return int(_load_sibling("activity_cli").run(args, env=env))
     if args.command == "update":
         return cmd_update(paths, run, args.commander)
     if args.command == "uninstall":

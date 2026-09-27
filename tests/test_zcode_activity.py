@@ -65,9 +65,11 @@ class Fixture:
 
     def exec(self, sql: str, args: tuple = ()) -> None:
         conn = sqlite3.connect(self.path)
-        with conn:
-            conn.execute(sql, args)
-        conn.close()
+        try:
+            with conn:
+                conn.execute(sql, args)
+        finally:
+            conn.close()
 
     def session(self, sid: str, directory: str, title: str, created: int, updated: int) -> None:
         self.exec("INSERT INTO session (id, directory, title, time_created, time_updated) VALUES (?,?,?,?,?)",
@@ -254,6 +256,27 @@ class ZCodeActivityTest(unittest.TestCase):
         self.assertIn("no ZCode session", str(cm.exception))
         with self.assertRaises(za.ActivityError):  # '_' is not a LIKE wildcard here
             za.resolve_session(self.db, "sess_x-")
+
+    def test_session_summary_matches_list_sessions(self) -> None:
+        self.completed_session()
+        fx = self.fx
+        fx.session("sess_sf", SANDBOX, "sf", 1_000, 2_000)
+        fx.message("m_sf", "sess_sf", "assistant", 1_000)
+        fx.part("sess_sf", "m_sf", {"type": "step-finish", "reason": "stop", "tokens": {"total": 7}}, 1_500)
+        listed = {r.id: r for r in za.list_sessions(self.db, now_ms=NOW)}
+        done = za.session_summary(self.db, "sess_aaaa", now_ms=NOW)  # unique prefix, no turn-less parts
+        self.assertEqual(done, listed[done.id])
+        self.assertEqual(done.status, "completed")
+        sf = za.session_summary(self.db, "sess_sf", now_ms=NOW)  # no turn_usage row, step-finish stop
+        self.assertEqual(sf, listed["sess_sf"])
+        self.assertEqual(sf.status, "completed")
+        self.assertEqual(sf.last_context_tokens, 7)
+
+    def test_session_summary_unknown_id(self) -> None:
+        self.completed_session()
+        with self.assertRaises(za.ActivityError) as cm:
+            za.session_summary(self.db, "sess_zzz")
+        self.assertIn("no ZCode session", str(cm.exception))
 
     # --- activity ---------------------------------------------------------------------------
 
