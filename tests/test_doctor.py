@@ -241,5 +241,144 @@ class CommanderConfigCheckTests(unittest.TestCase):
         self.assertIn("not entitled", result.detail)
 
 
+
+CODEX_GET_OK = """zcode_executor
+  enabled: true
+  transport: stdio
+  command: C:/Python312/python.exe
+  args: C:/Users/u/.zcode-commander/zcode_bridge_launcher.py
+  startup_timeout_sec: 60
+  tool_timeout_sec: 180
+  default_tools_approval_mode: approve
+"""
+
+
+class FakeCli:
+    """which + run doubles: tools maps name -> (path, returncode, stdout, stderr)."""
+
+    def __init__(self, **tools: tuple[str, int, str, str]) -> None:
+        self.tools = tools
+        self.calls: list[list[str]] = []
+
+    def which(self, name: str) -> str | None:
+        return self.tools[name][0] if name in self.tools else None
+
+    def run(self, argv, **kwargs):  # noqa: ANN001
+        import subprocess
+
+        self.calls.append(list(argv))
+        assert kwargs.get("encoding") == "utf-8" and kwargs.get("errors") == "replace"
+        for path, code, out, err in self.tools.values():
+            if path in argv:
+                return subprocess.CompletedProcess(argv, code, out, err)
+        raise AssertionError(argv)
+
+
+class RegistrationTests(unittest.TestCase):
+    def statuses(self, cli: FakeCli) -> list:
+        return [doctor.claude_registration(cli.which, cli.run), doctor.codex_registration(cli.which, cli.run)]
+
+    def test_both_registered(self) -> None:
+        cli = FakeCli(claude=("C:/c/claude.exe", 0, "zcode_executor: ok", ""),
+                      codex=("C:/n/codex.cmd", 0, CODEX_GET_OK, ""))
+        statuses = self.statuses(cli)
+        self.assertEqual([s.level for s in statuses], ["OK", "OK"])
+        self.assertIn("tool_timeout_sec=180", statuses[1].detail)
+        self.assertEqual(doctor.registrations_ready(statuses), (True, None))
+        self.assertEqual(cli.calls[1][-4:], ["C:/n/codex.cmd", "mcp", "get", "zcode_executor"])
+
+    def test_claude_absent_is_info_codex_ok_is_ready(self) -> None:
+        statuses = self.statuses(FakeCli(codex=("codex.exe", 0, CODEX_GET_OK, "")))
+        self.assertEqual(statuses[0], doctor.Status("INFO", "claude", "not installed"))
+        self.assertEqual(statuses[1].level, "OK")
+        self.assertTrue(doctor.registrations_ready(statuses)[0])
+
+    def test_codex_absent_is_info_claude_ok_is_ready(self) -> None:
+        statuses = self.statuses(FakeCli(claude=("claude.exe", 0, "ok", "")))
+        self.assertEqual(statuses[1], doctor.Status("INFO", "codex", "not installed"))
+        self.assertTrue(doctor.registrations_ready(statuses)[0])
+
+    def test_neither_installed_fails(self) -> None:
+        ready, extra = doctor.registrations_ready(self.statuses(FakeCli()))
+        self.assertFalse(ready)
+        self.assertEqual(extra.level, "FAIL")
+        self.assertIn("neither", extra.detail)
+
+    def test_codex_not_registered_warns_and_claude_ok_is_ready(self) -> None:
+        cli = FakeCli(claude=("claude.exe", 0, "ok", ""),
+                      codex=("codex.exe", 1, "", "Error: No MCP server named 'zcode_executor' found."))
+        statuses = self.statuses(cli)
+        self.assertEqual(statuses[1].level, "WARN")
+        self.assertFalse(statuses[1].registered)
+        self.assertIn("zcrew update --commander both", statuses[1].detail)
+        self.assertEqual(doctor.registrations_ready(statuses), (True, None))
+
+    def test_claude_not_registered_warns_and_codex_ok_is_ready(self) -> None:
+        cli = FakeCli(claude=("claude.exe", 1, 'No MCP server named "zcode_executor". Configured servers: x', ""),
+                      codex=("codex.exe", 0, CODEX_GET_OK, ""))
+        statuses = self.statuses(cli)
+        self.assertEqual(statuses[0].level, "WARN")
+        self.assertIn("zcrew update --commander both", statuses[0].detail)
+        self.assertTrue(doctor.registrations_ready(statuses)[0])
+
+    def test_none_registered_fails(self) -> None:
+        cli = FakeCli(claude=("claude.exe", 1, "", 'No MCP server named "zcode_executor".'),
+                      codex=("codex.exe", 1, "", "Error: No MCP server named 'zcode_executor' found."))
+        statuses = self.statuses(cli)
+        self.assertEqual([s.level for s in statuses], ["WARN", "WARN"])
+        ready, extra = doctor.registrations_ready(statuses)
+        self.assertFalse(ready)
+        self.assertEqual(extra.level, "FAIL")
+        self.assertIn("no commander has zcode_executor registered", extra.detail)
+
+    def test_broken_registration_fails(self) -> None:
+        cli = FakeCli(claude=("claude.exe", 0, "ok", ""),
+                      codex=("codex.exe", 2, "", "Error: failed to parse config.toml"))
+        statuses = self.statuses(cli)
+        self.assertEqual(statuses[1].level, "FAIL")
+        self.assertIn("config.toml", statuses[1].detail)
+        self.assertEqual(doctor.registrations_ready(statuses), (False, None))
+        statuses = self.statuses(FakeCli(claude=("claude.exe", 1, "", "unexpected crash")))
+        self.assertEqual(statuses[0].level, "FAIL")
+        self.assertFalse(doctor.registrations_ready(statuses)[0])
+
+    def test_codex_low_or_missing_timeout_warns_but_counts(self) -> None:
+        for out, shown in ((CODEX_GET_OK.replace("180", "60"), "60"),
+                           (CODEX_GET_OK.replace("  tool_timeout_sec: 180\n", ""), "not set")):
+            with self.subTest(shown=shown):
+                statuses = self.statuses(FakeCli(codex=("codex.exe", 0, out, "")))
+                self.assertEqual(statuses[1].level, "WARN")
+                self.assertIn(shown, statuses[1].detail)
+                self.assertIn("zcrew update", statuses[1].detail)
+                self.assertTrue(doctor.registrations_ready(statuses)[0])
+
+    def test_run_exception_fails(self) -> None:
+        def boom(*args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+            raise OSError("cannot start")
+        status = doctor.codex_registration(lambda name: "codex.exe", boom)
+        self.assertEqual((status.level, status.detail), ("FAIL", "cannot start"))
+
+    def test_parse_tool_timeout_text_and_json(self) -> None:
+        self.assertEqual(doctor.parse_tool_timeout(CODEX_GET_OK), 180.0)
+        self.assertEqual(doctor.parse_tool_timeout('{"tool_timeout_sec": 180.0}'), 180.0)
+        self.assertIsNone(doctor.parse_tool_timeout("tool_timeout_sec: -"))
+
+    def test_cmd_shims_run_through_cmd_exe(self) -> None:
+        argv = doctor.cli_argv("C:/npm/codex.cmd", "mcp", "get", "x", env={"COMSPEC": "C:/Windows/cmd.exe"})
+        if doctor.os.name == "nt":
+            self.assertEqual(argv, ["C:/Windows/cmd.exe", "/d", "/s", "/c", "C:/npm/codex.cmd", "mcp", "get", "x"])
+        self.assertEqual(doctor.cli_argv("codex.exe", "a"), ["codex.exe", "a"])
+
+    def test_emit_levels(self) -> None:
+        import contextlib
+        import io
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            for level in ("OK", "FAIL", "WARN", "INFO"):
+                doctor.emit(doctor.Status(level, "n", "d"))
+        self.assertEqual(out.getvalue().splitlines(), ["[OK]   n: d", "[FAIL] n: d", "[WARN] n: d", "[INFO] n: d"])
+
+
 if __name__ == "__main__":
     unittest.main()

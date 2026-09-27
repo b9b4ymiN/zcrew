@@ -402,5 +402,75 @@ class EnableDisableIntegrationTests(TempDir):
         self.assertIn("git", out)
 
 
+class CommanderSelectionTests(TempDir):
+    def test_enable_disable_pass_commander_only_when_given(self) -> None:
+        fake = SimpleNamespace(main=mock.Mock(return_value=0))
+        with mock.patch.object(zcrew, "_load_sibling", return_value=fake):
+            zcrew.main(["enable", "P", "--commander", "codex", "--with-templates"], env={}, run=FakeRun(),
+                       paths=self.make_layout())
+            zcrew.main(["disable", "P", "--commander", "claude"], env={}, run=FakeRun(), paths=self.make_layout())
+            zcrew.main(["disable", "P"], env={}, run=FakeRun(), paths=self.make_layout())
+        calls = [c.args[0] for c in fake.main.call_args_list]
+        self.assertEqual(calls[0], ["enable", "P", "--commander", "codex", "--with-templates"])
+        self.assertEqual(calls[1], ["disable", "P", "--commander", "claude"])
+        self.assertEqual(calls[2], ["disable", "P"])
+
+    def test_enable_rejects_auto(self) -> None:
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            zcrew.main(["enable", "--commander", "auto"], env={}, run=FakeRun(), paths=self.make_layout())
+
+    def test_resolve_install_commander(self) -> None:
+        self.assertEqual(zcrew.resolve_install_commander(None, {}), "auto")
+        self.assertEqual(zcrew.resolve_install_commander(None, {"ZCREW_COMMANDER": " Codex "}), "codex")
+        self.assertEqual(zcrew.resolve_install_commander("both", {"ZCREW_COMMANDER": "codex"}), "both")
+        with self.assertRaises(ValueError):
+            zcrew.resolve_install_commander(None, {"ZCREW_COMMANDER": "gpt"})
+
+    def test_install_args_carry_commander(self) -> None:
+        argv = zcrew.install_args(Path("install.ps1"), "not-needed", {}, "codex")
+        self.assertEqual(argv[5:9], ["install.ps1", "-Commander", "codex", "-SkipDoctor"])
+        self.assertEqual(zcrew.install_args(Path("i.ps1"), "x", {})[6:8], ["-Commander", "auto"])
+
+    def test_setup_uses_env_then_flag(self) -> None:
+        paths = self.make_layout()
+        env = {"ZCREW_NO_PATH": "1", "ZCREW_COMMANDER": "codex"}
+        with mock.patch.object(zcrew, "bootstrap_decision", return_value="not-needed"):
+            run = FakeRun()
+            _quiet(zcrew.main, ["_setup"], env=env, run=run, paths=paths)
+            self.assertIn(["-Commander", "codex"], [run.calls[0][i:i + 2] for i in range(len(run.calls[0]))])
+            run = FakeRun()
+            _quiet(zcrew.main, ["_setup", "--commander", "both"], env=env, run=run, paths=paths)
+            self.assertEqual(run.calls[0][run.calls[0].index("-Commander") + 1], "both")
+
+    def test_setup_invalid_env_installs_nothing(self) -> None:
+        paths = self.make_layout()
+        run = FakeRun()
+        code, out = _quiet(zcrew.cmd_setup, paths, {"ZCREW_COMMANDER": "gpt"}, run, self.base)
+        self.assertEqual(code, 2)
+        self.assertIn("ZCREW_COMMANDER", out)
+        self.assertEqual(run.calls, [])
+
+    def test_update_passes_commander_to_new_setup(self) -> None:
+        paths = self.make_layout()
+        (paths.src / ".git").mkdir()
+        run = FakeRun()
+        code, out = _quiet(zcrew.main, ["update", "--commander", "codex"], env={}, run=run, paths=paths)
+        self.assertEqual(code, 0)
+        self.assertEqual(run.calls[3][-4:], [str(paths.scripts / "zcrew.py"), "_setup", "--commander", "codex"])
+        self.assertIn("Codex", out)
+
+    def test_codex_enable_status_disable_through_zcrew(self) -> None:
+        project = self.base / "projc"
+        (project / ".git").mkdir(parents=True)
+        code, out = _quiet(zcrew.main, ["enable", str(project), "--commander", "both"], env={}, run=FakeRun())
+        self.assertEqual(code, 0, out)
+        override = project / "AGENTS.override.md"
+        self.assertIn("zcrew-codex:begin policy-sha256=", override.read_text(encoding="utf-8"))
+        self.assertIn("zcrew Commander Policy", override.read_text(encoding="utf-8"))
+        code, out = _quiet(zcrew.main, ["disable", str(project)], env={}, run=FakeRun())
+        self.assertEqual(code, 0, out)
+        self.assertEqual([p.name for p in project.iterdir()], [".git"])
+
+
 if __name__ == "__main__":
     unittest.main()

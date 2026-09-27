@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Iterable, NamedTuple
+from typing import Any, Callable, Iterable, NamedTuple
 
 HERE = Path(__file__).resolve().parent
 LAUNCHER = HERE / "zcode_bridge_launcher.py"
@@ -248,6 +249,124 @@ def describe_desktop_providers(path: Path) -> str:
     return "; ".join(lines) if lines else "none enabled with an API key"
 
 
+# --- commander MCP registrations (Claude Code and/or Codex) -------------------
+
+SERVER = "zcode_executor"
+MIN_CODEX_TOOL_TIMEOUT_SEC = 120
+REGISTRATION_HINT = "run: zcrew update (or install.ps1)"
+NOT_REGISTERED_HINT = "run `zcrew update --commander both` to register it"
+_NOT_REGISTERED = re.compile(r"no mcp server (named|found)", re.IGNORECASE)
+_TOOL_TIMEOUT = re.compile(r'tool_timeout_sec"?\s*:\s*([0-9]+(?:\.[0-9]+)?)')
+
+
+class Status(NamedTuple):
+    level: str  # OK, FAIL, WARN or INFO
+    name: str
+    detail: str
+    registered: bool = False  # zcode_executor is registered with this commander
+
+
+def emit(status: Status) -> None:
+    if status.level in ("OK", "FAIL"):
+        check(status.name, status.level == "OK", status.detail)
+    elif status.level == "WARN":
+        warn(status.name, status.detail)
+    else:
+        info(status.name, status.detail)
+
+
+def cli_argv(path: str, *args: str, env: dict[str, str] | None = None) -> list[str]:
+    """npm installs claude/codex as .cmd shims, which need cmd.exe to run."""
+    if os.name == "nt" and path.lower().endswith((".cmd", ".bat")):
+        comspec = (env or os.environ).get("COMSPEC", "cmd.exe")
+        return [comspec, "/d", "/s", "/c", path, *args]
+    return [path, *args]
+
+
+def _run_cli(run: Callable[..., Any], path: str, *args: str) -> Any:
+    return run(
+        cli_argv(path, *args),
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=20,
+    )
+
+
+def not_registered(cp: Any) -> bool:
+    """The CLI ran fine and said the server does not exist (as opposed to a
+    broken registration or a CLI error)."""
+    return cp.returncode != 0 and bool(_NOT_REGISTERED.search(f"{cp.stdout or ''}\n{cp.stderr or ''}"))
+
+
+def claude_registration(which: Callable[[str], str | None] = shutil.which,
+                        run: Callable[..., Any] = subprocess.run) -> Status:
+    name = "Claude MCP registration"
+    path = which("claude")
+    if not path:
+        return Status("INFO", "claude", "not installed")
+    try:
+        cp = _run_cli(run, path, "mcp", "get", SERVER)
+    except Exception as exc:  # noqa: BLE001 - reported as a failed check
+        return Status("FAIL", name, str(exc))
+    if not_registered(cp):
+        return Status("WARN", name, f"claude is installed but {SERVER} is not registered in it; {NOT_REGISTERED_HINT}")
+    detail = (cp.stdout or "").strip() or (cp.stderr or "").strip() or f"exit {cp.returncode}"
+    ok = cp.returncode == 0
+    return Status("OK" if ok else "FAIL", name, detail[:1000], ok)
+
+
+def parse_tool_timeout(output: str) -> float | None:
+    match = _TOOL_TIMEOUT.search(output or "")
+    return float(match.group(1)) if match else None
+
+
+def codex_registration(which: Callable[[str], str | None] = shutil.which,
+                       run: Callable[..., Any] = subprocess.run) -> Status:
+    name = "Codex MCP registration"
+    path = which("codex")
+    if not path:
+        return Status("INFO", "codex", "not installed")
+    try:
+        cp = _run_cli(run, path, "mcp", "get", SERVER)
+    except Exception as exc:  # noqa: BLE001 - reported as a failed check
+        return Status("FAIL", name, str(exc))
+    out = (cp.stdout or "").strip()
+    if not_registered(cp):
+        return Status("WARN", name, f"codex is installed but {SERVER} is not registered in it; {NOT_REGISTERED_HINT}")
+    if cp.returncode != 0:
+        detail = (cp.stderr or "").strip() or out or f"exit {cp.returncode}"
+        return Status("FAIL", name, f"{detail[:500]}; {REGISTRATION_HINT}")
+    timeout = parse_tool_timeout(out)
+    shown = "not set (Codex default 60)" if timeout is None else f"{timeout:g}"
+    if timeout is None or timeout < MIN_CODEX_TOOL_TIMEOUT_SEC:
+        return Status(
+            "WARN", name,
+            f"{SERVER} registered but tool_timeout_sec is {shown}; ZCode runs need at least "
+            f"{MIN_CODEX_TOOL_TIMEOUT_SEC}s, run: zcrew update",
+            True,
+        )
+    return Status("OK", name, f"{SERVER} registered, tool_timeout_sec={shown}", True)
+
+
+def registrations_ready(statuses: Iterable[Status]) -> tuple[bool, Status | None]:
+    """(ready, extra FAIL line). Ready needs no FAIL and at least one commander
+    with zcode_executor registered (a low-timeout WARN still counts as registered;
+    an installed-but-unregistered WARN does not)."""
+    statuses = list(statuses)
+    if any(s.level == "FAIL" for s in statuses):
+        return False, None
+    if any(s.registered for s in statuses):
+        return True, None
+    if all(s.level == "INFO" for s in statuses):
+        detail = "neither Claude Code (claude) nor Codex (codex) is on PATH; install at least one, then run: zcrew update"
+    else:
+        detail = f"no commander has {SERVER} registered; {NOT_REGISTERED_HINT}"
+    return False, Status("FAIL", "commander", detail)
+
+
 def main() -> int:
     # Tool output (e.g. Claude's check mark) may not fit a non-UTF-8 pipe; never
     # let printing a detail turn a passing check into a failure.
@@ -257,7 +376,9 @@ def main() -> int:
     ok = True
     ok &= check("python", bool(sys.executable), sys.executable)
     ok &= check("git", shutil.which("git") is not None, shutil.which("git") or "not found")
-    ok &= check("claude", shutil.which("claude") is not None, shutil.which("claude") or "not found")
+    for tool in ("claude", "codex"):
+        if shutil.which(tool):
+            check(tool, True, shutil.which(tool) or tool)
     ok &= check("bridge", (BRIDGE / "server.py").is_file(), str(BRIDGE))
 
     # Import launcher functions without starting MCP.
@@ -302,25 +423,13 @@ def main() -> int:
         except Exception as exc:
             ok &= check("bridge probe", False, str(exc))
 
-    if shutil.which("claude"):
-        try:
-            claude_cmd = shutil.which("claude") or "claude"
-            argv = [claude_cmd, "mcp", "get", "zcode_executor"]
-            if os.name == "nt" and claude_cmd.lower().endswith((".cmd", ".bat")):
-                argv = [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/s", "/c", claude_cmd, "mcp", "get", "zcode_executor"]
-            cp = subprocess.run(
-                argv,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=20,
-            )
-            detail = cp.stdout.strip() or cp.stderr.strip() or f"exit {cp.returncode}"
-            ok &= check("Claude MCP registration", cp.returncode == 0, detail[:1000])
-        except Exception as exc:
-            ok &= check("Claude MCP registration", False, str(exc))
+    registrations = [claude_registration(), codex_registration()]
+    for status in registrations:
+        emit(status)
+    ready, extra = registrations_ready(registrations)
+    if extra is not None:
+        emit(extra)
+    ok &= ready
 
     policy = HOME / ".claude" / "zcode-commander" / "COMMANDER.md"
     ok &= check("Commander policy", policy.is_file(), str(policy))

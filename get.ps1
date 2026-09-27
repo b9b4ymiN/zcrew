@@ -9,10 +9,12 @@
 #   ZCREW_REF    branch, tag or commit (default main)
 #   ZCREW_HOME   install root          (default $HOME\.zcrew)
 #   ZCODE_CLI_BUNDLE  path to ZCode's resources\glm\zcode.cjs if ZCode is installed elsewhere
+#   ZCREW_COMMANDER   auto|claude|codex|both - which commander gets the MCP server
+#                     (default auto: Claude Code and/or Codex, whichever is installed)
 # Testing only (sandboxed end-to-end runs; never needed by users):
 #   ZCREW_SOURCE_DIR=<dir>  copy this local directory to ZCREW_HOME\src instead of cloning
 #   ZCREW_NO_PATH=1         do not modify the user PATH in the registry
-#   ZCREW_SKIP_MCP=1        do not register the Claude MCP server (install.ps1 -SkipMcpRegistration)
+#   ZCREW_SKIP_MCP=1        do not register the MCP server (install.ps1 -SkipMcpRegistration)
 #
 # Everything runs inside Install-Zcrew so that a failure never closes the
 # caller's window: errors are reported and the function returns $false.
@@ -55,12 +57,17 @@ function Install-Zcrew {
     $ref = Get-Setting 'ZCREW_REF' 'main'
     $zcrewHome = Get-Setting 'ZCREW_HOME' (Join-Path $HOME '.zcrew')
     $sourceDir = Get-Setting 'ZCREW_SOURCE_DIR' ''
+    $commander = (Get-Setting 'ZCREW_COMMANDER' 'auto').ToLowerInvariant()
+    if (@('auto', 'claude', 'codex', 'both') -notcontains $commander) {
+        throw "ZCREW_COMMANDER='$commander' is not one of: auto, claude, codex, both."
+    }
     $src = Join-Path $zcrewHome 'src'
     $bin = Join-Path $zcrewHome 'bin'
 
     Write-Host ''
-    Write-Host '=== zcrew installer: Claude Code commands, ZCode workers build ===' -ForegroundColor Cyan
+    Write-Host '=== zcrew installer: Claude Code or Codex commands, ZCode workers build ===' -ForegroundColor Cyan
     Write-Host "Install location: $zcrewHome"
+    Write-Host "Commander: $commander"
     Write-Host ''
 
     # a. prerequisites ---------------------------------------------------------
@@ -92,9 +99,21 @@ function Install-Zcrew {
             Write-Host "  python $pyVersion"
         }
     }
-    if (-not (Get-Command claude -ErrorAction SilentlyContinue)) {
-        $missing.Add('claude (Claude Code CLI): see https://docs.claude.com/en/docs/claude-code/setup, then run "claude" once and log in')
+    $claudeHint = 'claude (Claude Code CLI): see https://docs.claude.com/en/docs/claude-code/setup, then run "claude" once and log in'
+    $codexHint = 'codex (Codex CLI): npm install -g @openai/codex, then run "codex" once and sign in'
+    $hasClaude = [bool](Get-Command claude -ErrorAction SilentlyContinue)
+    $hasCodex = [bool](Get-Command codex -ErrorAction SilentlyContinue)
+    if ($commander -eq 'auto') {
+        if (-not $hasClaude -and -not $hasCodex) {
+            $missing.Add("a commander: zcrew needs Claude Code or Codex (or both). Install one of: $claudeHint | $codexHint")
+        }
+    } else {
+        if (($commander -eq 'claude' -or $commander -eq 'both') -and -not $hasClaude) { $missing.Add($claudeHint) }
+        if (($commander -eq 'codex' -or $commander -eq 'both') -and -not $hasCodex) { $missing.Add($codexHint) }
     }
+    $found = @()
+    if ($hasClaude) { $found += 'claude' }
+    if ($hasCodex) { $found += 'codex' }
     $bundle = Find-ZCodeBundle
     if (-not $bundle) {
         $missing.Add('ZCode Desktop: install it from Z.ai and sign in with the GLM Coding Plan. If it is installed in a custom folder, set ZCODE_CLI_BUNDLE to its resources\glm\zcode.cjs')
@@ -110,7 +129,7 @@ function Install-Zcrew {
         return $false
     }
     $python = $python.Source
-    Write-Host '  git, python, claude, ZCode: OK'
+    Write-Host "  git, python, ZCode, commander ($($found -join ', ')): OK"
 
     # b. get the source --------------------------------------------------------
     New-Item -ItemType Directory -Force -Path $zcrewHome | Out-Null
@@ -147,7 +166,7 @@ function Install-Zcrew {
     $previous = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        & $python $zcrewPy _setup | Out-Host
+        & $python $zcrewPy _setup --commander $commander | Out-Host
         $setupExit = $LASTEXITCODE
     } finally { $ErrorActionPreference = $previous }
     if ($setupExit -ne 0) { throw "Setup failed (exit $setupExit); see the messages above." }
@@ -161,9 +180,10 @@ function Install-Zcrew {
     Write-Host ''
     Write-Host '=== zcrew installed ===' -ForegroundColor Green
     Write-Host 'Next steps:'
-    Write-Host '  1. Quit Claude Code completely and start it again (it loads the zcode_executor tools at start).'
+    Write-Host '  1. Quit Claude Code / Codex completely and start it again (it loads the zcode_executor tools at start).'
     Write-Host '  2. In each project you want to use it in:   cd your-project; zcrew enable'
-    Write-Host '  3. Open a NEW Claude Code session in that project and give it a task.'
+    Write-Host '     (Codex: zcrew enable --commander codex   both: zcrew enable --commander both)'
+    Write-Host '  3. Open a NEW Claude Code or Codex session in that project and give it a task.'
     Write-Host ''
     Write-Host 'Other commands: zcrew status | zcrew doctor | zcrew update | zcrew --help'
     Write-Host 'Open a new terminal if "zcrew" is not found in an already-open one.'

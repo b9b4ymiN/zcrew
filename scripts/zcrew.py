@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """zcrew - command line front end for the Claude Commander -> ZCode kit.
 
-    zcrew enable  [DIR] [--force] [--with-project-config] [--with-templates]
-    zcrew disable [DIR]
+    zcrew enable  [DIR] [--commander claude|codex|both] [--force] [--with-project-config] [--with-templates]
+    zcrew disable [DIR] [--commander claude|codex|both]
     zcrew status  [DIR]
     zcrew config  [--project DIR]
     zcrew doctor
-    zcrew update
+    zcrew update  [--commander auto|claude|codex|both]
     zcrew uninstall [--keep-config] [--yes]
     zcrew version
 
@@ -22,6 +22,8 @@ Environment switches (mainly for sandboxed testing):
     ZCREW_HOME      override the install root (default: derived from this file)
     ZCREW_NO_PATH=1 never modify the user PATH in the registry
     ZCREW_SKIP_MCP=1 pass -SkipMcpRegistration to install.ps1 / uninstall.ps1
+    ZCREW_COMMANDER  auto|claude|codex|both: which commander CLIs install.ps1
+                     registers the MCP server with (default auto = every one on PATH)
 """
 
 from __future__ import annotations
@@ -38,6 +40,8 @@ from typing import Any, Callable, Mapping, NamedTuple, Sequence
 
 HERE = Path(__file__).resolve().parent
 PROG = "zcrew"
+INSTALL_COMMANDERS = ("auto", "claude", "codex", "both")
+ENABLE_COMMANDERS = ("claude", "codex", "both")
 
 Runner = Callable[..., "subprocess.CompletedProcess[Any]"]
 
@@ -108,8 +112,19 @@ def bootstrap_decision(home: Path) -> str:
     return "needed"
 
 
-def install_args(install_ps1: Path, decision: str, env: Mapping[str, str]) -> list[str]:
-    argv = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(install_ps1), "-SkipDoctor"]
+def resolve_install_commander(explicit: str | None, env: Mapping[str, str]) -> str:
+    """--commander, else ZCREW_COMMANDER, else auto. ValueError when invalid."""
+    value = (explicit or env.get("ZCREW_COMMANDER") or "auto").strip().lower() or "auto"
+    if value not in INSTALL_COMMANDERS:
+        raise ValueError(f"ZCREW_COMMANDER={value!r} is not one of: {', '.join(INSTALL_COMMANDERS)}")
+    return value
+
+
+def install_args(install_ps1: Path, decision: str, env: Mapping[str, str], commander: str = "auto") -> list[str]:
+    argv = [
+        "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(install_ps1),
+        "-Commander", commander, "-SkipDoctor",
+    ]
     if decision == "needed":
         argv.append("-EnsureZCodeCliConfig")
     if env_flag(env, "ZCREW_SKIP_MCP"):
@@ -258,6 +273,8 @@ def cmd_commander(args: argparse.Namespace) -> int:
             argv += ["--project", args.project]
     else:
         argv.append(args.dir or os.getcwd())
+    if args.command in ("enable", "disable") and args.commander:
+        argv += ["--commander", args.commander]
     if args.command == "enable":
         argv += ["--force"] if args.force else []
         argv += ["--with-project-config"] if args.with_project_config else []
@@ -265,8 +282,15 @@ def cmd_commander(args: argparse.Namespace) -> int:
     return int(_load_sibling("commander").main(argv))
 
 
-def cmd_setup(paths: ZcrewPaths, env: Mapping[str, str], run: Runner, home: Path | None = None) -> int:
+def cmd_setup(
+    paths: ZcrewPaths, env: Mapping[str, str], run: Runner, home: Path | None = None, commander: str | None = None,
+) -> int:
     """install.ps1 + shim + PATH + doctor. Used by get.ps1 and by update."""
+    try:
+        commander = resolve_install_commander(commander, env)
+    except ValueError as exc:
+        print(f"{exc}; nothing was installed.")
+        return 2
     decision = bootstrap_decision(home or Path.home())
     if decision == "needed":
         print(
@@ -280,8 +304,8 @@ def cmd_setup(paths: ZcrewPaths, env: Mapping[str, str], run: Runner, home: Path
             "then run: zcrew update"
         )
     if env_flag(env, "ZCREW_SKIP_MCP"):
-        print("ZCREW_SKIP_MCP=1: Claude MCP registration is skipped.")
-    code = run(install_args(paths.scripts / "install.ps1", decision, env)).returncode
+        print("ZCREW_SKIP_MCP=1: Claude/Codex MCP registration is skipped.")
+    code = run(install_args(paths.scripts / "install.ps1", decision, env, commander)).returncode
     if code != 0:
         print(f"install.ps1 failed (exit {code}); fix the error above and run it again.")
         return code
@@ -294,7 +318,7 @@ def cmd_setup(paths: ZcrewPaths, env: Mapping[str, str], run: Runner, home: Path
     return 0
 
 
-def cmd_update(paths: ZcrewPaths, run: Runner) -> int:
+def cmd_update(paths: ZcrewPaths, run: Runner, commander: str | None = None) -> int:
     if not (paths.src / ".git").exists():
         print(f"{paths.src} is not a git checkout; reinstall with get.ps1 to enable updates.")
         return 1
@@ -315,9 +339,10 @@ def cmd_update(paths: ZcrewPaths, run: Runner) -> int:
             return 1
     print(f"updated {paths.src} to version {read_version(paths.src)}")
     # Run setup from the freshly pulled code, not this already-loaded module.
-    code = run([sys.executable, str(paths.scripts / "zcrew.py"), "_setup"]).returncode
+    setup = [sys.executable, str(paths.scripts / "zcrew.py"), "_setup"]
+    code = run(setup + (["--commander", commander] if commander else [])).returncode
     if code == 0:
-        print("\nRestart Claude Code (quit it fully) so it reloads the zcode_executor MCP server.")
+        print("\nRestart Claude Code (quit it fully) and/or Codex so they reload the zcode_executor MCP server.")
     return code
 
 
@@ -377,7 +402,7 @@ def cmd_uninstall(
             "zcrew's own files were kept. To delete them, close this window and run in PowerShell:\n"
             f"  Remove-Item -Recurse -Force \"{paths.home}\""
         )
-    print("Restart Claude Code so it drops the zcode_executor MCP server.")
+    print("Restart Claude Code and/or Codex so they drop the zcode_executor MCP server.")
     return 0
 
 
@@ -387,10 +412,11 @@ def cmd_uninstall(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=PROG,
-        description="Let Claude Code command ZCode workers (GLM Coding Plan) as a crew.",
+        description="Let Claude Code or Codex command ZCode workers (GLM Coding Plan) as a crew.",
         epilog=(
             "Typical use: cd your-project; zcrew enable (or zcrew enable --with-templates for starter "
-            "CLAUDE.md/AGENTS.md); then open a new Claude Code session there."
+            "CLAUDE.md/AGENTS.md; add --commander codex or both for Codex); then open a new "
+            "Claude Code or Codex session there."
         ),
     )
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
@@ -404,20 +430,33 @@ def build_parser() -> argparse.ArgumentParser:
         "--with-templates", action="store_true",
         help="also create starter CLAUDE.md and AGENTS.md from the zcrew templates (existing files are kept)",
     )
+    p.add_argument(
+        "--commander", choices=ENABLE_COMMANDERS, default=None,
+        help="claude (default: CLAUDE.md import), codex (AGENTS.override.md) or both",
+    )
     p = sub.add_parser("disable", help="turn the commander policy off (and remove unedited template files)")
     p.add_argument("dir", nargs="?", default=None, metavar="DIR")
+    p.add_argument(
+        "--commander", choices=ENABLE_COMMANDERS, default=None,
+        help="remove only this commander's activation (default: everything zcrew added)",
+    )
     p = sub.add_parser("status", help="show whether a project is enabled, its AGENTS.md and its effective config")
     p.add_argument("dir", nargs="?", default=None, metavar="DIR")
     p = sub.add_parser("config", help="print and validate the effective config")
     p.add_argument("--project", default=None, metavar="DIR", help="include DIR/.claude/zcode-commander.json")
     sub.add_parser("doctor", help="zero-model-cost health check of the whole setup")
-    sub.add_parser("update", help="pull the latest zcrew and re-run the installer")
+    p = sub.add_parser("update", help="pull the latest zcrew and re-run the installer")
+    p.add_argument(
+        "--commander", choices=INSTALL_COMMANDERS, default=None,
+        help="register the MCP server with: auto (every CLI found, default), claude, codex or both",
+    )
     p = sub.add_parser("uninstall", help="remove the MCP registration, policy and PATH entry")
     p.add_argument("--keep-config", action="store_true", help="keep ~/.zcode-commander (bridge and config.json)")
     p.add_argument("--yes", "-y", action="store_true", help="do not ask for confirmation")
     sub.add_parser("version", help="print the zcrew version")
     # Internal: called by get.ps1 and by 'update' after pulling new code.
-    sub.add_parser("_setup")
+    p = sub.add_parser("_setup")
+    p.add_argument("--commander", choices=INSTALL_COMMANDERS, default=None)
     return parser
 
 
@@ -440,11 +479,11 @@ def main(
     if args.command == "doctor":
         return _run_doctor(paths, run)
     if args.command == "update":
-        return cmd_update(paths, run)
+        return cmd_update(paths, run, args.commander)
     if args.command == "uninstall":
         return cmd_uninstall(paths, args, env, run)
     if args.command == "_setup":
-        return cmd_setup(paths, env, run)
+        return cmd_setup(paths, env, run, commander=args.commander)
     raise AssertionError(args.command)
 
 

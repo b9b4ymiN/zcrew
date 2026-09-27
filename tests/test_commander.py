@@ -600,5 +600,340 @@ class CliTests(TempDir):
         self.assertEqual(code, 0)
 
 
+POLICY_V1 = "# Policy v1\n\n- rule one\n- กฎ\n"
+POLICY_V2 = "# Policy v2\n\n- rule one\n- rule two\n"
+
+
+class CodexTests(TempDir):
+    def setUp(self) -> None:
+        super().setUp()
+        self.proj = self.base / "proj"
+        (self.proj / ".git").mkdir(parents=True)
+        self.policy = self.base / "policy" / "COMMANDER.md"
+        self.policy.parent.mkdir()
+        self.policy.write_bytes(POLICY_V1.encode("utf-8"))
+        self.override = self.proj / commander.CODEX_FILE
+        self.claude_md = self.proj / "CLAUDE.md"
+
+    def enable(self, mode: str = "codex", **kwargs: object) -> tuple[bool, str]:
+        return commander.enable(self.proj, commander=mode, policy_path=self.policy, **kwargs)
+
+    def snapshot(self) -> dict[str, bytes | None]:
+        return {
+            str(p.relative_to(self.proj)): (p.read_bytes() if p.is_file() else None)
+            for p in sorted(self.proj.rglob("*"))
+        }
+
+    def round_trip(self, original: bytes | None, mode: str = "codex") -> None:
+        if original is not None:
+            self.override.write_bytes(original)
+        before = self.snapshot()
+        ok, msg = self.enable(mode)
+        self.assertTrue(ok, msg)
+        self.assertTrue(commander.is_codex_enabled(self.proj))
+        ok, msg = commander.disable(self.proj)
+        self.assertTrue(ok, msg)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_block_format_and_sha(self) -> None:
+        self.enable()
+        text = self.override.read_bytes().decode("utf-8")
+        digest = commander._sha256(POLICY_V1.encode("utf-8"))
+        self.assertEqual(
+            text,
+            f"<!-- zcrew-codex:begin policy-sha256={digest} -->\n" + POLICY_V1 + "<!-- zcrew-codex:end -->\n",
+        )
+        self.assertEqual(commander.codex_block_sha(text), digest)
+
+    def test_round_trip_none(self) -> None:
+        self.round_trip(None)
+        self.assertEqual([p.name for p in self.proj.iterdir()], [".git"])
+
+    def test_round_trip_lf(self) -> None:
+        self.round_trip(b"# My overrides\n\n- be brief\n")
+
+    def test_round_trip_crlf(self) -> None:
+        self.round_trip(b"# My overrides\r\n\r\n- be brief\r\n")
+
+    def test_round_trip_no_trailing_newline(self) -> None:
+        self.round_trip(b"# My overrides\n- be brief")
+        self.round_trip(b"# My overrides\r\n- be brief")
+
+    def test_round_trip_empty_existing_file_kept(self) -> None:
+        self.round_trip(b"")
+        self.assertTrue(self.override.is_file())
+
+    def test_crlf_file_gets_crlf_block(self) -> None:
+        self.override.write_bytes(b"a\r\n")
+        self.policy.write_bytes(POLICY_V1.replace("\n", "\r\n").encode("utf-8"))
+        self.enable()
+        data = self.override.read_bytes()
+        self.assertNotIn(b"\n", data.replace(b"\r\n", b""))
+        self.assertIn(b"<!-- zcrew-codex:end -->\r\n", data)
+
+    def test_crlf_bom_policy_checkout_hashes_like_lf(self) -> None:
+        self.enable()
+        first = self.override.read_bytes()
+        self.policy.write_bytes(("﻿" + POLICY_V1.replace("\n", "\r\n")).encode("utf-8"))
+        ok, msg = self.enable()
+        self.assertIn("policy current (no change)", msg)
+        self.assertEqual(self.override.read_bytes(), first)
+
+    def test_idempotent(self) -> None:
+        self.enable()
+        first = self.snapshot()
+        ok, msg = self.enable()
+        self.assertTrue(ok)
+        self.assertIn("no change", msg)
+        self.assertNotIn("new Codex session", msg)
+        self.assertEqual(self.snapshot(), first)
+
+    def test_stale_then_refresh_in_place_and_byte_exact_disable(self) -> None:
+        original = b"# Mine\r\n\r\nkeep this\r\n"
+        self.override.write_bytes(original)
+        self.enable()
+        self.assertEqual(commander.codex_state(self.proj, self.policy), "current")
+        self.override.write_bytes(self.override.read_bytes() + b"after block\r\n")
+        self.policy.write_bytes(POLICY_V2.encode("utf-8"))
+        self.assertEqual(commander.codex_state(self.proj, self.policy), "stale")
+        ok, msg = self.enable()
+        self.assertIn("refreshed Codex policy", msg)
+        self.assertIn("new Codex session", msg)
+        self.assertEqual(commander.codex_state(self.proj, self.policy), "current")
+        text = self.override.read_bytes()
+        self.assertIn(b"rule two\r\n", text)
+        self.assertNotIn(b"Policy v1", text)
+        self.assertEqual(text.count(b"zcrew-codex:begin"), 1)
+        self.assertTrue(text.endswith(b"<!-- zcrew-codex:end -->\r\nafter block\r\n"))
+        commander.disable(self.proj)
+        self.assertEqual(self.override.read_bytes(), original + b"after block\r\n")
+
+    def test_state_off_and_unknown(self) -> None:
+        self.assertEqual(commander.codex_state(self.proj, self.policy), "off")
+        self.override.write_bytes(b"mine\n")
+        self.assertEqual(commander.codex_state(self.proj, self.policy), "off")
+        self.enable()
+        self.assertEqual(commander.codex_state(self.proj, None), "unknown")
+        self.assertEqual(commander.codex_state(self.proj, self.base / "missing.md"), "unknown")
+
+    def test_created_file_kept_if_user_added_content(self) -> None:
+        self.enable()
+        self.override.write_bytes(self.override.read_bytes() + b"my notes\n")
+        commander.disable(self.proj)
+        self.assertEqual(self.override.read_bytes(), b"my notes\n")
+        self.assertFalse((self.proj / ".claude").exists())
+
+    def test_codex_only_does_not_touch_claude_md(self) -> None:
+        self.claude_md.write_bytes(b"x\n")
+        self.enable()
+        self.assertEqual(self.claude_md.read_bytes(), b"x\n")
+        self.assertFalse(commander.is_enabled(self.proj))
+
+    def test_both_round_trip_existing_files(self) -> None:
+        self.claude_md.write_bytes(b"# Claude\r\n")
+        self.round_trip(b"# Override\n", mode="both")
+
+    def test_both_round_trip_nothing(self) -> None:
+        before = self.snapshot()
+        ok, msg = self.enable("both")
+        self.assertTrue(ok, msg)
+        self.assertTrue(commander.is_enabled(self.proj))
+        self.assertTrue(commander.is_codex_enabled(self.proj))
+        self.assertIn("restart Claude Code", msg)
+        self.assertIn("new Codex session", msg)
+        commander.disable(self.proj)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_both_idempotent(self) -> None:
+        self.enable("both")
+        first = self.snapshot()
+        ok, msg = self.enable("both")
+        self.assertTrue(ok)
+        self.assertNotIn("restart", msg)
+        self.assertEqual(self.snapshot(), first)
+
+    def test_partial_disable_codex_then_claude(self) -> None:
+        before = self.snapshot()
+        self.enable("both")
+        commander.disable(self.proj, commander="codex")
+        self.assertFalse(self.override.exists())
+        self.assertTrue(commander.is_enabled(self.proj))
+        commander.disable(self.proj, commander="claude")
+        self.assertEqual(self.snapshot(), before)
+
+    def test_partial_disable_claude_then_codex_removes_created_dir(self) -> None:
+        before = self.snapshot()
+        self.enable("claude")  # creates .claude
+        self.enable("codex")   # .claude already there
+        commander.disable(self.proj, commander="claude")
+        self.assertTrue(commander.is_codex_enabled(self.proj))
+        self.assertFalse(self.claude_md.exists())
+        commander.disable(self.proj, commander="codex")
+        self.assertEqual(self.snapshot(), before)
+
+    def test_partial_disable_when_other_not_enabled(self) -> None:
+        self.enable("codex")
+        ok, msg = commander.disable(self.proj, commander="claude")
+        self.assertIn("not enabled", msg)
+        self.assertTrue(commander.is_codex_enabled(self.proj))
+
+    def _templates(self) -> Path:
+        tmpl = self.base / "tmpl"
+        tmpl.mkdir()
+        (tmpl / "CLAUDE.md").write_bytes(b"# T CLAUDE\n")
+        (tmpl / "AGENTS.md").write_bytes(b"# T AGENTS\n")
+        return tmpl
+
+    def test_both_with_templates_round_trip(self) -> None:
+        tmpl = self._templates()
+        before = self.snapshot()
+        ok, msg = self.enable("both", with_templates=True, templates_dir=tmpl)
+        self.assertTrue(ok, msg)
+        self.assertEqual(commander.template_state(self.proj, "CLAUDE.md"), "template")
+        self.assertEqual(commander.template_state(self.proj, "AGENTS.md"), "template")
+        commander.disable(self.proj)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_codex_with_templates_creates_plain_claude_md(self) -> None:
+        tmpl = self._templates()
+        before = self.snapshot()
+        ok, msg = self.enable("codex", with_templates=True, templates_dir=tmpl)
+        self.assertTrue(ok, msg)
+        self.assertEqual(self.claude_md.read_bytes(), b"# T CLAUDE\n")
+        self.assertFalse(commander.is_enabled(self.proj))
+        commander.disable(self.proj)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_size_warning(self) -> None:
+        self.policy.write_bytes(("x" * 100 + "\n").encode() * 300)
+        ok, msg = self.enable()
+        self.assertTrue(ok)
+        self.assertIn("warning:", msg)
+        self.assertIn("32 KiB", msg)
+        self.policy.write_bytes(POLICY_V1.encode("utf-8"))
+        ok, msg = self.enable()
+        self.assertNotIn("warning:", msg)
+
+    def test_missing_policy_changes_nothing(self) -> None:
+        before = self.snapshot()
+        ok, msg = commander.enable(self.proj, commander="both", policy_path=self.base / "none.md")
+        self.assertFalse(ok)
+        self.assertIn("cannot find the commander policy", msg)
+        self.assertEqual(self.snapshot(), before)
+        with mock.patch.object(commander, "find_policy_file", return_value=None):
+            ok, msg = commander.enable(self.proj, commander="codex")
+        self.assertFalse(ok)
+        self.assertIn("Nothing was changed", msg)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_policy_with_marker_refused(self) -> None:
+        self.policy.write_bytes(b"x\n<!-- zcrew-codex:end -->\n")
+        ok, _ = self.enable()
+        self.assertFalse(ok)
+        self.assertFalse(self.override.exists())
+
+    def test_non_git_refused(self) -> None:
+        plain = self.base / "plain"
+        plain.mkdir()
+        ok, _ = commander.enable(plain, commander="codex", policy_path=self.policy)
+        self.assertFalse(ok)
+        self.assertFalse((plain / commander.CODEX_FILE).exists())
+
+    def test_unknown_commander(self) -> None:
+        self.assertFalse(commander.enable(self.proj, commander="gpt")[0])
+        self.assertFalse(commander.disable(self.proj, commander="gpt")[0])
+
+    def test_claude_mode_output_unchanged(self) -> None:
+        ok, msg = commander.enable(self.proj)
+        self.assertEqual(
+            msg,
+            f"enabled: created {self.claude_md} with the commander import block\n"
+            "restart Claude Code in this project to load the policy",
+        )
+        self.assertFalse(self.override.exists())
+        self.assertFalse((self.proj / commander.CODEX_SIDECAR_REL).exists())
+
+    def test_old_claude_sidecar_format_still_read(self) -> None:
+        self.enable("claude")
+        sidecar = self.proj / commander.CREATED_SIDECAR_REL
+        self.assertEqual(json.loads(sidecar.read_text(encoding="utf-8")), {"createdClaudeDir": True})
+        commander.disable(self.proj)
+        self.assertEqual([p.name for p in self.proj.iterdir()], [".git"])
+
+
+class PolicyLookupTests(TempDir):
+    def test_repo_layout(self) -> None:
+        src = self.base / "src"
+        (src / "scripts").mkdir(parents=True)
+        (src / "policy").mkdir()
+        (src / "policy" / "COMMANDER.md").write_text("p", encoding="utf-8")
+        self.assertEqual(commander.find_policy_file(src / "scripts", home=self.base / "home"),
+                         src / "policy" / "COMMANDER.md")
+
+    def test_installed_layout(self) -> None:
+        home = self.base / "home"
+        installed = home / ".claude" / "zcode-commander" / "COMMANDER.md"
+        installed.parent.mkdir(parents=True)
+        installed.write_text("p", encoding="utf-8")
+        self.assertEqual(commander.find_policy_file(home / ".zcode-commander", home=home), installed)
+
+    def test_missing(self) -> None:
+        self.assertIsNone(commander.find_policy_file(self.base / "x" / "scripts", home=self.base / "home"))
+
+    def test_repo_policy_found(self) -> None:
+        self.assertEqual(commander.find_policy_file(SCRIPTS, home=self.base), ROOT / "policy" / "COMMANDER.md")
+
+
+class CodexCliTests(CliTests):
+    def setUp(self) -> None:
+        super().setUp()
+        self.policy = self.base / "COMMANDER.md"
+        self.policy.write_bytes(POLICY_V1.encode("utf-8"))
+
+    def run_cli(self, *argv: str) -> tuple[int, str]:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = commander.main(list(argv), home=self.home, table_path=self.table, policy_path=self.policy)
+        return code, out.getvalue()
+
+    def test_status_matrix(self) -> None:
+        code, out = self.run_cli("status", str(self.proj))
+        self.assertIn("enabled: no", out)
+        self.assertIn("claude: not enabled", out)
+        self.assertIn("codex: not enabled", out)
+        code, out = self.run_cli("enable", str(self.proj), "--commander", "codex")
+        self.assertEqual(code, 0, out)
+        code, out = self.run_cli("status", str(self.proj))
+        self.assertIn("enabled: yes", out)
+        self.assertIn("claude: not enabled", out)
+        self.assertIn("codex: enabled (policy current)", out)
+        self.policy.write_bytes(POLICY_V2.encode("utf-8"))
+        code, out = self.run_cli("status", str(self.proj))
+        self.assertIn("codex: enabled (policy STALE - run: zcrew enable --commander codex)", out)
+        code, out = self.run_cli("enable", str(self.proj), "--commander", "both")
+        self.assertIn("refreshed Codex policy", out)
+        code, out = self.run_cli("status", str(self.proj))
+        self.assertIn("claude: enabled", out)
+        self.assertIn("codex: enabled (policy current)", out)
+        self.run_cli("disable", str(self.proj), "--commander", "claude")
+        code, out = self.run_cli("status", str(self.proj))
+        self.assertIn("claude: not enabled", out)
+        code, out = self.run_cli("disable", str(self.proj))
+        self.assertEqual(code, 0)
+        self.assertEqual([p.name for p in self.proj.iterdir()], [".git"])
+
+    def test_bad_commander_choice(self) -> None:
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            self.run_cli("enable", str(self.proj), "--commander", "gpt")
+
+    def test_non_utf8_override_reported(self) -> None:
+        (self.proj / commander.CODEX_FILE).write_bytes(b"\xff\xfe bad")
+        code, out = self.run_cli("enable", str(self.proj), "--commander", "codex")
+        self.assertEqual(code, 1)
+        self.assertIn("not UTF-8", out)
+        self.assertEqual((self.proj / commander.CODEX_FILE).read_bytes(), b"\xff\xfe bad")
+        self.assertFalse((self.proj / ".claude").exists())
+
+
 if __name__ == "__main__":
     unittest.main()
