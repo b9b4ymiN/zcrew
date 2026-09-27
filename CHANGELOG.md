@@ -2,6 +2,29 @@
 
 All notable changes to the Claude Commander × ZCode Executor Kit are recorded here.
 
+## 0.5.0 — 2026-09-27
+
+**Codex can act as commander**, alone or alongside Claude Code. ZCode is always the worker.
+
+### Added
+
+- `zcrew enable --commander claude|codex|both` (default `claude`, unchanged behaviour).
+  - Codex gets the commander policy inlined into `AGENTS.override.md`, inside a marked block that carries the policy sha256.
+  - Codex prefers `AGENTS.override.md` to `AGENTS.md` in the same folder, and ZCode reads only `AGENTS.md`, so the roles never mix.
+- `zcrew status` reports Claude/Codex activation. It flags a stale Codex policy copy, and re-running `enable` refreshes it in place.
+- `zcrew disable [--commander X]` restores files byte for byte.
+- `scripts/codex_config.py` sets `startup_timeout_sec = 60`, `tool_timeout_sec = 180` and `default_tools_approval_mode = "approve"` for `zcode_executor` in `~/.codex/config.toml`. It backs the file up first and validates the result with tomllib.
+- The installer, `get.ps1` and `zcrew update` register the MCP server in Claude Code and/or Codex (`-Commander` / `ZCREW_COMMANDER`: `auto|claude|codex|both`). `uninstall` removes it from both.
+- doctor checks the Claude and Codex registrations:
+  - `[INFO]` when a CLI is not installed;
+  - `[WARN]` when a CLI is installed but not registered, or when its timeout is too low;
+  - `[FAIL]` when a registration is broken, or when no commander is registered.
+
+### Changed
+
+- Policy v3 is commander-neutral. It tells Codex to read `CLAUDE.md` and `AGENTS.md` itself, and notes that the bridge's cross-process leases serialize workers from two commanders in the same folder.
+- At least one of Claude Code or Codex is now required, instead of Claude Code specifically.
+
 ## 0.4.0 — 2026-09-26
 
 ### Added

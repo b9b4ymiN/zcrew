@@ -63,7 +63,7 @@ ZCode automatically reads `AGENTS.md` from the working directory and its parents
 2. Check `git status`. Preserve pre-existing user changes; never reset/clean/overwrite them.
 3. `agent-start` with `cwd` = project or worktree, `workspaceAccess: "exclusive"`, `mode: "build"`, plus model/thoughtLevel/timeout from config.
    Another commander (Claude Code or Codex) may be using ZCode workers in the same repo. The bridge leases each working directory exclusively across processes. If a run stays queued with `resource.waiting`, tell the user that another commander's worker is busy there, and either wait or use a separate `git worktree`.
-4. Follow progress with `agent-wait` (pass the last revision). Do not sleep or poll.
+4. Wait economically, because every `agent-wait` return costs you a model turn. By default call `agent-wait` with `afterRevision: 999999999`, `timeoutMs: 60000` and `resultChars: 0`. That blocks until the run reaches a terminal state or 60 s pass, instead of waking on every streaming event. Repeat until terminal, then fetch the result once with a normal `resultChars`. After each 60 s wait you may post a one-line progress update from the returned `phase`/`activeTools`. Use real revisions only when you need fine-grained events. Do not sleep or poll with shell commands.
 5. On completion, gather evidence yourself: `git diff`, changed files, and run the VERIFY commands. ZCode's report is a claim, not evidence.
 6. Review: every acceptance criterion, scope creep, architecture fit, tests not weakened, security/data-loss risks.
 7. FAIL → send a precise correction to the SAME `threadId`: "REVIEW RESULT: FAIL (correction round N of M)", failed criteria, exact errors, required changes, same scope.

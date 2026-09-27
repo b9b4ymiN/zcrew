@@ -1,7 +1,7 @@
 {
   "name": "zcrew",
-  "version": "0.4.0",
-  "target": "Windows + Claude Code + ZCode Desktop",
+  "version": "0.5.0",
+  "target": "Windows + (Claude Code and/or Codex) + ZCode Desktop",
   "tested_zcode_versions": [
     "3.14.0"
   ],
@@ -12,5 +12,8 @@
   "changelog": "CHANGELOG.md",
   "repository": "https://github.com/b9b4ymiN/zcrew",
   "license": "Apache-2.0",
-  "bootstrap": "irm https://raw.githubusercontent.com/b9b4ymiN/zcrew/main/get.ps1 | iex"
+  "bootstrap": "irm https://raw.githubusercontent.com/b9b4ymiN/zcrew/main/get.ps1 | iex",
+  "tested_codex_versions": [
+    "0.157.1"
+  ]
 }

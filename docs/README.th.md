@@ -1,4 +1,4 @@
-# zcrew — คู่มือภาษาไทย (v0.4.0)
+# zcrew — คู่มือภาษาไทย (v0.5.0)
 
 > English: [README.md](../README.md)
 
@@ -9,7 +9,7 @@
 | บทบาท | ใคร | ทำอะไร |
 |---|---|---|
 | ลูกค้า | คุณ | บอกว่าอยากได้อะไร อนุมัติแผน |
-| เจ้าของบริษัท | Claude Code (Opus) | ถามให้ชัด → วางแผน → แจกงาน → ตรวจงาน → สั่งแก้ → รายงาน |
+| เจ้าของบริษัท (หัวหน้า) | **Claude Code หรือ Codex** (เลือกราย project หรือใช้ทั้งคู่) | ถามให้ชัด → วางแผน → แจกงาน → ตรวจงาน → สั่งแก้ → รายงาน |
 | ช่าง (สูงสุด 5 คน) | ZCode (GLM-5.3, คิดระดับ max) | ลงมือเขียนโค้ด รัน test และแก้ตามที่สั่ง |
 
 > ช่างตัดสินเองไม่ได้ว่างานของตัวเองผ่าน Claude ต้องดู `git diff` และรัน test เองทุกครั้ง
@@ -93,7 +93,7 @@ irm https://raw.githubusercontent.com/b9b4ymiN/zcrew/main/get.ps1 | iex
 3. ถ้า ZCode CLI ยังไม่ได้เลือก model จะคัดลอกการตั้งค่า Coding Plan (รวม API key) จากแอป ZCode ให้เอง ไฟล์เดิมจะถูกสำรองเป็น `.bak` และ key อยู่แค่ในเครื่องคุณ
 4. clone `coder-mcp-bridge` ไปที่ `~/.zcode-commander/coder-mcp-bridge` โดย **pin ไว้ที่ commit ที่ทดสอบแล้ว**
 5. ติดตั้ง policy และสร้าง `~/.zcode-commander/config.json` (ถ้ามีไฟล์อยู่แล้ว จะไม่เขียนทับ)
-6. ลงทะเบียน MCP server `zcode_executor` ใน Claude Code (scope `user`)
+6. ลงทะเบียน MCP server `zcode_executor` ใน **Claude Code และ/หรือ Codex** ที่เจอในเครื่อง ถ้าต้องการเลือกเอง ให้ตั้ง `$env:ZCREW_COMMANDER = 'codex'` (หรือ `claude` / `both`) ก่อนรันคำสั่งติดตั้ง
 7. สร้างคำสั่ง `zcrew` และเพิ่ม `~/.zcrew/bin` เข้า PATH ของ user (ไม่แตะ PATH ของเครื่อง)
 8. รัน doctor แล้วบอกขั้นต่อไป
 
@@ -150,7 +150,23 @@ zcrew disable       # ปิดใช้ (CLAUDE.md กลับเป็นเ�
 - `--with-project-config`: สร้าง `.claude/zcode-commander.json` ให้ project นี้ใช้ model/ค่าต่างจากค่ากลาง
 - `--force`: เปิดใช้แม้โฟลเดอร์ไม่ใช่ git repo (ไม่แนะนำ)
 
-หลัง enable ให้เปิด **session ใหม่** ของ Claude Code ใน project นั้น
+หลัง enable ให้เปิด **session ใหม่** ของ Claude Code หรือ Codex ใน project นั้น
+
+### เลือกหัวหน้า: Claude Code, Codex หรือทั้งคู่
+
+```powershell
+zcrew enable                      # Claude Code (ค่าเริ่มต้น)
+zcrew enable --commander codex    # Codex
+zcrew enable --commander both     # ทั้งคู่ เปิดแอปไหนมา แอปนั้นเป็นหัวหน้า
+```
+
+ตัวอย่างการแบ่งงาน: ใช้ Claude คุมงาน core logic และใช้ Codex คุมงาน design ใน project เดียวกัน ทั้งสองสั่งช่าง ZCode ชุดเดียวกัน ถ้าสั่งงานพร้อมกัน bridge จะจองโฟลเดอร์ไว้ ช่างอีกฝั่งต้องรอคิว ไม่เขียนไฟล์ทับกัน
+
+**Codex รู้ได้ยังไงว่าตัวเองเป็นหัวหน้า:** Codex อ่านไฟล์ `AGENTS.md` ซึ่งเป็นไฟล์เดียวกับที่ช่าง ZCode อ่าน zcrew จึงเขียน policy หัวหน้าไว้ใน **`AGENTS.override.md`** แทน Codex จะอ่านไฟล์นี้**แทน** `AGENTS.md` ส่วน ZCode ไม่อ่านไฟล์นี้ บทบาทจึงไม่ปนกัน (ทดสอบกับ Codex จริงแล้ว)
+
+Codex ดึงไฟล์อื่นเข้ามาด้วย `@` แบบ Claude ไม่ได้ policy จึงถูกคัดลอกลงไฟล์ทั้งก้อน หลัง `zcrew update` ถ้า `zcrew status` ขึ้นว่า `policy STALE` ให้รัน `zcrew enable --commander codex` อีกครั้งเพื่อรีเฟรช
+
+`zcrew disable` จะเอาทุกอย่างออก ถ้าต้องการเอาออกแค่หัวหน้าคนเดียว ใช้ `zcrew disable --commander codex` (หรือ `claude`)
 
 ### ไฟล์คำสั่งของ project: ไฟล์ไหน ใครอ่าน
 
