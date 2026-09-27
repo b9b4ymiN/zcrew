@@ -54,6 +54,10 @@ PALETTE = ("36", "95", "32", "33", "94", "35", "92", "96")
 Clock = Callable[[], int]
 _Sleep = Callable[[float], None]
 
+# One stderr line per process when zcode_activity fell back to exact parsing.
+NOTE_LAYOUT = "zcrew: note: ZCode data layout changed; using slower exact mode"
+_layout_note_shown = False
+
 _LIB_NAME = "_zcrew_zcode_activity"
 
 
@@ -120,6 +124,16 @@ def _paint_label(label: str, use_colour: bool) -> str:
         return label
     index = int(label[1:]) if len(label) > 1 and label[1:].isdigit() else 1
     return _paint(label, PALETTE[(index - 1) % len(PALETTE)])
+
+
+def _layout_note(za: ModuleType, err: Any) -> None:
+    """Emit the exact-mode note once per process (stderr, never stdout)."""
+    global _layout_note_shown
+    if not _layout_note_shown and getattr(za, "LAYOUT_DEGRADED", False):
+        _layout_note_shown = True
+        err.write(NOTE_LAYOUT + "\n")
+        if hasattr(err, "flush"):
+            err.flush()
 
 
 # --- formatting helpers -----------------------------------------------------------------
@@ -295,11 +309,13 @@ def run_watch(
     interval: float,
     since_ms: float,
     out: Any = None,
+    err: Any = None,
     env: Mapping[str, str] | None = None,
     sleep: _Sleep = time.sleep,
     clock: Clock | None = None,
     max_polls: int | None = None,
 ) -> int:
+    err = sys.stderr if err is None else err
     clock = clock or (lambda: int(time.time() * 1000))
     use_colour = _use_colour(out, env or {})
     target = "all directories" if cwd is None else str(cwd)
@@ -313,8 +329,13 @@ def run_watch(
     try:
         while max_polls is None or polls < int(max_polls):
             now = int(clock())
+            # Ask the database for recent sessions only: a running session is
+            # always fresh (its session row is updated with its parts), so
+            # STALE_MS is a safe floor for the window next to --since.
+            window = int(max(since_ms, za.STALE_MS))
             sessions = [
-                s for s in za.list_sessions(db, cwd=cwd, limit=WATCH_SESSION_LIMIT, now_ms=now)
+                s for s in za.list_sessions(
+                    db, cwd=cwd, limit=WATCH_SESSION_LIMIT, now_ms=now, since_ms=now - window)
                 if s.updated_ms >= now - since_ms or s.status == "running"
             ]
             for s in sessions:
@@ -335,6 +356,7 @@ def run_watch(
                     out.write(f"{_hms(act.at_ms)} {label} {ICONS.get(act.kind, '*')} {_line_text(act)}\n")
             if hasattr(out, "flush"):
                 out.flush()
+            _layout_note(za, err)  # during a long watch the note shows up promptly
             polls += 1
             if max_polls is not None and polls >= int(max_polls):
                 break
@@ -368,25 +390,28 @@ def run(
     try:
         db = _db_path(za, env)
         if args.command == "runs":
-            return run_runs(
+            rc = run_runs(
                 za, db,
                 cwd=None if args.all else (args.dir or os.getcwd()),
                 limit=args.limit, as_json=args.json, out=out, env=env,
                 now_ms=int(clock()) if clock else None,
             )
-        if args.command == "show":
-            return run_show(
+        elif args.command == "show":
+            rc = run_show(
                 za, db, args.session, as_json=args.json, out=out, env=env,
                 now_ms=int(clock()) if clock else None,
             )
-        if args.command == "watch":
-            return run_watch(
+        elif args.command == "watch":
+            rc = run_watch(
                 za, db,
                 cwd=None if args.all else (args.dir or os.getcwd()),
                 interval=float(args.interval), since_ms=max(0.0, float(args.since)) * 60_000,
-                out=out, env=env, sleep=sleep, clock=clock, max_polls=max_polls,
+                out=out, err=err, env=env, sleep=sleep, clock=clock, max_polls=max_polls,
             )
-        raise AssertionError(args.command)
+        else:
+            raise AssertionError(args.command)
+        _layout_note(za, err)
+        return rc
     except za.ActivityError as exc:
         err.write(f"zcrew: {exc}\n")
         return 1

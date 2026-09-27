@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import importlib.util
 import json
 import sqlite3
@@ -8,6 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import ModuleType
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = ROOT / "scripts"
@@ -80,16 +82,20 @@ class Fixture:
                   (mid, sid, t, t, json.dumps({"role": role})))
 
     def part(self, sid: str, mid: str, data: dict, created: int, updated: int | None = None,
-             pid: str | None = None) -> str:
+             pid: str | None = None, raw: str | None = None) -> str:
+        """Insert a part; ``raw`` stores that exact JSON text instead of the
+        compact re-encoding (for whitespace / key-order layouts)."""
         self._n += 1
         pid = pid or f"part_{self._n:04d}"
         self.exec("INSERT INTO part (id, message_id, session_id, time_created, time_updated, data, sequence)"
                   " VALUES (?,?,?,?,?,?,?)",
-                  (pid, mid, sid, created, created if updated is None else updated, json.dumps(data), self._n))
+                  (pid, mid, sid, created, created if updated is None else updated,
+                   raw if raw is not None else json.dumps(data, separators=(",", ":")), self._n))
         return pid
 
     def update_part(self, pid: str, data: dict, updated: int) -> None:
-        self.exec("UPDATE part SET data = ?, time_updated = ? WHERE id = ?", (json.dumps(data), updated, pid))
+        self.exec("UPDATE part SET data = ?, time_updated = ? WHERE id = ?",
+                  (json.dumps(data, separators=(",", ":")), updated, pid))
 
     def turn(self, sid: str, tid: str, status: str, started: int, completed: int, tools: int = 0,
              errors: int = 0) -> None:
@@ -103,6 +109,7 @@ class ZCodeActivityTest(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.fx = Fixture(Path(self._tmp.name))
         self.db = self.fx.path
+        za.LAYOUT_DEGRADED = False  # the note flag is sticky per process
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
@@ -237,6 +244,147 @@ class ZCodeActivityTest(unittest.TestCase):
         fx.session("sess_4", r"D:\elsewhere", "d", 1, 2)
         ids = [r.id for r in za.list_sessions(self.db, cwd="c:/WORK/sandbox/", now_ms=NOW)]
         self.assertEqual(ids, ["sess_1", "sess_2"])
+
+    # --- batched summaries ------------------------------------------------------------------
+
+    def test_list_sessions_batches_chunks_and_mixed_turns(self) -> None:
+        fx = self.fx
+        self.completed_session("sess_batch1", at=NOW - 60_000)  # covered by a turn row
+        fx.session("sess_batch2", SANDBOX, "no turn", NOW - 30_000, NOW - 25_000)
+        fx.message("m2", "sess_batch2", "assistant", NOW - 30_000)
+        fx.part("sess_batch2", "m2", tool("Read", "completed", {"file_path": SANDBOX + r"\a.py"}), NOW - 26_000)
+        fx.part("sess_batch2", "m2", {"type": "step-finish", "reason": "stop", "tokens": {"total": 12}},
+                NOW - 25_000)
+        fx.session("sess_batch3", SANDBOX, "empty", NOW - 20_000, NOW - 20_000)
+        with mock.patch.object(za, "SCAN_CHUNK", 2):  # several IN(...) batches per call
+            chunked = za.list_sessions(self.db, limit=10, now_ms=NOW)
+        self.assertEqual(chunked, za.list_sessions(self.db, limit=10, now_ms=NOW))
+        by = {s.id: s for s in chunked}
+        self.assertEqual(by["sess_batch1"].duration_ms, 900)  # SUM over turn_usage
+        self.assertEqual(by["sess_batch1"].status, "completed")
+        self.assertEqual(by["sess_batch2"].status, "completed")  # no turn row: final step-finish
+        self.assertEqual(by["sess_batch2"].last_context_tokens, 12)
+        self.assertEqual(by["sess_batch2"].duration_ms, 0)
+        self.assertEqual((by["sess_batch2"].tool_calls, by["sess_batch2"].errors), (1, 0))
+        self.assertEqual(by["sess_batch3"].status, "idle")
+
+    def test_context_tie_keeps_scan_order(self) -> None:
+        fx = self.fx
+        sid = "sess_tie1"
+        fx.session(sid, SANDBOX, "tie", 1_000, 3_000)
+        fx.message("m", sid, "assistant", 1_000)
+        fx.part(sid, "m", {"type": "step-finish", "reason": "stop", "tokens": {"total": 111}}, 2_000)
+        fx.part(sid, "m", {"type": "step-finish", "reason": "stop", "tokens": {"total": 222}}, 2_000)
+        # Equal time_created: the first part in index order wins, as the old
+        # "ORDER BY time_created DESC LIMIT 5" resolved the same tie.
+        self.assertEqual(za.list_sessions(self.db, now_ms=NOW)[0].last_context_tokens, 111)
+
+    def test_latest_part_tie_keeps_scan_order(self) -> None:
+        fx = self.fx
+        sid = "sess_tie2"
+        fx.session(sid, SANDBOX, "tie2", 1_000, 3_000)
+        fx.message("m", sid, "assistant", 1_000)
+        fx.part(sid, "m", {"type": "step-start"}, 2_000)  # first in index order wins the tie
+        fx.part(sid, "m", {"type": "step-finish", "reason": "stop", "tokens": {"total": 5}}, 2_000)
+        # step-start owns the tie (as on the real database): not a step-finish,
+        # long silent -> idle rather than completed.
+        s = za.list_sessions(self.db, now_ms=NOW)[0]
+        self.assertEqual(s.status, "idle")
+        self.assertEqual(s.last_context_tokens, 5)
+
+    def test_step_finish_unusual_layout_falls_back_to_json(self) -> None:
+        fx = self.fx
+        sid = "sess_odd"
+        fx.session(sid, SANDBOX, "odd", 1_000, 3_000)
+        fx.message("m", sid, "assistant", 1_000)
+        # "reason" is not the second key: the packed prefix cannot decode it and
+        # the exact per-session query runs instead.
+        fx.part(sid, "m", {"type": "step-finish", "tokens": {"total": 9}, "reason": "stop"}, 2_500)
+        s = za.list_sessions(self.db, now_ms=NOW)[0]
+        self.assertEqual(s.status, "completed")
+        self.assertEqual(s.last_context_tokens, 9)
+
+    def test_step_finish_reason_length_is_failed(self) -> None:
+        fx = self.fx
+        sid = "sess_len"
+        fx.session(sid, SANDBOX, "len", 1_000, 3_000)
+        fx.message("m", sid, "assistant", 1_000)
+        fx.part(sid, "m", {"type": "step-finish", "reason": "length", "tokens": {"total": 3}}, 2_500)
+        self.assertEqual(za.list_sessions(self.db, now_ms=NOW)[0].status, "failed")
+
+    # --- layout self-check -------------------------------------------------------------------
+
+    def test_layout_check_passes_and_fast_path_used(self) -> None:
+        self.completed_session()
+        conn = za.connect(self.db)
+        try:
+            self.assertTrue(za._layout_ok(conn, ["sess_aaaa1111-done"]))
+        finally:
+            conn.close()
+        with mock.patch.object(za, "_summarize_exact", side_effect=AssertionError("exact path used")):
+            rows = za.list_sessions(self.db, now_ms=NOW)
+        self.assertEqual((rows[0].tool_calls, rows[0].errors), (3, 1))
+        self.assertFalse(za.LAYOUT_DEGRADED)
+
+    def test_layout_check_rejects_changed_layout_and_counts_stay_exact(self) -> None:
+        fx = self.fx
+        sid = "sess_oddlay1"
+        fx.session(sid, SANDBOX, "odd layout", 1_000, 4_000)
+        fx.message("m", sid, "assistant", 1_000)
+        # "type" is not the first key: the tool prefix test misses this row.
+        fx.part(sid, "m", {"callID": "c1", "type": "tool",
+                           "state": {"status": "completed", "input": {}}}, 2_000)
+        # spaces after ':' and ',': no compact prefix matches at all.
+        fx.part(sid, "m", {}, 3_000,
+                raw=json.dumps({"type": "tool", "callID": "c2",
+                                "state": {"status": "error", "input": {}}}))
+        # a tool whose input holds a nested "status":"failed" before state.status:
+        # the first '"status":"' slice flags an error json_extract does not see.
+        fx.part(sid, "m", {"type": "tool", "callID": "c3", "tool": "Bash",
+                           "state": {"input": {"command": "ls", "status": "failed"},
+                                     "status": "completed"}}, 4_000)
+
+        conn = za.connect(self.db)
+        try:
+            self.assertFalse(za._layout_ok(conn, [sid]))
+            truth = conn.execute(
+                "SELECT SUM(CASE WHEN json_valid(data) AND json_extract(data,'$.type')='tool' THEN 1 ELSE 0 END),"
+                " SUM(CASE WHEN json_valid(data) AND json_extract(data,'$.type')='tool'"
+                "   AND json_extract(data,'$.state.status') IN ('error','failed') THEN 1 ELSE 0 END)"
+                " FROM part WHERE session_id = ?", (sid,)).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(truth, (3, 1))
+
+        s = za.list_sessions(self.db, now_ms=NOW)[0]  # check fails -> exact path
+        self.assertEqual((s.tool_calls, s.errors), (3, 1))
+        self.assertTrue(za.LAYOUT_DEGRADED)
+        # session_summary goes through the same guard (fast path alone would
+        # count 1 tool / 1 error on these rows)
+        self.assertEqual(za.session_summary(self.db, sid, now_ms=NOW).tool_calls, 3)
+
+    def test_layout_check_ignores_null_blob(self) -> None:
+        self.completed_session()
+        self.fx.exec("INSERT INTO part (id, message_id, session_id, time_created, time_updated, data)"
+                     " VALUES ('part_null', 'm', 'sess_aaaa1111-done', 1, 1, NULL)")
+        conn = za.connect(self.db)
+        try:
+            self.assertTrue(za._layout_ok(conn, ["sess_aaaa1111-done"]))
+        finally:
+            conn.close()
+
+    def test_exact_fallback_matches_fast_path_on_standard_layout(self) -> None:
+        self.completed_session("sess_std1", at=NOW - 60_000)
+        fx = self.fx
+        fx.session("sess_std2", SANDBOX, "live", NOW - 5_000, NOW - 1_000)
+        fx.message("m2", "sess_std2", "assistant", NOW - 5_000)
+        fx.part("sess_std2", "m2", tool("Bash", "running", {"command": "sleep 5"}), NOW - 2_000)
+        fast = za.list_sessions(self.db, now_ms=NOW)
+        with mock.patch.object(za, "_layout_ok", return_value=False):
+            slow = za.list_sessions(self.db, now_ms=NOW)
+        self.assertEqual([dataclasses.astuple(s) for s in fast],
+                         [dataclasses.astuple(s) for s in slow])
+        self.assertTrue(za.LAYOUT_DEGRADED)
 
     # --- resolve ----------------------------------------------------------------------------
 

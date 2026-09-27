@@ -93,6 +93,8 @@ class ActivityCliTest(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.fx = Fixture(Path(self._tmp.name))
         self.db = self.fx.path
+        cli._layout_note_shown = False  # the note fires once per process
+        cli._library().LAYOUT_DEGRADED = False
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
@@ -160,6 +162,46 @@ class ActivityCliTest(unittest.TestCase):
         code, out, _ = self.run_cli(runs_args(dir=SANDBOX), clock=lambda: NOW)
         self.assertEqual(code, 0)
         self.assertIn("แก้ bug ใน calc", out)
+
+    # --- layout-change note ----------------------------------------------------------------
+
+    def seed_odd_layout(self, sid: str = "sess_oddcli01") -> str:
+        fx = self.fx
+        fx.session(sid, SANDBOX, "odd", NOW - 5_000, NOW - 1_000)
+        fx.message("m", sid, "assistant", NOW - 5_000)
+        # "type" is not the first key: the prefix layout check fails.
+        fx.part(sid, "m", {"callID": "c1", "type": "tool",
+                           "state": {"status": "completed", "input": {}}}, NOW - 2_000)
+        return sid
+
+    def test_runs_layout_note_once_on_stderr(self) -> None:
+        sid = self.seed_odd_layout()
+        code, out, err = self.run_cli(runs_args(dir=SANDBOX, json=True), clock=lambda: NOW)
+        self.assertEqual(code, 0)
+        rows = json.loads(out)
+        self.assertEqual(rows[0]["tool_calls"], 1)  # exact path counted it
+        self.assertEqual(err.count(cli.NOTE_LAYOUT), 1)
+        self.assertNotIn("note:", out)
+        code, out, err = self.run_cli(runs_args(dir=SANDBOX), clock=lambda: NOW)
+        self.assertEqual((code, err), (0, ""))  # once per process, not per call
+
+    def test_show_and_watch_layout_note(self) -> None:
+        sid = self.seed_odd_layout()
+        code, out, err = self.run_cli(show_args(sid), clock=lambda: NOW)
+        self.assertEqual(code, 0)
+        self.assertEqual(err.count(cli.NOTE_LAYOUT), 1)
+        cli._layout_note_shown = False
+        code, out, err = self.run_cli(watch_args(), clock=lambda: NOW, max_polls=1)
+        self.assertEqual(code, 0)
+        self.assertEqual(err.count(cli.NOTE_LAYOUT), 1)
+
+    def test_no_layout_note_on_standard_layout(self) -> None:
+        seed_completed(self.fx)
+        for args in (runs_args(dir=SANDBOX), show_args("sess_aaaa"),
+                     watch_args(dir=SANDBOX, all=False)):
+            code, out, err = self.run_cli(args, clock=lambda: NOW, max_polls=1)
+            self.assertEqual(code, 0, args.command)
+            self.assertEqual(err, "", args.command)
 
     # --- show ---------------------------------------------------------------------------
 
@@ -253,6 +295,9 @@ class ActivityCliTest(unittest.TestCase):
             fx.part(sid, "ma", tool("Bash", "completed", {"command": f"old-cmd-{i:03d}"}, output="done"),
                     three_hours_ago + i * 100, three_hours_ago + i * 100 + 10)
         fx.part(sid, "ma", tool("Bash", "completed", {"command": "new-cmd"}, output="OK"), now - 60_000)
+        # ZCode bumps the session row together with its parts; watch's DB-side
+        # since filter relies on that.
+        fx.exec("UPDATE session SET time_updated = ? WHERE id = ?", (now - 60_000, sid))
         code, out, err = self.run_cli(watch_args(), clock=lambda: now, max_polls=2)
         self.assertEqual((code, err), (0, ""))
         self.assertIn("w1 sess_backlog1 > active: long one", out)  # started before the window
@@ -278,6 +323,8 @@ class ActivityCliTest(unittest.TestCase):
             if sleeps["n"] == 2:  # fresh activity lands between poll 2 and poll 3
                 fx.part(sid, "ma", tool("Bash", "completed", {"command": "fresh-cmd"}, output="OK"),
                         base + 19 * 60_000, base + 19 * 60_000)
+                # the session row moves with the fresh part, like real ZCode writes
+                fx.exec("UPDATE session SET time_updated = ? WHERE id = ?", (base + 19 * 60_000, sid))
 
         code, out, err = self.run_cli(watch_args(), sleep=fake_sleep, clock=lambda: ticks["t"], max_polls=4)
         self.assertEqual((code, err), (0, ""))
@@ -306,6 +353,34 @@ class ActivityCliTest(unittest.TestCase):
         self.assertEqual(out.count(" > started: "), 2)
         self.assertIn("w1 sess_alpha000 > started: first", out)
         self.assertIn("w2 sess_beta0000 > started: second", out)
+
+    def test_watch_passes_since_bound_to_list_sessions(self) -> None:
+        fx = self.fx
+        three_hours_ago = NOW - 3 * 60 * 60 * 1000
+        fx.session("sess_old00001", SANDBOX, "old completed", three_hours_ago, three_hours_ago)
+        fx.session("sess_run00002", SANDBOX, "running now", NOW - 5_000, NOW - 1_000)
+        fx.message("m", "sess_run00002", "assistant", NOW - 5_000)
+        fx.part("sess_run00002", "m", tool("Bash", "running", {"command": "sleep 5"}), NOW - 500)
+
+        real = cli._library()
+        calls: list[dict] = []
+        orig = real.list_sessions
+
+        def recording(*args: object, **kwargs: object) -> object:
+            calls.append(dict(kwargs))  # type: ignore[arg-type]
+            return orig(*args, **kwargs)  # type: ignore[arg-type]
+
+        real.list_sessions = recording  # type: ignore[assignment]
+        try:
+            code, out, err = self.run_cli(watch_args(), clock=lambda: NOW, max_polls=1)
+        finally:
+            real.list_sessions = orig  # type: ignore[assignment]
+        self.assertEqual((code, err), (0, ""))
+        self.assertTrue(calls)
+        window = int(max(10.0 * 60_000, real.STALE_MS))  # --since 10 min, STALE_MS 30 min
+        self.assertEqual(calls[0]["since_ms"], NOW - window)
+        self.assertIn("sess_run00002", out)
+        self.assertNotIn("sess_old00001", out)  # outside the window: never summarised
 
     def test_watch_keyboard_interrupt_exits_zero(self) -> None:
         fx = self.fx
