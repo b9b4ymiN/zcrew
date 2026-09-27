@@ -11,7 +11,7 @@ You work with one assistant, either Claude Code or OpenAI Codex. It hands implem
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-commander-D97757)](https://docs.anthropic.com/en/docs/claude-code)
 [![Codex](https://img.shields.io/badge/Codex-commander-111111?logo=openai)](https://github.com/openai/codex)
 [![ZCode](https://img.shields.io/badge/ZCode-3.14.0%20tested-6E56CF)](#compatibility)
-[![Tests](https://img.shields.io/badge/tests-262%20passing-2EA44F)](#development)
+[![Tests](https://img.shields.io/badge/tests-276%20passing-2EA44F)](#development)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
 [Quick start](#quick-start) · [How it works](#how-it-works) · [Configuration](#configuration) · [Troubleshooting](#troubleshooting) · [ภาษาไทย](docs/README.th.md)
@@ -136,7 +136,7 @@ The commander reviews the result against that same contract. The full behaviour 
 | Compatibility layer | `bridge_compat.py`: a runtime shim that adapts the bridge to ZCode 3.12+ (account-provider snapshot, runtime auth headers, reasoning level) |
 | Executor | ZCode Desktop app-server (Electron/Node, headless), running GLM-5.3 on the Z.ai Coding Plan |
 | Isolation | `git worktree` per parallel worker, with cross-process resource leases in the bridge |
-| Tooling | PowerShell installer (5.1/7 compatible), Python 3.10+ standard-library CLI (`zcrew`), `unittest` (262 tests) |
+| Tooling | PowerShell installer (5.1/7 compatible), Python 3.10+ standard-library CLI (`zcrew`), `unittest` (276 tests) |
 
 ## Usage
 

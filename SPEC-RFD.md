@@ -936,3 +936,35 @@ Lesson: on Windows, close the runs before removing their worktrees, because the 
 - **Approval gate.** The user chose a plan-approval gate before delegation: a brief, then a 200–300 word plan with phases, tasks and DoD, then approval, then the autonomous delegate/review/correct loop. This keeps "zero intervention during the loop" (§7) and still gives the user control over direction.
 - **Account-provider path (option A) instead of a separate API-key provider (option B).** Option A uses the same entitlement path as the desktop app. The trade-off is that it can break when ZCode updates. That risk is reduced by pinning ZCode 3.14.0, a doctor version warning, and a doctor app-server smoke test.
 - **Model and limits** live in `~/.zcode-commander/config.json`, and a project can override them in `.claude/zcode-commander.json`. Defaults: GLM-5.3, `max`, 5 workers, 4 correction rounds.
+
+---
+
+## 27. v0.5.0: Codex as a second commander, and context economy (2026-09-27)
+
+### 27.1 Decisions
+
+- **Two commanders, one crew.** Claude Code or OpenAI Codex can act as commander, per project or both together. ZCode is always the worker. The owner's intended split is Claude for core logic and Codex for design work.
+- **Role isolation by file.** Codex loads `AGENTS.md`, and so do the ZCode workers. The commander policy for Codex therefore goes in `AGENTS.override.md`. Codex prefers that file over `AGENTS.md` in the same directory, and ZCode ignores it. Codex has no `@file` imports, so the policy is inlined with a sha256 marker. `zcrew status` flags a stale copy, and `zcrew enable` refreshes it.
+- **Codex MCP settings.** `tool_timeout_sec = 180`: the default of 60 s equals `agent-wait`'s maximum block. `default_tools_approval_mode = "approve"`, so the per-plan user approval remains the only human gate.
+- **Concurrency.** Workers started by two commanders in the same folder are serialized by the bridge's cross-process exclusive leases. The policy tells commanders to report `resource.waiting` and to use a separate worktree when that happens.
+- **Context economy.** Two levers that zcrew controls:
+  1. The policy waits until the run is terminal (`afterRevision: 999999999`, `timeoutMs: 60000`), rather than waking on every streaming event.
+  2. The shim compacts run snapshots.
+  
+  Broader context filtering was researched but not adopted. `mksglu/context-mode` is under the Elastic License 2.0, its global hooks intercept the commander's Bash/Read, and it has no independent benchmark. arXiv 2609.22114 finds tool-schema filtering to be the only reliably positive lever.
+
+### 27.2 Validation
+
+| Item | Evidence | Status |
+|---|---|---|
+| Codex prefers `AGENTS.override.md` | Live `codex exec` answered `ROLE=COMMANDER` when both files were present | ✅ |
+| Codex → zcode_executor | Live `agent-config` call returned `ZCODE_AVAILABLE=true` (also under a read-only sandbox) | ✅ |
+| Codex follows the policy and delegates | Live run: read `CLAUDE.md`/`AGENTS.md`/config, then called `agent-start` itself | ✅ |
+| Codex review → same-thread correction → accept | The run hit the ChatGPT usage limit after 18 `agent-wait` calls, before the review step | ⏳ pending re-run |
+| Terminal-state waiting | One `agent-wait` covered a 70-revision run (42 s) | ✅ |
+| Compact output | Replay of a real Claude Code session: `agent-wait` −70.4% (−77% non-terminal), 0/37 required-field or result losses | ✅ |
+| Stale-policy refresh | Live: after the policy edit, `enable --commander codex` refreshed the sandbox copy | ✅ |
+| Real-project use (Claude commander) | MSOM performance work: the commander measured, planned, got approval, then delegated to ZCode, as the owner confirmed | ✅ |
+
+Measured fixed context of a Claude Code session in MSOM: 58.4K tokens. It breaks down as about 39K Claude Code core, 8.5K skill listings, 3.9K MCP server instructions, and 3.7K project files. Only the skill and MCP parts are reducible, and those are user-environment choices outside zcrew.
+
