@@ -1,0 +1,39 @@
+{
+  "python": "3.12.4",
+  "n": 200,
+  "warmup": 5,
+  "dataset": {
+    "sessions": 101,
+    "running": 5,
+    "failed": 10,
+    "completed": 86,
+    "parts_per_session": 30,
+    "big_session_parts": 400
+  },
+  "endpoints": {
+    "sessions_limit_100": {
+      "p50_ms": 11.642,
+      "p95_ms": 13.249,
+      "max_ms": 16.737,
+      "response_bytes": 26939
+    },
+    "activity_full": {
+      "p50_ms": 10.312,
+      "p95_ms": 11.827,
+      "max_ms": 14.815,
+      "response_bytes": 103589
+    },
+    "activity_incremental_empty": {
+      "p50_ms": 5.264,
+      "p95_ms": 5.708,
+      "max_ms": 6.414,
+      "response_bytes": 368
+    },
+    "page": {
+      "p50_ms": 0.226,
+      "p95_ms": 0.27,
+      "max_ms": 0.372,
+      "response_bytes": 15183
+    }
+  }
+}
