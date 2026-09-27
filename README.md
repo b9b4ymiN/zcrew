@@ -42,7 +42,7 @@ Frontier models are strongest at understanding, design and review. Coding agents
 - **Per-project opt-in.** `zcrew enable --commander claude|codex|both` activates the policy for one repo. `zcrew disable` restores its files byte for byte.
 - **Context-aware.** Compact worker output (−70%), wait-until-done polling, context-hygiene rules for the commander, and `zcrew context` to measure what a session actually spent.
 - **Configurable model.** GLM-5.3 at `max` by default. You can switch models globally, per project, or for a single task.
-- **Worker history.** Every ZCode run is saved in the ZCode app's own history, so you can read the worker's full conversation.
+- **Live worker view.** `zcrew watch` (terminal) and `zcrew dashboard` (local browser page) show what each worker is doing as it happens: files read and edited, commands and their outcome, context size. Read-only, straight from ZCode's own database.
 - **One-command install** with a built-in `doctor` that checks readiness without making any model call.
 
 ## Quick start
@@ -149,6 +149,10 @@ zcrew status [DIR]                                     enabled? which config? is
 zcrew config [--project DIR]                           print and validate the effective config
 zcrew doctor                                           readiness check (no model call)
 zcrew context [DIR] [--session ID|PATH] [--json]       where the last commander session's context went (per tool)
+zcrew watch [DIR] [--all] [--since MIN]                follow ZCode workers live in the terminal
+zcrew dashboard [DIR] [--all] [--port N] [--no-open]   the same in a local browser page (127.0.0.1 only)
+zcrew runs [DIR] [--all] [--limit N] [--json]          list worker runs, newest first
+zcrew show SESSION [--json]                            one run's activity (id or prefix, e.g. sess_83cb)
 zcrew update [--commander auto|claude|codex|both]     pull the latest release and re-run setup
 zcrew uninstall [--keep-config] [--yes]                remove zcrew
 zcrew version
@@ -162,7 +166,17 @@ Useful phrases in chat:
 
 **Context budget:** `zcrew context` reads the latest Claude Code session for the project (`--commander codex` for Codex) and reports the first, peak and last context size, plus tool-output share per tool and per MCP server, with hints. It shows only numbers and tool names, and it never writes anything. The policy's *Context hygiene* rules (log long output to a file, read ranges, delegate exploration, review diffs) target the biggest consumers it finds.
 
-**Watching the crew:** the commander posts short progress lines while it works. To read a worker's full conversation, open the ZCode app: runs are listed under the project. Restart the app to refresh the list, because live view inside the app isn't possible.
+**Watching the crew:** open a second terminal in the project and run `zcrew watch`, or `zcrew dashboard` for a browser view. Each worker gets a label (`w1`, `w2`, …) and every line is one action:
+
+```text
+14:02:11 w1 sess_83cb1cd2 > started: Add login API
+14:02:13 w1 R src/auth.ts
+14:02:15 w1 E src/auth.ts (+24 -3)
+14:02:31 w1 $ npm test -> 2 failed
+14:03:40 w1 # turn completed: 9 tool call(s), 0 error(s), 1m29s
+```
+
+Both read ZCode's local database (`~/.zcode/cli/db/db.sqlite`) read-only, so they also show runs started from the ZCode app or in parallel worktrees. They never show the model's reasoning or full tool output. The dashboard binds to `127.0.0.1` only and rejects other Host headers. If ZCode ever changes how it stores data, a self-check switches to a slower exact mode and prints a one-line note instead of showing wrong numbers.
 
 ## Project instruction files
 
@@ -270,6 +284,10 @@ scripts/zcode_bridge_launcher.py   finds ZCode, sets env, starts the shim
 scripts/bridge_compat.py    ZCode 3.12+ compatibility shim for coder-mcp-bridge
 scripts/commander.py        enable/disable/status/config
 scripts/doctor.py           readiness checks
+scripts/context_report.py   zcrew context
+scripts/zcode_activity.py   read-only reader over ZCode's database (sessions + activity)
+scripts/activity_cli.py     zcrew runs / show / watch
+scripts/dashboard.py        zcrew dashboard server (+ dashboard.html)
 templates/                  CLAUDE.md + AGENTS.md starters for projects
 policy/COMMANDER.md         the commander policy (Claude Code and Codex)
 SPEC-RFD.md                 design rationale, decisions, validation results

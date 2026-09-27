@@ -2,6 +2,29 @@
 
 All notable changes to the Claude Commander × ZCode Executor Kit are recorded here.
 
+## 0.7.0 — 2026-09-27
+
+Live view of the crew.
+
+### Added
+
+- `zcrew watch [DIR] [--all] [--interval S] [--since MIN]` follows ZCode workers live in the terminal. Each worker gets a stable label (`w1`, `w2`, …), and each line is one action: file read or edited, command and its outcome, assistant message, turn end. A session's backlog is limited to `--since` minutes before it was first seen.
+- `zcrew dashboard [DIR] [--all] [--port N] [--no-open]` shows the same in a local browser page: session cards and a live activity timeline.
+  - It binds to `127.0.0.1` only, accepts GET only, and rejects other Host headers (DNS-rebinding guard).
+  - It sends a strict CSP, `nosniff` and `no-referrer`, and no CORS headers. Untrusted text is inserted with `textContent` only.
+  - Sessions outside DIR return 404 unless `--all` is given.
+- `zcrew runs [DIR] [--all] [--limit N] [--json]` lists worker runs, and `zcrew show SESSION [--json]` prints one run (an id prefix is enough).
+- `scripts/zcode_activity.py` is a read-only reader over ZCode's own database (`~/.zcode/cli/db/db.sqlite`, opened with `mode=ro`). The bridge is untouched.
+  - It also shows runs started from the ZCode app and runs in parallel worktrees.
+  - It never shows reasoning or full tool output.
+  - Summaries use one batched scan: 1,899 sessions take 1.5 s instead of 6 s, and a watch poll takes about 20 ms.
+  - A self-check compares the fast byte-prefix classification with real JSON parsing on recent rows. If ZCode changes its storage format, the reader switches to an exact mode and prints a one-line note instead of showing wrong numbers. A schema change gives a clear error instead of a crash.
+
+### Changed
+
+- The policy's *Progress visibility* section points users to `zcrew watch` / `zcrew dashboard` instead of restarting the ZCode app.
+- Output piped into a command that closes early (`| head`) now exits quietly.
+
 ## 0.6.0 — 2026-09-27
 
 Context economy, part 2.

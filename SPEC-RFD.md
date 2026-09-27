@@ -974,3 +974,39 @@ Measured fixed context of a Claude Code session in MSOM: 58.4K tokens. It breaks
 - `zcrew context` turns the manual analysis into a read-only command. Run against the MSOM session, it reported a peak of 420,915 tokens and showed `agent-wait` at 31% (72 calls). That session had started before `zcrew update`, so it still used the old waiting rule, which demonstrates the effect of economical waiting and compact output. The command's numbers were independently recomputed and matched exactly.
 - Not adopted, per the owner's decision: third-party context filtering (context-mode) and trimming the user environment's skills/MCP (T4/T5).
 
+
+---
+
+## 28. v0.7.0: live view of the crew (2026-09-27)
+
+The owner could not see what a worker was doing while it ran (§26.4: the ZCode app's own live view is impossible, and its history needs a restart). v0.7.0 adds `zcrew watch`, `zcrew dashboard`, `zcrew runs` and `zcrew show`. The owner chose a terminal view first and a browser view second, at "level 2" detail: files, commands and outcomes, but no reasoning stream.
+
+### 28.1 Decision: read ZCode's database instead of teeing bridge events
+
+The plan was to make `bridge_compat.py` write events to a log. A spike changed the plan:
+
+- The bridge's tool events carry only the tool name.
+- ZCode's CLI database (`~/.zcode/cli/db/db.sqlite`, WAL) already stores every part: tool inputs (file paths, commands), outputs, step context tokens and turn usage. The session id equals the bridge `threadId`.
+- A live run showed a running Bash part as `running` and then `completed` about 8 s later.
+
+So the view reads that database read-only (`mode=ro`) and never touches the bridge or the worker. It also shows runs started from the ZCode app and runs in worktrees, which the old history view missed. The trade-off is that the schema is internal to ZCode. Every call checks the tables and columns it needs and raises a clear "schema changed" error instead of crashing.
+
+### 28.2 Performance and the layout self-check
+
+The database was 2.1 GB, with 404k parts (1.2 GB of JSON) across about 1,900 sessions. The first reader parsed every blob with `json_extract` and needed about 6 s for all sessions.
+
+- **Byte-prefix classification.** v0.7.0 classifies parts by byte prefix of ZCode's compact Go JSON, where `"type"` is the first key and a tool's `state.status` is the first `"status":"`. This was verified against every real row with 0 mismatches.
+- **Batching.** Aggregates are computed in one grouped scan per chunk of sessions.
+- **Results.** All sessions take 1.5 s, 200 sessions take 0.2 s, and a watch poll takes about 20 ms. Results are identical to the per-session reader on all 1,899 real sessions.
+- **Self-check.** Each call samples the 200 most recently updated parts and compares the prefix tests (using the same SQL snippets) with `json_extract`. On any mismatch that call uses the exact per-session path, and the CLI prints a one-time note.
+- **Known limit.** The self-check protects newly written rows. Old rows that a sample never reaches are trusted on the strength of the one-off full verification.
+
+### 28.3 Validation
+
+| Check | Evidence | Result |
+|---|---|---|
+| Built by ZCode workers | T2.1, T2.2, T2.2b and T3.1 were delegated to GLM-5.3, then went through independent verifier review and same-thread corrections: T2.1 took 2 rounds and 4 bugs, T3.1 took 1 UI round | ✅ |
+| Live visibility | Workers were watched live with the new reader during their own runs (`zcrew show` on the running T2.2 session) | ✅ |
+| Dashboard security | Independent review: loopback bind; Host-header matrix (rebinding variants → 403); CSP/nosniff/no-referrer; no CORS; XSS payloads in titles and commands are inert (`textContent` only); cross-project ids → 404; a heavy session does not block other requests | ✅ |
+| Dashboard UI | Checked in a real browser at desktop (dark) and 375 px (light) widths: no horizontal scroll, and running sessions show elapsed time | ✅ |
+| Tests | 363 unit tests, all against synthetic databases (the real DB is only read in smoke checks) | ✅ |

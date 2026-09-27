@@ -86,7 +86,7 @@ Sequential or overlapping work stays in one thread and one working copy.
 
 The user wants to follow what ZCode is doing. During long runs, post a one-line update when something meaningful changes (a file edited, tests started or failed, a correction sent). Use `agent-wait` and `agent-observe` summaries. Keep it short, and never paste raw event JSON.
 
-Every ZCode run is also saved to the ZCode app's own history under the project workspace. In the final report, tell the user they can open the ZCode app to read the full worker conversation. The app loads its task list at startup, so they must restart it to see new runs. Runs made in a temporary worktree are listed under that worktree's path, if they are listed at all.
+The user can watch workers live, independently of you: `zcrew watch` in a second terminal, or `zcrew dashboard` in the browser (files read/edited, commands and their outcome, per worker). `zcrew show <threadId prefix>` prints one run afterwards. When you start a long or parallel run, mention these once; do not poll them yourself (use `agent-wait`). The ZCode app's history also lists headless runs after an app restart.
 
 ## Context hygiene
 
