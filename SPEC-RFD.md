@@ -960,7 +960,7 @@ Lesson: on Windows, close the runs before removing their worktrees, because the 
 | Codex prefers `AGENTS.override.md` | Live `codex exec` answered `ROLE=COMMANDER` when both files were present | ✅ |
 | Codex → zcode_executor | Live `agent-config` call returned `ZCODE_AVAILABLE=true` (also under a read-only sandbox) | ✅ |
 | Codex follows the policy and delegates | Live run: read `CLAUDE.md`/`AGENTS.md`/config, then called `agent-start` itself | ✅ |
-| Codex review → same-thread correction → accept | The run hit the ChatGPT usage limit after 18 `agent-wait` calls, before the review step | ⏳ pending re-run |
+| Codex review → same-thread correction → accept | Run 1 hit the ChatGPT usage limit after 18 `agent-wait` calls, before review. Run 2 (v0.5.0 policy, compact output) went through the full loop: delegate, then own `git diff` + tests, then `REVIEW RESULT: FAIL, correction round 1`, then a correction on the same `threadId` (`sess_2a455bd0…`), then re-review and accept. That took 14/14 tests, **3 `agent-wait` calls** (was 18) and 38.5K Codex tokens in total | ✅ |
 | Terminal-state waiting | One `agent-wait` covered a 70-revision run (42 s) | ✅ |
 | Compact output | Replay of a real Claude Code session: `agent-wait` −70.4% (−77% non-terminal), 0/37 required-field or result losses | ✅ |
 | Stale-policy refresh | Live: after the policy edit, `enable --commander codex` refreshed the sandbox copy | ✅ |

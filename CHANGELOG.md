@@ -4,7 +4,7 @@ All notable changes to the Claude Commander × ZCode Executor Kit are recorded h
 
 ## 0.5.0 — 2026-09-27
 
-> Known limitation: the Codex review → same-thread correction loop is not yet validated live (see SPEC §27.2). The Claude Code commander path is fully validated.
+> Validation update (after release): the Codex review → same-thread correction loop has now been validated live, with 3 `agent-wait` calls instead of the earlier 18. See SPEC §27.2.
 
 **Codex can act as commander**, alone or alongside Claude Code. ZCode is always the worker.
 
