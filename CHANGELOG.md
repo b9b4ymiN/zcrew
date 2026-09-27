@@ -2,7 +2,7 @@
 
 All notable changes to the Claude Commander × ZCode Executor Kit are recorded here.
 
-## 0.5.0 — 2026-09-27
+## 0.5.0 — 2026-09-27 (unreleased)
 
 **Codex can act as commander**, alone or alongside Claude Code. ZCode is always the worker.
 
@@ -19,6 +19,9 @@ All notable changes to the Claude Commander × ZCode Executor Kit are recorded h
   - `[INFO]` when a CLI is not installed;
   - `[WARN]` when a CLI is installed but not registered, or when its timeout is too low;
   - `[FAIL]` when a registration is broken, or when no commander is registered.
+
+- **Compact bridge output.** `bridge_compat.py` trims repeated boilerplate from `agent-start/wait/observe/control/close/recover` run snapshots before they reach the commander. It drops timestamps, resource paths, `permissionPolicy`, `native`, and zero or empty fields. It keeps `runId`/`status`/`revision`/`threadId`/`result`, error fields, `sessionTokens`, and `resourceLease` when a run is queued. Replayed on a real session, `agent-wait` output shrinks by 70% (77% for non-terminal waits); no result text or required field is lost. Set `ZCODE_COMMANDER_COMPACT=off` to disable it.
+- **Economical waiting.** The policy waits with `afterRevision: 999999999`, which gives one `agent-wait` per 60 s instead of one per streaming event. Measured: a single call covered a 70-revision run.
 
 ### Changed
 

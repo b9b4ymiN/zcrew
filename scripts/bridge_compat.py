@@ -18,6 +18,11 @@ answerProviderRuntimeHeaders in src/handlers/server-requests.ts.
 Set ZCODE_COMMANDER_RUNTIME_MODEL=on to restore upstream runtimeModel
 behaviour; set ZCODE_COMMANDER_ACCOUNT_PROVIDER=off to disable the account
 provider push and runtime-headers answer.
+
+Run snapshots returned by agent-start/wait/observe/control/close/recover are
+compacted (timestamps, resource paths, permission policy and empty sections
+dropped) to save commander context; set ZCODE_COMMANDER_COMPACT=off to restore
+upstream output exactly.
 """
 
 from __future__ import annotations
@@ -25,6 +30,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import runpy
 import sys
 import threading
@@ -338,6 +344,196 @@ def patch_protocol_client(
     cls._commander_account_patched = True
 
 
+# --- compact run snapshots ----------------------------------------------------
+#
+# Upstream server.py serializes each tool result twice: ``content[0].text`` is
+# the JSON string and ``structuredContent`` is the same dict. The commander
+# model sees one of them (Claude Code: the text; structuredContent goes to
+# transcript metadata), so the cost is the snapshot itself. We compact the dict
+# that BackendManager returns, before server.py serializes it, so both copies
+# shrink together and stay identical; required runId/status/revision remain.
+
+COMPACT_TOOLS = {
+    "agent-start": "start",
+    "agent-wait": "wait",
+    "agent-observe": "observe",
+    "agent-control": "control",
+    "agent-close": "close_run",
+    "agent-recover": "recover",
+}
+DETAIL_MAX_CHARS = 300
+_ERRORISH = re.compile(r"error|warning|fail|blocked|reason(?!ing)", re.IGNORECASE)
+_DROP_KEYS = {
+    "createdAtMs", "startedAtMs", "finishedAtMs", "resources", "native",
+    "sessionUsage", "permissionPolicy", "backend",
+}
+_USAGE_KEYS = ("totalTokens", "modelRequests")  # + modelErrors when non-zero (error-ish)
+
+
+def compact_output_enabled(env: Mapping[str, str]) -> bool:
+    return env.get("ZCODE_COMMANDER_COMPACT", "on").strip().lower() not in {"0", "off", "false", "no"}
+
+
+def _is_errorish(key: Any) -> bool:
+    return bool(_ERRORISH.search(str(key)))
+
+
+def _empty(value: Any) -> bool:
+    return value is None or (isinstance(value, (list, dict, str)) and not value)
+
+
+def _errorish_items(section: Any) -> dict:
+    if not isinstance(section, dict):
+        return {}
+    return {k: v for k, v in section.items() if _is_errorish(k) and not _empty(v) and v is not False and v != 0}
+
+
+def _truncate(value: Any, limit: int = DETAIL_MAX_CHARS) -> Any:
+    if isinstance(value, str):
+        return value if len(value) <= limit else value[:limit] + "...[+%d chars]" % (len(value) - limit)
+    if isinstance(value, dict):
+        return {k: _truncate(v, limit) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_truncate(v, limit) for v in value]
+    return value
+
+
+def _compact_model(model: Any) -> dict:
+    if not isinstance(model, dict):
+        return {}
+    inner = model.get("model") if isinstance(model.get("model"), dict) else {}
+    out = {
+        "modelId": inner.get("modelId") if inner else model.get("modelId"),
+        "thoughtLevel": model.get("thoughtLevel"),
+        "status": model.get("status"),
+    }
+    if model.get("reasoningActive") is True:
+        out["reasoningActive"] = True
+    out.update(_errorish_items(model))
+    return {k: v for k, v in out.items() if not _empty(v)}
+
+
+def _compact_event(event: Any) -> Any:
+    if not isinstance(event, dict):
+        return _truncate(event)
+    out = {k: v for k, v in event.items() if k != "atMs"}
+    if "detail" in out:
+        out["detail"] = _truncate(out["detail"])
+    return out
+
+
+def _tool_names(tools: Any) -> list:
+    names = []
+    for tool in tools if isinstance(tools, list) else []:
+        name = tool.get("name") if isinstance(tool, dict) else tool
+        if name:
+            names.append(name)
+    return names
+
+
+def is_run_snapshot(data: Any) -> bool:
+    return isinstance(data, dict) and all(k in data for k in ("runId", "status", "revision"))
+
+
+def compact_snapshot(tool_name: str, data: Any) -> Any:
+    """Compact one run snapshot for the commander; anything else passes through."""
+    if tool_name not in COMPACT_TOOLS or not is_run_snapshot(data):
+        return data
+    out: dict = {}
+    for key, value in data.items():
+        if key in ("runId", "status", "revision", "result", "resultTruncated", "changed"):
+            out[key] = value
+        elif key in _DROP_KEYS:
+            if key == "sessionUsage" and isinstance(value, dict) and value.get("totalTokens") is not None:
+                out["sessionTokens"] = value["totalTokens"]
+            elif _is_errorish(key) and not _empty(value):
+                out[key] = value
+        elif key == "model":
+            model = _compact_model(value)
+            if model:
+                out[key] = model
+        elif key == "usage":
+            if isinstance(value, dict):
+                usage = {k: value[k] for k in _USAGE_KEYS if value.get(k) is not None}
+                usage.update(_errorish_items(value))
+                if usage:
+                    out[key] = usage
+            elif not _empty(value):
+                out[key] = value
+        elif key == "counts":
+            if isinstance(value, dict):
+                counts = {k: v for k, v in value.items() if v != 0 and not _empty(v)}
+                if counts:
+                    out[key] = counts
+            elif not _empty(value):
+                out[key] = value
+        elif key == "activeTools":
+            names = _tool_names(value)
+            if names:
+                out[key] = names
+        elif key == "lastCheckpoint":
+            if isinstance(value, dict) and value.get("fileCount") is not None:
+                out[key] = {"fileCount": value["fileCount"]}
+        elif key == "resourceLease":
+            if isinstance(value, dict) and (value.get("acquired") is False or value.get("blockers")):
+                out[key] = {k: v for k, v in value.items() if k != "scope"}
+        elif key == "subagents":
+            if isinstance(value, dict):
+                sub = {"running": value["running"]} if value.get("running") else {}
+                sub.update(_errorish_items(value))
+                if sub:
+                    out[key] = sub
+            elif not _empty(value):
+                out[key] = value
+        elif key == "context":
+            if isinstance(value, dict):
+                ctx = {}
+                ratio = value.get("usedRatio")
+                if isinstance(ratio, (int, float)) and ratio > 0:
+                    ctx["usedRatio"] = ratio
+                ctx.update(_errorish_items(value))
+                if ctx:
+                    out[key] = ctx
+            elif not _empty(value):
+                out[key] = value
+        elif key == "events":
+            if isinstance(value, list):
+                out[key] = [_compact_event(e) for e in value]
+            else:
+                out[key] = value
+        elif key == "eventsDropped":
+            if value:
+                out[key] = value
+        elif not _empty(value):
+            out[key] = value
+    return out
+
+
+def patch_backend_manager(cls: Any) -> None:
+    """Wrap the BackendManager methods server.py calls per tool, so the dict
+    it serializes (text and structuredContent alike) is already compact."""
+    if getattr(cls, "_commander_compact_patched", False):
+        return
+
+    def compacting(tool_name: str, original: Callable[..., Any]) -> Callable[..., Any]:
+        def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
+            result = original(self, *args, **kwargs)
+            try:
+                return compact_snapshot(tool_name, result)
+            except Exception:  # noqa: BLE001 - compaction must never lose a result
+                return result
+
+        wrapper.__name__ = original.__name__
+        wrapper.__wrapped__ = original  # type: ignore[attr-defined]
+        return wrapper
+
+    for tool_name, method_name in COMPACT_TOOLS.items():
+        original = getattr(cls, method_name, None)
+        if callable(original):
+            setattr(cls, method_name, compacting(tool_name, original))
+    cls._commander_compact_patched = True
+
+
 def apply_patches(bridge_root: Path, env: Mapping[str, str]) -> list[str]:
     root = str(bridge_root)
     if root not in sys.path:
@@ -353,6 +549,11 @@ def apply_patches(bridge_root: Path, env: Mapping[str, str]) -> list[str]:
 
         patch_protocol_client(zcode_protocol.ZCodeProtocolClient, env)
         applied.append("account-provider")
+    if compact_output_enabled(env):
+        import backend_manager
+
+        patch_backend_manager(backend_manager.BackendManager)
+        applied.append("compact-output")
     return applied
 
 

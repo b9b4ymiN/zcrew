@@ -32,6 +32,12 @@ FAKE_PROTOCOL = (
     "    def _handle_server_request(self, message):\n        return 'orig-handle'\n"
     "    def request(self, method, params=None, timeout=30):\n        return params\n"
 )
+FAKE_BACKEND_MANAGER = (
+    "class BackendManager:\n"
+    "    def wait(self, run_id, **kwargs):\n"
+    "        return {'runId': run_id, 'status': 'running', 'revision': 1, 'createdAtMs': 5, 'backend': 'zcode'}\n"
+    "    def configure(self, args):\n        return {'selectedBackend': 'zcode', 'createdAtMs': 5}\n"
+)
 FAKE_KEY = "fake-key-not-a-secret"
 
 
@@ -41,13 +47,14 @@ class ApplyPatchesTests(unittest.TestCase):
         self.root = Path(self._tmp.name)
         (self.root / "control_plane.py").write_text(FAKE_CONTROL_PLANE, encoding="utf-8")
         (self.root / "zcode_protocol.py").write_text(FAKE_PROTOCOL, encoding="utf-8")
+        (self.root / "backend_manager.py").write_text(FAKE_BACKEND_MANAGER, encoding="utf-8")
         self._saved_path = list(sys.path)
-        sys.modules.pop("control_plane", None)
-        sys.modules.pop("zcode_protocol", None)
+        for name in ("control_plane", "zcode_protocol", "backend_manager"):
+            sys.modules.pop(name, None)
 
     def tearDown(self) -> None:
-        sys.modules.pop("control_plane", None)
-        sys.modules.pop("zcode_protocol", None)
+        for name in ("control_plane", "zcode_protocol", "backend_manager"):
+            sys.modules.pop(name, None)
         sys.path[:] = self._saved_path
         self._tmp.cleanup()
 
@@ -56,13 +63,23 @@ class ApplyPatchesTests(unittest.TestCase):
         import control_plane
         import zcode_protocol
 
-        self.assertEqual(applied, ["runtime-model-disabled", "account-provider"])
+        self.assertEqual(applied, ["runtime-model-disabled", "account-provider", "compact-output"])
+        import backend_manager
+
+        manager = backend_manager.BackendManager()
+        self.assertEqual(manager.wait("run_1"), {"runId": "run_1", "status": "running", "revision": 1})
+        self.assertEqual(manager.configure({}), {"selectedBackend": "zcode", "createdAtMs": 5})
         self.assertIsNone(control_plane.resolve_runtime_model({"providerId": "p", "modelId": "m"}, "max"))
         self.assertTrue(zcode_protocol.ZCodeProtocolClient._commander_account_patched)
 
     def test_env_flags_keep_upstream(self) -> None:
         applied = compat.apply_patches(
-            self.root, {"ZCODE_COMMANDER_RUNTIME_MODEL": "on", "ZCODE_COMMANDER_ACCOUNT_PROVIDER": "off"}
+            self.root,
+            {
+                "ZCODE_COMMANDER_RUNTIME_MODEL": "on",
+                "ZCODE_COMMANDER_ACCOUNT_PROVIDER": "off",
+                "ZCODE_COMMANDER_COMPACT": "off",
+            },
         )
         import control_plane
         import zcode_protocol
@@ -71,6 +88,9 @@ class ApplyPatchesTests(unittest.TestCase):
         self.assertEqual(control_plane.resolve_runtime_model(), {"model": "upstream"})
         self.assertFalse(hasattr(zcode_protocol.ZCodeProtocolClient, "_commander_account_patched"))
         self.assertEqual(zcode_protocol.ZCodeProtocolClient().start(), "orig-start")
+        import backend_manager
+
+        self.assertIn("createdAtMs", backend_manager.BackendManager().wait("run_1"))
 
 
 class FlagTests(unittest.TestCase):
@@ -382,6 +402,299 @@ class ReasoningLevelTests(unittest.TestCase):
     def test_default_level_env(self) -> None:
         self.assertEqual(compat.default_reasoning_level({}), "max")
         self.assertEqual(compat.default_reasoning_level({"ZCODE_COMMANDER_DEFAULT_REASONING": "high"}), "high")
+
+
+LONG_PATH = "C:\\Users\\someone\\projects\\very-long-workspace-name\\.claude\\worktrees\\feature-branch-worktree"
+
+
+def running_snapshot(**overrides: object) -> dict:
+    usage = {
+        "totalTokens": 60315, "inputTokens": 60112, "outputTokens": 203, "reasoningTokens": 0,
+        "cacheReadTokens": 52288, "cacheWriteTokens": 0, "modelRequests": 2, "modelErrors": 0,
+    }
+    snap = {
+        "runId": "run_0123456789abcdef", "status": "running", "revision": 47,
+        "threadId": "sess_0123456789abcdef0123", "phase": "model", "elapsedMs": 31833,
+        "createdAtMs": 1790000000000, "startedAtMs": 1790000000100, "finishedAtMs": None,
+        "resources": [{"key": LONG_PATH, "mode": "exclusive"}],
+        "resourceLease": {"scope": "cross-process", "acquired": True, "blockers": []},
+        "native": {"status": "running", "stateRevision": 3, "eventSeq": 31,
+                   "lastActivityAtMs": 1790000031000, "lastProgressAtMs": 1790000030000},
+        "model": {"status": "running", "reasoningActive": False, "lastChannel": None,
+                  "requestId": "req_0123456789abcdef0123456789",
+                  "model": {"providerId": "account:zai-individual-coding-plan", "modelId": "GLM-5.3"},
+                  "thoughtLevel": "max", "startedAt": 1790000001000},
+        "usage": dict(usage),
+        "sessionUsage": {**usage, "totalTokens": 120630},
+        "counts": {"toolCalls": 2, "subagents": 0},
+        "activeTools": [{"id": "call_0123456789abcdef", "name": "Bash", "status": "running",
+                         "startedAt": 1790000030500}],
+        "backgroundTasks": [], "controlFailures": [],
+        "permissionPolicy": {"headless": True, "workspaceAccess": "exclusive",
+                             "structuredPathsEnforced": True, "shellBoundary": "advisory",
+                             "allowedRoots": [LONG_PATH], "rootModes": {LONG_PATH: "exclusive"}},
+        "subagents": {"running": [], "ended": [], "endedTotal": 0},
+        "context": {"window": 200000, "used": 0, "usedRatio": 0, "cacheHitRate": None},
+        "goal": None,
+        "lastCheckpoint": {"checkpointId": "ckpt_0123456789abcdef", "messageId": "msg_0123456789abcdef",
+                           "targetMessageId": "msg_fedcba9876543210", "fileCount": 1, "scope": "workspace"},
+        "lastSeq": 45, "next": "wait with afterRevision=47", "changed": True, "backend": "zcode",
+    }
+    snap.update(overrides)
+    return snap
+
+
+# Mirror of server.py RUN_OUTPUT_SCHEMA (required + property types).
+RUN_OUTPUT_SCHEMA = {
+    "properties": {
+        "runId": str, "status": str, "revision": int, "threadId": (str, type(None)),
+        "phase": str, "elapsedMs": int, "result": str,
+    },
+    "required": ["runId", "status", "revision"],
+}
+
+
+def serialize_like_upstream(result: object) -> dict:
+    """Mirror of server.py AgentMcpServer._run_tool success path."""
+    response = {
+        "content": [{
+            "type": "text",
+            "text": result if isinstance(result, str) else json.dumps(
+                result, ensure_ascii=False, separators=(",", ":")
+            ),
+        }],
+        "isError": False,
+    }
+    if isinstance(result, dict):
+        response["structuredContent"] = result
+    return response
+
+
+def dumps(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+class CompactSnapshotTests(unittest.TestCase):
+    def assertValidRunOutput(self, data: dict) -> None:
+        for key in RUN_OUTPUT_SCHEMA["required"]:
+            self.assertIn(key, data)
+        for key, kind in RUN_OUTPUT_SCHEMA["properties"].items():
+            if key in data:
+                self.assertIsInstance(data[key], kind, key)
+
+    def test_running_example_compacts_by_70_percent(self) -> None:
+        snap = running_snapshot()
+        out = compat.compact_snapshot("agent-wait", snap)
+        self.assertEqual(out, {
+            "runId": "run_0123456789abcdef", "status": "running", "revision": 47,
+            "threadId": "sess_0123456789abcdef0123", "phase": "model", "elapsedMs": 31833,
+            "model": {"modelId": "GLM-5.3", "thoughtLevel": "max", "status": "running"},
+            "usage": {"totalTokens": 60315, "modelRequests": 2},
+            "sessionTokens": 120630,
+            "counts": {"toolCalls": 2},
+            "activeTools": ["Bash"],
+            "lastCheckpoint": {"fileCount": 1},
+            "lastSeq": 45, "next": "wait with afterRevision=47", "changed": True,
+        })
+        before, after = len(dumps(snap)), len(dumps(out))
+        self.assertLessEqual(after, before * 0.3, (before, after))
+        self.assertNotIn("very-long-workspace-name", dumps(out))
+        self.assertValidRunOutput(out)
+
+    def test_input_not_mutated(self) -> None:
+        snap = running_snapshot()
+        copy = json.loads(json.dumps(snap))
+        compat.compact_snapshot("agent-wait", snap)
+        self.assertEqual(snap, copy)
+
+    def test_terminal_result_kept_intact(self) -> None:
+        text = "Summary line\n" + "x" * 5000
+        snap = running_snapshot(status="completed", phase="completed", result=text, resultTruncated=True,
+                                activeTools=[], changed=False,
+                                next="observe for bounded detail, branch/compact, or close")
+        out = compat.compact_snapshot("agent-wait", snap)
+        self.assertEqual(out["result"], text)
+        self.assertIs(out["resultTruncated"], True)
+        self.assertIs(out["changed"], False)
+        self.assertNotIn("activeTools", out)
+        self.assertEqual(out["next"], "observe for bounded detail, branch/compact, or close")
+        self.assertValidRunOutput(out)
+
+    def test_error_run_keeps_error_fields(self) -> None:
+        snap = running_snapshot(
+            status="failed", error="model quota exceeded",
+            model={"status": "error", "errorMessage": "429", "model": {"modelId": "GLM-5.3"}},
+            usage={"totalTokens": 5, "modelRequests": 1, "modelErrors": 1, "lastError": "429", "reasoningTokens": 9},
+            native={"status": "failed", "lastError": "boom"},
+            futureWarning="new upstream warning", blockedReason="policy",
+        )
+        out = compat.compact_snapshot("agent-wait", snap)
+        self.assertEqual(out["error"], "model quota exceeded")
+        self.assertEqual(out["model"]["errorMessage"], "429")
+        self.assertEqual(out["model"]["status"], "error")
+        self.assertEqual(out["usage"]["lastError"], "429")
+        self.assertEqual(out["usage"]["modelErrors"], 1)
+        self.assertNotIn("reasoningTokens", out["usage"])
+        self.assertEqual(out["futureWarning"], "new upstream warning")
+        self.assertEqual(out["blockedReason"], "policy")
+        self.assertNotIn("native", out)
+
+    def test_non_empty_optional_sections_kept(self) -> None:
+        snap = running_snapshot(
+            controlFailures=[{"action": "guide", "error": "busy"}],
+            backgroundTasks=[{"taskId": "t1"}],
+            subagents={"running": [{"id": "a1"}], "ended": [{"id": "a0"}], "endedTotal": 1},
+            goal={"objective": "ship"}, context={"usedRatio": 0.42, "window": 200000},
+            model={"status": "running", "reasoningActive": True, "model": {"modelId": "m"}},
+            alreadyManaged=True, counts={"toolCalls": 0, "subagents": 1},
+        )
+        out = compat.compact_snapshot("agent-recover", snap)
+        self.assertEqual(out["controlFailures"], [{"action": "guide", "error": "busy"}])
+        self.assertEqual(out["backgroundTasks"], [{"taskId": "t1"}])
+        self.assertEqual(out["subagents"], {"running": [{"id": "a1"}]})
+        self.assertEqual(out["goal"], {"objective": "ship"})
+        self.assertEqual(out["context"], {"usedRatio": 0.42})
+        self.assertIs(out["model"]["reasoningActive"], True)
+        self.assertIs(out["alreadyManaged"], True)
+        self.assertEqual(out["counts"], {"subagents": 1})
+        idle = compat.compact_snapshot("agent-wait", running_snapshot(counts={"toolCalls": 0, "subagents": 0}))
+        self.assertNotIn("counts", idle)
+
+    def test_queued_run_keeps_resource_lease(self) -> None:
+        lease = {"scope": "cross-process", "acquired": False, "blockers": [{"runId": "run_other", "pid": 42}]}
+        out = compat.compact_snapshot("agent-start", running_snapshot(status="queued", resourceLease=lease))
+        self.assertEqual(out["resourceLease"], {"acquired": False, "blockers": [{"runId": "run_other", "pid": 42}]})
+        out = compat.compact_snapshot("agent-wait", running_snapshot(
+            resourceLease={"scope": "cross-process", "acquired": True, "blockers": ["x"]}))
+        self.assertEqual(out["resourceLease"], {"acquired": True, "blockers": ["x"]})
+
+    def test_observe_events_kept_and_truncated(self) -> None:
+        events = [
+            {"seq": 44, "type": "tool.started", "atMs": 1, "detail": {"name": "Bash", "command": "y" * 1000}},
+            {"seq": 45, "type": "text", "atMs": 2, "detail": "z" * 50},
+            {"seq": 46, "type": "turn.completed", "atMs": 3},
+        ]
+        snap = running_snapshot(events=events, nextSeq=46, hasMoreEvents=False, eventsDropped=0,
+                                nativeRefreshError="refresh failed")
+        out = compat.compact_snapshot("agent-observe", snap)
+        self.assertEqual([e["seq"] for e in out["events"]], [44, 45, 46])
+        self.assertEqual([e["type"] for e in out["events"]], ["tool.started", "text", "turn.completed"])
+        self.assertTrue(all("atMs" not in e for e in out["events"]))
+        command = out["events"][0]["detail"]["command"]
+        self.assertTrue(command.startswith("y" * 300))
+        self.assertLess(len(command), 330)
+        self.assertEqual(out["events"][0]["detail"]["name"], "Bash")
+        self.assertEqual(out["events"][1]["detail"], "z" * 50)
+        self.assertEqual(out["nextSeq"], 46)
+        self.assertIs(out["hasMoreEvents"], False)
+        self.assertNotIn("eventsDropped", out)
+        self.assertEqual(out["nativeRefreshError"], "refresh failed")
+        dropped = compat.compact_snapshot("agent-observe", running_snapshot(eventsDropped=3))
+        self.assertEqual(dropped["eventsDropped"], 3)
+
+    def test_revision_zero_and_null_thread_keep_required(self) -> None:
+        out = compat.compact_snapshot("agent-start", running_snapshot(revision=0, threadId=None, status="queued"))
+        self.assertEqual((out["revision"], out["status"]), (0, "queued"))
+        self.assertNotIn("threadId", out)
+        self.assertValidRunOutput(out)
+
+    def test_passthrough_for_other_tools_and_shapes(self) -> None:
+        snap = running_snapshot()
+        for tool in ("agent-config", "agent-context", "agent-branch", "unknown"):
+            self.assertIs(compat.compact_snapshot(tool, snap), snap)
+        for value in ("plain text", None, [1, 2], {"sessions": [], "count": 0},
+                      {"threadId": "t", "status": "closed", "native": {}}):
+            self.assertIs(compat.compact_snapshot("agent-recover", value), value)
+            self.assertIs(compat.compact_snapshot("agent-close", value), value)
+
+    def test_duplicated_content_and_structured_content_stay_identical(self) -> None:
+        compacted = compat.compact_snapshot("agent-wait", running_snapshot())
+        response = serialize_like_upstream(compacted)
+        self.assertEqual(json.loads(response["content"][0]["text"]), response["structuredContent"])
+        self.assertValidRunOutput(response["structuredContent"])
+        upstream = serialize_like_upstream(running_snapshot())
+        self.assertLessEqual(len(dumps(response)), len(dumps(upstream)) * 0.3)
+
+    def test_env_flag(self) -> None:
+        self.assertTrue(compat.compact_output_enabled({}))
+        self.assertTrue(compat.compact_output_enabled({"ZCODE_COMMANDER_COMPACT": "on"}))
+        for value in ("off", "OFF", "0", "false", "no"):
+            self.assertFalse(compat.compact_output_enabled({"ZCODE_COMMANDER_COMPACT": value}))
+
+
+class _FakeManager:
+    def __init__(self) -> None:
+        self.snap = running_snapshot()
+
+    def start(self, args):
+        return self.snap
+
+    def wait(self, run_id, **kwargs):
+        return self.snap
+
+    def observe(self, run_id, **kwargs):
+        return self.snap
+
+    def control(self, run_id, action, **kwargs):
+        return self.snap
+
+    def recover(self, args):
+        return {"sessions": [], "count": 0}
+
+    def close_run(self, run_id=None, *, thread_id=None):
+        return self.snap
+
+    def configure(self, args):
+        return self.snap
+
+    def context(self, run_id, **kwargs):
+        return self.snap
+
+
+class PatchBackendManagerTests(unittest.TestCase):
+    def test_wraps_run_tools_only_and_is_idempotent(self) -> None:
+        cls = type("Manager", (_FakeManager,), {})
+        compat.patch_backend_manager(cls)
+        first = cls.wait
+        compat.patch_backend_manager(cls)
+        self.assertIs(cls.wait, first)
+        manager = cls()
+        calls = (
+            lambda: manager.start({}), lambda: manager.wait("r", after_revision=1),
+            lambda: manager.observe("r"), lambda: manager.control("r", "cancel"),
+            lambda: manager.close_run("r"),
+        )
+        for call in calls:
+            out = call()
+            self.assertNotIn("permissionPolicy", out)
+            self.assertEqual(out["sessionTokens"], 120630)
+        self.assertEqual(manager.recover({}), {"sessions": [], "count": 0})
+        self.assertIs(manager.configure({}), manager.snap)
+        self.assertIs(manager.context("r"), manager.snap)
+
+    def test_compaction_failure_returns_original(self) -> None:
+        cls = type("Manager", (_FakeManager,), {})
+        compat.patch_backend_manager(cls)
+        manager = cls()
+        original = compat.compact_snapshot
+
+        def explode(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("boom")
+
+        compat.compact_snapshot = explode
+        try:
+            self.assertIs(manager.wait("r"), manager.snap)
+        finally:
+            compat.compact_snapshot = original
+
+    def test_errors_propagate(self) -> None:
+        class Failing(_FakeManager):
+            def wait(self, run_id, **kwargs):
+                raise LookupError("run not found")
+
+        compat.patch_backend_manager(Failing)
+        with self.assertRaises(LookupError):
+            Failing().wait("r")
 
 
 if __name__ == "__main__":
