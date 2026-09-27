@@ -7,118 +7,216 @@
 <link rel="icon" href="data:,">
 <style>
   :root {
-    --bg: #f4f6f8; --panel: #ffffff; --text: #1b2430; --muted: #66707d; --border: #d9dee6;
-    --accent: #2563eb; --accent-soft: #e8effd;
-    --ok: #16a34a; --ok-soft: #e9f9ef;
-    --run: #2563eb; --run-soft: #e8effd;
-    --fail: #dc2626; --fail-soft: #fdecec;
-    --idle: #8a94a2; --idle-soft: #eef0f3;
-    --done: #0e7490; --done-soft: #e6f6f9;
+    --bezel: #0b0b0a; --panel: #131210; --hair: #2a2622;
+    --text: #e9e4da; --muted: #9a9186;
+    --amber: #ffb000; --red: #ff3b1f; --green: #39ff88;
     --mono: ui-monospace, Consolas, "Cascadia Mono", Menlo, monospace;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #0e1319; --panel: #161d26; --text: #dfe6ee; --muted: #8d99a8; --border: #2a3441;
-      --accent: #5b8cff; --accent-soft: #1c2a45;
-      --ok: #34d399; --ok-soft: #12291e;
-      --run: #5b8cff; --run-soft: #1c2a45;
-      --fail: #f87171; --fail-soft: #3a1a1a;
-      --idle: #7d8896; --idle-soft: #1d232c;
-      --done: #38bdf8; --done-soft: #0f2733;
-    }
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
   body {
-    margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-    font-size: 14px; background: var(--bg); color: var(--text);
-    display: flex; flex-direction: column;
+    margin: 0; background: var(--bezel); color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: 13px; display: flex; flex-direction: column;
   }
-  header { padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--panel); }
-  .head-row { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
-  h1 { font-size: 16px; margin: 0; }
-  #scope { color: var(--muted); font-size: 12px; word-break: break-all; }
-  .banner { margin-top: 8px; padding: 6px 10px; border-radius: 6px; font-size: 12.5px; }
-  #banner-degraded { background: var(--done-soft); color: var(--done); }
-  #banner-error { background: var(--fail-soft); color: var(--fail); word-break: break-word; }
-  main { flex: 1; display: grid; grid-template-columns: minmax(300px, 380px) 1fr; gap: 12px;
-         padding: 12px; min-height: 0; }
-  section { background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  .vh { position: absolute; width: 1px; height: 1px; overflow: hidden;
+        clip: rect(0 0 0 0); white-space: nowrap; }
+  .mono { font-family: var(--mono); }
+
+  /* --- header: banners + instrument strip + scope -------------------------- */
+  header { padding: 10px 12px 0; border-bottom: 1px solid var(--hair); flex: 0 0 auto; }
+  .banner { margin-bottom: 8px; padding: 6px 10px; font-size: 13px; border: 1px solid; }
+  #banner-degraded { color: var(--amber); border-color: rgba(255,176,0,.35);
+                     background: rgba(255,176,0,.07); }
+  #banner-error { color: var(--red); border-color: rgba(255,59,31,.4);
+                  background: rgba(255,59,31,.07); word-break: break-word; }
+  #strip { display: flex; flex-wrap: wrap; align-items: flex-end;
+           background: var(--panel); border: 1px solid var(--hair); }
+  #strip .ro { flex: 1 1 auto; padding: 10px 14px 8px; }
+  #strip .ro + .ro { border-left: 1px solid var(--hair); }
+  #scope { display: flex; gap: 10px; color: var(--muted); font-size: 11px;
+           padding: 7px 0 10px; }
+  #scope-path { font-family: var(--mono); word-break: break-all; min-width: 0; }
+
+  /* --- seven-segment cells ---------------------------------------------------
+     A cell is 7 absolutely-placed <i> segments in order a,b,c,d,e,f,g. Shapes
+     are hexagonal bars via clip-path; cells lean like a bedside clock. Lit
+     segments carry .on (lit colour + glow); unlit ones stay as 8% ghosts. */
+  .ro { display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 0; }
+  .crow { display: flex; align-items: flex-end; }
+  .cells { display: flex; align-items: flex-end; gap: 4px;
+           --ch: clamp(40px, 4.6vw, 72px); --cw: calc(var(--ch) * .536); }
+  #dh-ros .cells { --ch: calc(clamp(40px, 4.6vw, 72px) * .6); }  /* medium: ~60% of the strip */
+  .unit { font-size: 11px; color: var(--muted); margin-left: 4px; font-family: var(--mono); }
+  .legend { font-size: 11px; letter-spacing: .14em; text-transform: uppercase;
+            color: var(--muted); white-space: nowrap; text-shadow: 0 1px 0 #000; }
+  .am { --lt: #ffb000; --gh: rgba(255,176,0,.08); }
+  .rd { --lt: #ff3b1f; --gh: rgba(255,59,31,.08); }
+  .gn { --lt: #39ff88; --gh: rgba(57,255,136,.08); }
+  .sc, .co { position: relative; display: inline-block; transform: skewX(-6deg); flex: 0 0 auto; }
+  .sc { width: var(--cw); height: var(--ch); }
+  .co { width: calc(var(--cw) * .42); height: var(--ch); }
+  .sc i, .co i { position: absolute; display: block; background: var(--gh); }
+  .sc i.on { background: var(--lt); filter: drop-shadow(0 0 4px var(--lt)); }
+  .sc i:nth-child(1), .sc i:nth-child(4), .sc i:nth-child(7) {
+    left: 27%; width: 46%; height: 14%;
+    clip-path: polygon(16% 0, 84% 0, 100% 50%, 84% 100%, 16% 100%, 0 50%); }
+  .sc i:nth-child(2), .sc i:nth-child(3), .sc i:nth-child(5), .sc i:nth-child(6) {
+    width: 27%; height: 37%;
+    clip-path: polygon(0 21%, 50% 0, 100% 21%, 100% 79%, 50% 100%, 0 79%); }
+  .sc i:nth-child(1) { top: 0; }
+  .sc i:nth-child(2) { left: 73%; top: 9%; }
+  .sc i:nth-child(3) { left: 73%; top: 54%; }
+  .sc i:nth-child(4) { top: 86%; }
+  .sc i:nth-child(5) { left: 0; top: 54%; }
+  .sc i:nth-child(6) { left: 0; top: 9%; }
+  .sc i:nth-child(7) { top: 43%; }
+  .co i { left: 22%; width: 56%; height: 12%; background: var(--lt); }
+  .co i:nth-child(1) { top: 27%; }
+  .co i:nth-child(2) { top: 61%; }
+  .co.off i { background: var(--gh); }
+  @keyframes segblink { 0% { opacity: 1; } 50% { opacity: .1; } }
+  .unset .sc i.on { animation: segblink 1s step-end infinite; }  /* flashing unset clock */
+  #ro-clock .co i { animation: segblink 1s step-end infinite; }  /* 1 Hz colon */
+
+  /* --- main columns --------------------------------------------------------- */
+  main { flex: 1; display: grid; grid-template-columns: minmax(300px, 380px) 1fr;
+         gap: 12px; padding: 12px; min-height: 0; }
+  section { background: var(--panel); border: 1px solid var(--hair);
             display: flex; flex-direction: column; min-height: 0; min-width: 0; }
-  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted);
-       margin: 0; padding: 10px 12px 6px; }
-  #cards { flex: 1; overflow-y: auto; padding: 0 8px 8px; }
-  .card { padding: 9px 10px; border: 1px solid transparent; border-radius: 8px; cursor: pointer;
-          margin-bottom: 6px; }
-  .card:hover { background: var(--bg); }
-  .card.selected { background: var(--accent-soft); border-color: var(--accent); }
-  .card-top { display: flex; align-items: center; gap: 8px; }
-  .sid { font-family: var(--mono); font-size: 11px; color: var(--muted); }
-  .pill { display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px;
-          border-radius: 999px; font-size: 11px; font-weight: 600; }
-  .pill .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
-  .pill.running { color: var(--run); background: var(--run-soft); }
-  .pill.completed { color: var(--done); background: var(--done-soft); }
-  .pill.failed { color: var(--fail); background: var(--fail-soft); }
-  .pill.idle { color: var(--idle); background: var(--idle-soft); }
-  .pill.completed .dot, .pill.idle .dot { opacity: .55; }
-  .pill.running .dot { animation: pulse 1.2s ease-in-out infinite; }
-  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
-  .title { font-weight: 600; margin-top: 6px; overflow: hidden; text-overflow: ellipsis;
-           white-space: nowrap; }
-  .meta { color: var(--muted); font-size: 12px; margin-top: 4px; display: flex;
-          flex-wrap: wrap; gap: 4px 10px; overflow-wrap: anywhere; }
-  .err-num { color: var(--fail); font-weight: 600; }
-  .placeholder { color: var(--muted); padding: 24px 12px; text-align: center; }
-  #detail-head { padding: 8px 14px; border-bottom: 1px solid var(--border); }
-  .head-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  .head-title { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis;
-                white-space: nowrap; }
-  #detail-head .meta { margin-top: 4px; }
-  .mono { font-family: var(--mono); font-size: 11px; }
-  #timeline { flex: 1; overflow-y: auto; padding: 8px 8px 12px; font-family: var(--mono);
-              font-size: 12.5px; }
-  .act { display: flex; gap: 8px; padding: 3px 8px; border-radius: 6px; align-items: baseline;
-         border-left: 3px solid transparent; }
-  .act.live { border-left-color: var(--run); background: var(--run-soft); }
-  .act.err { border-left-color: var(--fail); }
-  .act.err .summary { color: var(--fail); }
+
+  /* --- session rack --------------------------------------------------------- */
+  #rack { flex: 1; overflow-y: auto; }
+  .row { position: relative; padding: 9px 18px 9px 16px; cursor: pointer; }
+  .row + .row { border-top: 1px solid var(--hair); }
+  .row:hover { background: #1b1814; }
+  .row.sel { background: #191713; }
+  .row.sel::before, .row.sel::after { content: ""; position: absolute; top: 5px; bottom: 5px;
+                                      width: 4px; border: 1px solid var(--amber); }
+  .row.sel::before { left: 5px; border-right: none; }
+  .row.sel::after { right: 5px; border-left: none; }
+  .row:focus-visible { outline: 1px solid var(--amber); outline-offset: -1px; }
+  .r1 { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .lamp { display: inline-block; width: 7px; height: 7px; flex: 0 0 auto; background: var(--hair); }
+  .lamp.run { background: var(--green); filter: drop-shadow(0 0 2px var(--green)); }
+  .lamp.fail { background: var(--red); filter: drop-shadow(0 0 2px var(--red)); }
+  .lamp.done { background: var(--amber); }
+  .st { font-size: 16px; font-weight: 700; letter-spacing: .1em; flex: 0 0 auto; }
+  .st.run { color: var(--green); }
+  .st.fail { color: var(--red); }
+  .st.done { color: var(--amber); }
+  .st.idle { color: var(--muted); }
+  .sid { font-family: var(--mono); font-size: 13px; color: var(--muted);
+         overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .rtitle { margin-top: 5px; font-size: 16px; overflow: hidden;
+            text-overflow: ellipsis; white-space: nowrap; }
+  .rmeta { display: flex; flex-wrap: wrap; gap: 3px 12px; margin-top: 4px;
+           font-family: var(--mono); font-size: 13px; color: var(--muted); }
+  .m-e.bad { color: var(--red); }
+  .placeholder { color: var(--muted); padding: 24px 14px; font-size: 13px; }
+
+  /* --- selected session: head readouts + timeline --------------------------- */
+  #detail-head { padding: 12px 14px 6px; border-bottom: 1px solid var(--hair); flex: 0 0 auto; }
+  .dh-top { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+  .dh-title { font-size: 20px; font-weight: 600; min-width: 0; overflow: hidden;
+              text-overflow: ellipsis; white-space: nowrap; }
+  .dh-sub { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 4px;
+            font-family: var(--mono); font-size: 11px; color: var(--muted);
+            overflow-wrap: anywhere; }
+  #dh-ros { display: flex; flex-wrap: wrap; margin: 10px -14px 8px; padding: 0 14px; }
+  #dh-ros .ro { padding: 2px 20px 0 0; }
+  #dh-ros .ro + .ro { border-left: 1px solid var(--hair); padding-left: 20px; }
+  #timeline { flex: 1; overflow-y: auto; padding: 8px 6px 12px;
+              font-family: var(--mono); font-size: 13px; }
+  .act { display: flex; gap: 8px; padding: 3px 8px; align-items: baseline; }
+  .act .lamp { align-self: center; }
+  .act.live { background: rgba(57,255,136,.06); }
+  .act.live .lamp { background: var(--green); }
   .act.live .summary::after { content: " ..."; }
+  .act.err .lamp { background: var(--red); }
+  .act.err .summary { color: var(--red); }
   .act .t { color: var(--muted); flex: 0 0 auto; }
-  .act .ico { flex: 0 0 auto; font-weight: 700; color: var(--accent); width: 14px;
-              text-align: center; }
-  .act .kind { flex: 0 0 auto; color: var(--muted); width: 46px; overflow: hidden;
-               text-overflow: ellipsis; }
-  .act .summary { overflow-wrap: anywhere; white-space: pre-wrap; min-width: 0; }
-  .act .detail { color: var(--muted); overflow-wrap: anywhere; min-width: 0; }
+  .act .kind { flex: 0 0 52px; color: var(--muted); overflow: hidden;
+               text-overflow: ellipsis; white-space: nowrap; }
+  .act .summary { flex: 1 1 55%; min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+  .act .detail { flex: 1 1 45%; min-width: 0; color: var(--muted); overflow-wrap: anywhere; }
+
+  @media (min-width: 900px) {
+    #strip .ro { flex: 1 1 0; }  /* equal shares across the full-width bezel */
+  }
+  @media (max-width: 899px) {
+    body { height: auto; min-height: 100%; }  /* the page scrolls naturally */
+    main { flex: none; grid-template-columns: 1fr; }
+    #rackwrap { max-height: 40vh; }           /* the rack keeps its own scroll */
+    #timeline { min-height: 60vh; }
+  }
   @media (max-width: 760px) {
-    main { grid-template-columns: 1fr; grid-template-rows: minmax(0, 42vh) minmax(0, 1fr); }
+    main { gap: 16px; padding: 16px; }
+    header { padding: 10px 16px 0; }
+    #strip .ro { flex: 1 1 25%; padding: 8px 10px 6px; }  /* wraps 4 + 2 */
+    #dh-ros { display: grid; grid-template-columns: 1fr 1fr; }
+    #dh-ros .ro { padding: 2px 0 0; }
+    #dh-ros .ro + .ro { border-left: none; padding-left: 0; }
+    #dh-ros .ro:nth-child(2n) { border-left: 1px solid var(--hair); }
   }
   @media (max-width: 430px) {
-    body { font-size: 13px; }
     .act .kind { display: none; }
-    .head-title { white-space: normal; }
+    .dh-title { white-space: normal; }
+    #strip .ro { flex-basis: 30%; }  /* wraps 3 + 3: four 40px readouts overflow a phone row */
+    #strip .cells { --ch: 32px; }    /* a 4-cell clock must fit a third of 343px */
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
   }
 </style>
 </head>
 <body>
+<!-- DIRECTION CONTRACT
+THESIS: a glance panel of instrument readouts; the fleet's state is read like a clock across the room. Refuses the sidebar+badge dev dashboard.
+OWN-WORLD: seven-segment cells with ghost segments on a matte #0b0b0a bezel; amber #ffb000 readouts, red #ff3b1f failure, green #39ff88 running; engraved small-caps legends; mono data rows.
+STORY: the viewer sees how many workers run or fail, how big the context is and how long it has run, then reads what the selected worker is doing.
+FIRST VIEWPORT: full-width readout strip (RUNNING, FAILED, ERRORS, CTX, ELAPSED, wall clock), then session rack left and live timeline right.
+FORM: challenger signals-instruments-seven-segment-alarm-clock; seed key 98bf20e6.
+FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md
+-->
 <header>
-  <div class="head-row">
-    <h1>zcrew dashboard</h1>
-    <span id="scope"></span>
-  </div>
+  <h1 class="vh">zcrew dashboard</h1>
   <div id="banner-degraded" class="banner" hidden>
     ZCode data layout changed; using slower exact parsing (numbers stay exact).
   </div>
   <div id="banner-error" class="banner" hidden></div>
+  <div id="strip">
+    <div class="ro" id="ro-running"></div>
+    <div class="ro" id="ro-failed"></div>
+    <div class="ro" id="ro-errors"></div>
+    <div class="ro" id="ro-ctx"></div>
+    <div class="ro" id="ro-elapsed"></div>
+    <div class="ro" id="ro-clock"></div>
+  </div>
+  <div id="scope"><span>scope</span><span id="scope-path"></span></div>
 </header>
 <main>
-  <section id="list">
-    <h2>Sessions</h2>
-    <div id="cards"></div>
+  <section id="rackwrap">
+    <div id="rackempty" class="placeholder" hidden>No sessions in this scope.</div>
+    <div id="rack" role="listbox" aria-label="Sessions"></div>
   </section>
   <section id="detail">
-    <div id="detail-head"></div>
+    <div id="detail-head">
+      <div id="nosel" class="placeholder">Select a session.</div>
+      <div id="dh" hidden>
+        <div class="dh-top">
+          <span id="dh-st" class="st"></span>
+          <span id="dh-title" class="dh-title"></span>
+        </div>
+        <div class="dh-sub"><span id="dh-id"></span><span id="dh-dir"></span></div>
+        <div id="dh-ros">
+          <div class="ro" id="ro-dur"></div>
+          <div class="ro" id="ro-tools"></div>
+          <div class="ro" id="ro-herr"></div>
+          <div class="ro" id="ro-hctx"></div>
+        </div>
+      </div>
+    </div>
     <div id="timeline"></div>
   </section>
 </main>
@@ -129,21 +227,11 @@
   var ACTIVITY_MS = 1500;    // selected-session activity poll interval
   var SESSIONS_LIMIT = 100;  // below the server cap (200)
 
-  var scopeEl = document.getElementById("scope");
-  var degradedEl = document.getElementById("banner-degraded");
-  var errorEl = document.getElementById("banner-error");
-  var cardsEl = document.getElementById("cards");
-  var headEl = document.getElementById("detail-head");
-  var timelineEl = document.getElementById("timeline");
+  // --- seven-segment readouts -------------------------------------------------
+  // A glyph is a bitmask over segments a,b,c,d,e,f,g (DOM order, bit i = child i).
+  var GLYPH = { "0": 63, "1": 6, "2": 91, "3": 79, "4": 102, "5": 109,
+                "6": 125, "7": 7, "8": 127, "9": 111, "-": 64, " ": 0 };
 
-  var selectedId = null;
-  var cursor = null;
-  var firstLoad = true;
-  var lastNowMs = 0;        // the API's clock (now_ms), refreshed by each sessions poll
-  var rows = new Map();     // activity key -> row element (re-emitted keys replace in place)
-  var noKeySeq = 0;
-
-  // All server text goes through textContent; no HTML parsing of data anywhere.
   function el(tag, cls, text) {
     var node = document.createElement(tag);
     if (cls) { node.className = cls; }
@@ -151,11 +239,76 @@
     return node;
   }
 
-  function safeClass(value) {
-    return String(value).replace(/[^a-z0-9-]/ig, "");
+  // All server text goes through textContent (diffed); no HTML parsing anywhere.
+  function setText(node, s) {
+    if (node.textContent !== s) { node.textContent = s; }
   }
 
+  function segCell() {
+    var c = el("span", "sc");
+    for (var i = 0; i < 7; i++) { c.appendChild(document.createElement("i")); }
+    c._g = " ";
+    return c;
+  }
+
+  function setCell(cell, g) {
+    if (cell._g === g) { return; }
+    cell._g = g;
+    var m = GLYPH[g] || 0, kids = cell.childNodes;
+    for (var i = 0; i < 7; i++) {
+      var want = ((m >> i) & 1) ? "on" : "";
+      if (kids[i].className !== want) { kids[i].className = want; }
+    }
+  }
+
+  // A readout is a fixed number of digit cells (never reflows), with an optional
+  // colon cell after digit `colonAfter`. Units are printed legends, not segments.
+  function makeRO(host, nDigits, colonAfter, hue, legend, unit) {
+    var crow = el("div", "crow");
+    var cellsEl = el("div", "cells " + hue);
+    var cells = [], colon = null;
+    for (var i = 0; i < nDigits; i++) {
+      if (i === colonAfter) {
+        colon = el("span", "co");
+        colon.appendChild(document.createElement("i"));
+        colon.appendChild(document.createElement("i"));
+        cellsEl.appendChild(colon);
+      }
+      var c = segCell();
+      cellsEl.appendChild(c);
+      cells.push(c);
+    }
+    crow.appendChild(cellsEl);
+    if (unit) { crow.appendChild(el("span", "unit", unit)); }
+    host.appendChild(crow);
+    if (legend) { host.appendChild(el("div", "legend", legend)); }
+    return { host: host, cellsEl: cellsEl, cells: cells, colon: colon };
+  }
+
+  // "07:32" maps onto cells left to right; ':' rides the fixed colon slot.
+  function setRO(ro, s) {
+    var ci = 0;
+    for (var i = 0; i < s.length && ci < ro.cells.length; i++) {
+      var ch = s.charAt(i);
+      if (ch !== ":") { setCell(ro.cells[ci++], ch); }
+    }
+    for (; ci < ro.cells.length; ci++) { setCell(ro.cells[ci], " "); }
+    if (ro.colon) {
+      var cls = s.indexOf(":") !== -1 ? "co" : "co off";
+      if (ro.colon.className !== cls) { ro.colon.className = cls; }
+    }
+  }
+
+  function setHue(ro, hue) {
+    var cls = "cells " + hue;
+    if (ro.cellsEl.className !== cls) { ro.cellsEl.className = cls; }
+  }
+
+  // --- formatting ---------------------------------------------------------------
+
   function two(n) { return n < 10 ? "0" + n : String(n); }
+  function three(n) { return n < 10 ? "00" + n : (n < 100 ? "0" + n : String(n)); }
+  function padL(s, n) { while (s.length < n) { s = " " + s; } return s; }
 
   function fmtClock(ms) {
     var d = new Date(ms);
@@ -172,7 +325,7 @@
         + " " + fmtClock(ms).slice(0, 5);
   }
 
-  function fmtDur(ms) {
+  function fmtDur(ms) {  // compact text for rack rows ("42.1s", "3m12s", "2h05m")
     var secs = Math.max(0, ms) / 1000;
     if (secs < 60) { return secs.toFixed(1) + "s"; }
     var m = Math.floor(secs / 60);
@@ -180,12 +333,49 @@
     return Math.floor(m / 60) + "h" + two(m % 60) + "m";
   }
 
-  function fmtNum(n) {
-    return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  function fmtElapsedRO(ms) {  // segment display: mm:ss, or h:mm past an hour
+    var s = Math.floor(Math.max(0, ms) / 1000);
+    var h = Math.floor(s / 3600);
+    if (h > 99) { return "--:--"; }  // off the 4-cell scale (>4 days)
+    if (h > 0) { return padL(String(h), 2) + ":" + two(Math.floor((s % 3600) / 60)); }
+    return two(Math.floor(s / 60)) + ":" + two(s % 60);
   }
 
-  function plural(n, word) {
-    return n + " " + word + (n === 1 ? "" : "s");
+  function fmtK(tok) { return Math.round(tok / 1000) + "k"; }
+
+  // --- state --------------------------------------------------------------------
+
+  var STATUS = {
+    running: ["run", "RUN"], completed: ["done", "DONE"],
+    failed: ["fail", "FAIL"], idle: ["idle", "IDLE"]
+  };
+
+  function byId(id) { return document.getElementById(id); }
+  var scopePathEl = byId("scope-path"), degradedEl = byId("banner-degraded"), errorEl = byId("banner-error");
+  var rackEl = byId("rack"), rackEmptyEl = byId("rackempty");
+  var noselEl = byId("nosel"), dhEl = byId("dh"), timelineEl = byId("timeline");
+  var dhTitle = byId("dh-title"), dhSt = byId("dh-st"), dhId = byId("dh-id"), dhDir = byId("dh-dir");
+
+  var roRun = makeRO(byId("ro-running"), 2, -1, "gn", "Running");
+  var roFail = makeRO(byId("ro-failed"), 2, -1, "rd", "Failed");
+  var roErr = makeRO(byId("ro-errors"), 3, -1, "am", "Errors");
+  var roCtx = makeRO(byId("ro-ctx"), 4, -1, "am", "Context", "k");
+  var roElapsed = makeRO(byId("ro-elapsed"), 4, 2, "am", "Elapsed");
+  var roClock = makeRO(byId("ro-clock"), 4, 2, "am", "Local");
+  var roDur = makeRO(byId("ro-dur"), 4, 2, "am", "Duration");
+  var roTools = makeRO(byId("ro-tools"), 3, -1, "am", "Tools");
+  var roHErr = makeRO(byId("ro-herr"), 3, -1, "am", "Errors");
+  var roHCtx = makeRO(byId("ro-hctx"), 4, -1, "am", "Context", "k");
+
+  var selectedId = null, cursor = null, firstLoad = true;
+  var lastNowMs = 0, lastNowAt = 0;      // the API clock and when we received it
+  var sessList = [], sessById = new Map(), selSummary = null;
+  var rackRows = new Map();              // session id -> row record (keyed diff)
+  var actRows = new Map();               // activity key -> row element
+  var noKeySeq = 0;
+
+  function wallNow() {  // API now_ms advanced locally between polls
+    return lastNowMs ? lastNowMs + (Date.now() - lastNowAt) : Date.now();
   }
 
   // duration_ms only counts finished turns; a running session shows elapsed time
@@ -197,147 +387,231 @@
     return fmtDur(s.duration_ms);
   }
 
-  function titled(node, text) {
-    node.setAttribute("title", text);  // plain text only, never markup
-    return node;
+  function selDurMs(s) {
+    return s.status === "running" ? Math.max(0, wallNow() - s.created_ms) : s.duration_ms;
   }
 
-  function pill(status) {
-    var p = el("span", "pill " + safeClass(status));
-    p.appendChild(el("span", "dot"));
-    p.appendChild(el("span", null, status));
-    return p;
+  function selectedSession() { return selSummary || sessById.get(selectedId) || null; }
+
+  // --- instrument strip -----------------------------------------------------------
+
+  function renderStripCounts() {
+    var run = 0, fail = 0, errs = 0;
+    for (var i = 0; i < sessList.length; i++) {
+      var s = sessList[i];
+      if (s.status === "running") { run++; }
+      else if (s.status === "failed") { fail++; }
+      errs += s.errors || 0;
+    }
+    setRO(roRun, two(Math.min(run, 99)));
+    setRO(roFail, two(Math.min(fail, 99)));
+    setRO(roErr, three(Math.min(errs, 999)));
+    setHue(roErr, errs > 0 ? "rd" : "am");
   }
 
-  function setHead(summary) {
-    headEl.textContent = "";
-    if (!summary) {
-      headEl.appendChild(el("div", "placeholder", "Select a session on the left."));
-      return;
+  function ctxStr(s) {
+    if (s && s.last_context_tokens != null) {
+      return padL(String(Math.min(Math.round(s.last_context_tokens / 1000), 9999)), 4);
     }
-    var top = el("div", "head-top");
-    top.appendChild(pill(summary.status));
-    top.appendChild(titled(el("span", "head-title", summary.title || "(no title)"),
-                          summary.title || "(no title)"));
-    headEl.appendChild(top);
-    var meta = el("div", "meta");
-    meta.appendChild(el("span", "mono", summary.id.slice(0, 13)));
-    if (summary.directory) { meta.appendChild(el("span", null, summary.directory)); }
-    meta.appendChild(el("span", null, "started " + fmtStarted(summary.created_ms)));
-    meta.appendChild(el("span", null, durationText(summary)));
-    meta.appendChild(el("span", null, plural(summary.tool_calls, "tool")));
-    if (summary.errors) { meta.appendChild(el("span", "err-num", plural(summary.errors, "error"))); }
-    if (summary.last_context_tokens != null) {
-      meta.appendChild(el("span", null, "ctx " + fmtNum(summary.last_context_tokens)));
-    }
-    headEl.appendChild(meta);
+    return "    ";
   }
 
-  function sessionCard(s) {
-    var card = el("div", "card" + (s.id === selectedId ? " selected" : ""));
-    var top = el("div", "card-top");
-    top.appendChild(pill(s.status));
-    top.appendChild(el("span", "sid", s.id.slice(0, 13)));
-    card.appendChild(top);
-    card.appendChild(titled(el("div", "title", s.title || "(no title)"), s.title || "(no title)"));
-    var meta = el("div", "meta");
-    meta.appendChild(el("span", null, fmtStarted(s.created_ms)));
-    meta.appendChild(el("span", null, durationText(s)));
-    meta.appendChild(el("span", null, plural(s.tool_calls, "tool")));
-    if (s.errors) { meta.appendChild(el("span", "err-num", plural(s.errors, "error"))); }
-    if (s.last_context_tokens != null) {
-      meta.appendChild(el("span", null, "ctx " + fmtNum(s.last_context_tokens)));
-    }
-    card.appendChild(meta);
-    card.addEventListener("click", function () { select(s.id); });
-    return card;
+  function renderStripSel() {
+    var s = selectedSession();
+    setRO(roCtx, ctxStr(s));
+    setRO(roElapsed, s ? fmtElapsedRO(selDurMs(s)) : "    ");
   }
 
-  function renderSessions(data) {
-    scopeEl.textContent = data.scope || "";
-    degradedEl.hidden = !data.layoutDegraded;
-    cardsEl.textContent = "";
-    var sessions = data.sessions || [];
-    if (!sessions.length) {
-      cardsEl.appendChild(el("div", "placeholder", "No sessions found in this scope."));
-      return;
-    }
-    for (var i = 0; i < sessions.length; i++) {
-      cardsEl.appendChild(sessionCard(sessions[i]));
-    }
+  function tickClock() {
+    var d = new Date(wallNow());
+    setRO(roClock, two(d.getHours()) + ":" + two(d.getMinutes()));
   }
 
-  function autoSelect(sessions) {
-    if (!firstLoad) { return; }
-    firstLoad = false;
-    if (!sessions.length) { return; }
-    var newestRunning = null;  // list is newest first
-    for (var i = 0; i < sessions.length; i++) {
-      if (sessions[i].status === "running") { newestRunning = sessions[i]; break; }
+  // API unreachable: every strip readout becomes blinking dashes (unset clock).
+  var stripROs = [roRun, roFail, roErr, roCtx, roElapsed, roClock];
+  var stripUnsetVals = ["--", "--", "---", "----", "--:--", "--:--"];
+  var stripUnsetOn = false;
+
+  function setStripUnset(on) {
+    if (on === stripUnsetOn) { return; }
+    stripUnsetOn = on;
+    for (var i = 0; i < stripROs.length; i++) {
+      stripROs[i].host.classList.toggle("unset", on);
+      if (on) { setRO(stripROs[i], stripUnsetVals[i]); }
     }
-    select((newestRunning || sessions[0]).id);
+    if (!on) { tickClock(); }
   }
+
+  // --- session rack (keyed diff: unchanged data must not touch the DOM) ------------
+
+  function decorateRow(rec, s) {
+    var pair = STATUS[s.status] || STATUS.idle;
+    setText(rec.st, pair[1]);
+    if (rec.st.className !== "st " + pair[0]) { rec.st.className = "st " + pair[0]; }
+    if (rec.lamp.className !== "lamp " + pair[0]) { rec.lamp.className = "lamp " + pair[0]; }
+    setText(rec.sid, s.id.slice(0, 13));
+    var title = s.title || "(no title)";
+    setText(rec.title, title);
+    if (rec.title.getAttribute("title") !== title) { rec.title.setAttribute("title", title); }
+    setText(rec.mS, fmtStarted(s.created_ms));
+    setText(rec.mD, durationText(s));
+    setText(rec.mT, s.tool_calls + (s.tool_calls === 1 ? " tool" : " tools"));
+    setText(rec.mE, (s.errors || 0) + " err");
+    var ecls = s.errors ? "m-e bad" : "m-e";
+    if (rec.mE.className !== ecls) { rec.mE.className = ecls; }
+    setText(rec.mC, s.last_context_tokens != null ? "ctx " + fmtK(s.last_context_tokens) : "");
+  }
+
+  function buildRow(s) {
+    var row = el("div", "row");
+    row._id = s.id;
+    row.tabIndex = 0;
+    row.setAttribute("role", "option");
+    row.setAttribute("aria-selected", "false");
+    var r1 = el("div", "r1");
+    var lamp = el("i", "lamp");
+    var st = el("span", "st");
+    var sid = el("span", "sid");
+    r1.appendChild(lamp); r1.appendChild(st); r1.appendChild(sid);
+    row.appendChild(r1);
+    var title = el("div", "rtitle");
+    row.appendChild(title);
+    var meta = el("div", "rmeta");
+    var mS = el("span"), mD = el("span"), mT = el("span");
+    var mE = el("span", "m-e"), mC = el("span");
+    meta.appendChild(mS); meta.appendChild(mD); meta.appendChild(mT);
+    meta.appendChild(mE); meta.appendChild(mC);
+    row.appendChild(meta);
+    var rec = { id: s.id, el: row, lamp: lamp, st: st, sid: sid, title: title,
+                mS: mS, mD: mD, mT: mT, mE: mE, mC: mC };
+    decorateRow(rec, s);
+    row.addEventListener("click", function () { select(s.id); });
+    row.addEventListener("keydown", function (ev) {
+      if (ev.key === "Enter" || ev.key === " " || ev.key === "Spacebar") {
+        ev.preventDefault();
+        select(s.id);
+      }
+    });
+    rackRows.set(s.id, rec);
+    return rec;
+  }
+
+  function renderRack() {
+    // Update in place, insert new rows at their slot, drop vanished ones;
+    // reorder only where the DOM child order actually differs from the data.
+    for (var i = 0; i < sessList.length; i++) {
+      var s = sessList[i];
+      var rec = rackRows.get(s.id);
+      if (!rec) { rec = buildRow(s); }  // buildRow decorates the fresh row
+      else { decorateRow(rec, s); }     // diffed: identical values touch nothing
+      var cur = rackEl.children[i];
+      if (cur !== rec.el) { rackEl.insertBefore(rec.el, cur || null); }
+    }
+    while (rackEl.children.length > sessList.length) {
+      var last = rackEl.lastChild;
+      rackRows.delete(last._id);
+      rackEl.removeChild(last);
+    }
+    rackEmptyEl.hidden = sessList.length !== 0;
+  }
+
+  // --- selection ---------------------------------------------------------------------
 
   function select(id) {
     if (selectedId === id) { return; }
     selectedId = id;
     cursor = null;
-    rows.clear();
+    selSummary = null;
+    actRows.clear();
     timelineEl.textContent = "";
     setHead(null);
+    rackRows.forEach(function (rec) {
+      var sel = rec.id === id;
+      if (rec.el.classList.contains("sel") !== sel) {
+        rec.el.classList.toggle("sel", sel);
+        rec.el.setAttribute("aria-selected", sel ? "true" : "false");
+      }
+    });
+    renderStripSel();
     fetchActivity();
   }
+
+  function setHead(s) {
+    if (!s) {
+      noselEl.hidden = false;
+      dhEl.hidden = true;
+      return;
+    }
+    noselEl.hidden = true;
+    dhEl.hidden = false;
+    var pair = STATUS[s.status] || STATUS.idle;
+    setText(dhSt, pair[1]);
+    if (dhSt.className !== "st " + pair[0]) { dhSt.className = "st " + pair[0]; }
+    var title = s.title || "(no title)";
+    setText(dhTitle, title);
+    if (dhTitle.getAttribute("title") !== title) { dhTitle.setAttribute("title", title); }
+    setText(dhId, s.id);
+    setText(dhDir, s.directory || "");
+    setRO(roDur, fmtElapsedRO(selDurMs(s)));
+    setRO(roTools, three(Math.min(s.tool_calls, 999)));
+    setRO(roHErr, three(Math.min(s.errors || 0, 999)));
+    setHue(roHErr, s.errors > 0 ? "rd" : "am");
+    setRO(roHCtx, ctxStr(s));
+    renderStripSel();
+  }
+
+  // --- activity timeline ---------------------------------------------------------------
 
   function nearBottom() {
     return timelineEl.scrollHeight - timelineEl.scrollTop - timelineEl.clientHeight < 48;
   }
 
-  function decorate(row, a) {
-    row._t.textContent = a.time;
-    row._ico.textContent = a.icon;
-    row._kind.textContent = a.label;
-    row._summary.textContent = a.summary;
-    row._detail.textContent = (a.detail && a.summary.indexOf(a.detail) === -1)
-      ? "-> " + a.detail : "";
+  function decorateAct(row, a) {
+    setText(row._t, a.time);
+    setText(row._kind, a.label);
+    setText(row._summary, a.summary);
+    setText(row._detail, (a.detail && a.summary.indexOf(a.detail) === -1)
+      ? "-> " + a.detail : "");
     var live = a.status === "running" || a.status === "pending";
     var err = a.status === "error" || a.status === "failed";
     row.classList.toggle("live", live);
     row.classList.toggle("err", err);
   }
 
-  function buildRow(a) {
+  function buildAct(a) {
     var row = el("div", "act");
+    row.appendChild(el("i", "lamp"));
     row._t = el("span", "t");
-    row._ico = el("span", "ico");
     row._kind = el("span", "kind");
     row._summary = el("span", "summary");
     row._detail = el("span", "detail");
     row.appendChild(row._t);
-    row.appendChild(row._ico);
     row.appendChild(row._kind);
     row.appendChild(row._summary);
     row.appendChild(row._detail);
-    decorate(row, a);
+    decorateAct(row, a);
     return row;
   }
 
   function appendActivity(items) {
     if (!items.length) { return; }
-    var stick = nearBottom();
+    var stick = nearBottom();  // stick to bottom only when already near it
     for (var i = 0; i < items.length; i++) {
       var a = items[i];
       var key = a.key || ("_nokey_" + noKeySeq++);
-      var row = rows.get(key);
+      var row = actRows.get(key);
       if (row) {
-        decorate(row, a);  // same key re-emitted (running -> completed): replace in place
+        decorateAct(row, a);  // same key re-emitted (running -> completed): replace in place
       } else {
-        row = buildRow(a);
-        rows.set(key, row);
+        row = buildAct(a);
+        actRows.set(key, row);
         timelineEl.appendChild(row);
       }
     }
     if (stick) { timelineEl.scrollTop = timelineEl.scrollHeight; }
   }
+
+  // --- polling ----------------------------------------------------------------------------
 
   function fetchJson(url) {
     return fetch(url).then(function (res) {
@@ -353,7 +627,7 @@
   }
 
   function showError(err) {
-    errorEl.textContent = "API error: " + (err && err.message ? err.message : String(err));
+    setText(errorEl, "API error: " + (err && err.message ? err.message : String(err)));
     errorEl.hidden = false;
   }
 
@@ -363,7 +637,8 @@
     if (cursor) { url += "?after=" + encodeURIComponent(cursor); }
     return fetchJson(url).then(function (data) {
       errorEl.hidden = true;
-      setHead(data.summary);
+      selSummary = data.summary || null;
+      setHead(selSummary);
       appendActivity(data.activity || []);
       cursor = data.cursor || null;
     }, function (err) {
@@ -372,13 +647,36 @@
     });
   }
 
+  function autoSelect() {
+    if (!firstLoad) { return; }
+    firstLoad = false;
+    if (!sessList.length) { return; }
+    var newestRunning = null;  // list is newest first
+    for (var i = 0; i < sessList.length; i++) {
+      if (sessList[i].status === "running") { newestRunning = sessList[i]; break; }
+    }
+    select((newestRunning || sessList[0]).id);
+  }
+
   function pollSessions() {
     fetchJson("/api/sessions?limit=" + SESSIONS_LIMIT).then(function (data) {
       errorEl.hidden = true;
-      if (data.now_ms) { lastNowMs = data.now_ms; }
-      renderSessions(data);
-      autoSelect(data.sessions || []);
-    }, showError).then(function () {
+      if (data.now_ms) { lastNowMs = data.now_ms; lastNowAt = Date.now(); }
+      setText(scopePathEl, data.scope || "");
+      degradedEl.hidden = !data.layoutDegraded;
+      sessList = data.sessions || [];
+      sessById = new Map();
+      for (var i = 0; i < sessList.length; i++) { sessById.set(sessList[i].id, sessList[i]); }
+      setStripUnset(false);
+      renderStripCounts();
+      renderRack();
+      renderStripSel();
+      tickClock();
+      autoSelect();
+    }, function (err) {
+      showError(err);
+      setStripUnset(true);
+    }).then(function () {
       setTimeout(pollSessions, SESSIONS_MS);
     });
   }
@@ -389,7 +687,19 @@
     });
   }
 
+  // The only local timer: advances the wall clock and running elapsed readouts.
+  setInterval(function () {
+    if (stripUnsetOn) { return; }
+    tickClock();
+    var s = selectedSession();
+    if (s && s.status === "running") {
+      setRO(roElapsed, fmtElapsedRO(selDurMs(s)));
+      if (!dhEl.hidden) { setRO(roDur, fmtElapsedRO(selDurMs(s))); }
+    }
+  }, 1000);
+
   setHead(null);
+  tickClock();
   pollSessions();
   pollActivity();
 })();

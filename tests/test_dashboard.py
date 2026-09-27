@@ -4,6 +4,7 @@ import http.client
 import importlib.util
 import io
 import json
+import re
 import sys
 import tempfile
 import threading
@@ -273,6 +274,45 @@ class DashboardTest(unittest.TestCase):
         self.assertIn("min-width: 0", text)            # grid/flex children may shrink
         self.assertIn("overflow-wrap: anywhere", text)  # no-space strings wrap
         self.assertIn("text-overflow: ellipsis", text)  # single-line titles clip cleanly
+
+    # --- page source rules: seven-segment instrument panel ------------------------
+
+    def test_page_direction_contract_is_first_body_child(self) -> None:
+        text = (SCRIPTS / "dashboard.html").read_text(encoding="utf-8")
+        m = re.search(r"<body>\s*<!--\s*DIRECTION CONTRACT\b", text)
+        self.assertIsNotNone(m, "the direction contract comment must open <body>")
+        self.assertIn("seed key 98bf20e6", text)
+
+    def test_page_size_within_budget(self) -> None:
+        size = (SCRIPTS / "dashboard.html").stat().st_size
+        self.assertLessEqual(size, 40 * 1024)  # single self-contained file, <= 40 KB
+
+    def test_page_is_dark_only_and_motion_safe(self) -> None:
+        text = (SCRIPTS / "dashboard.html").read_text(encoding="utf-8")
+        self.assertNotIn("prefers-color-scheme", text)  # one LED-world palette: dark
+        self.assertIn("prefers-reduced-motion", text)   # blink/steady opt-out exists
+
+    def test_page_has_seven_segment_hardware_and_keyboard_rows(self) -> None:
+        text = (SCRIPTS / "dashboard.html").read_text(encoding="utf-8")
+        self.assertIn("skewX(-6deg)", text)      # leaning segment cells
+        self.assertIn("clip-path", text)         # hexagonal segment bars
+        self.assertIn('role="listbox"', text)   # the rack is a listbox
+        self.assertIn('"role", "option"', text)  # rows become keyboard options
+        self.assertIn("tabIndex = 0", text)      # rows are keyboard focusable
+
+    def test_page_type_scale_is_four_steps(self) -> None:
+        text = (SCRIPTS / "dashboard.html").read_text(encoding="utf-8")
+        sizes = set(re.findall(r"font-size:\s*(\d+(?:\.\d+)?)px", text))
+        self.assertTrue(sizes, "no font sizes found")
+        self.assertTrue(sizes <= {"11", "13", "16", "20"},
+                        f"unexpected font sizes: {sorted(sizes)}")
+
+    def test_page_strip_scales_and_mobile_flows(self) -> None:
+        text = (SCRIPTS / "dashboard.html").read_text(encoding="utf-8")
+        self.assertIn("clamp(40px, 4.6vw, 72px)", text)        # strip cell height scales with viewport
+        self.assertIn("grid-template-columns: 1fr 1fr", text)  # 2x2 head readouts on mobile
+        self.assertIn("max-height: 40vh", text)                # rack keeps its own scroll
+        self.assertIn("min-height: 60vh", text)                # timeline floor on mobile
 
     # --- entry point --------------------------------------------------------------------
 
