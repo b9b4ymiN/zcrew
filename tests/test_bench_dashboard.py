@@ -5,7 +5,7 @@ import unittest
 
 import bench_dashboard
 
-ENDPOINTS = {"sessions_limit_100", "activity_full", "activity_incremental_empty", "page"}
+ENDPOINTS = {"sessions_limit_100", "activity_full", "activity_incremental_empty", "quota", "page"}
 
 
 class BenchDashboardTest(unittest.TestCase):

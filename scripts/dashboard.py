@@ -1,19 +1,28 @@
 """zcrew dashboard - local read-only web view of ZCode worker sessions.
 
-Serves the single page in dashboard.html (a sibling file) plus two JSON
-endpoints backed by zcode_activity.py (also a sibling), like ``zcrew watch``
-but in a browser:
+Serves the single page in dashboard.html (a sibling file) plus JSON endpoints
+backed by zcode_activity.py and zcode_quota.py (also siblings), like ``zcrew
+watch`` but in a browser:
 
     GET /          the page
     GET /api/sessions?limit=N           session summaries for the DIR scope
     GET /api/sessions/<id>/activity     one session's timeline, incremental
+    GET /api/quota                      Coding Plan quota (Z.ai API or estimate)
 
 The server binds 127.0.0.1 only and never writes anything: the database is
-only ever opened through zcode_activity (``mode=ro``). Host headers other
-than 127.0.0.1/localhost:<port> are rejected (DNS-rebinding guard), no CORS
-headers are sent, and every response carries nosniff, no-referrer and a
-same-origin Content-Security-Policy. DIR / --all come from the command line
-only, so the page cannot read another project's sessions.
+only ever opened through zcode_activity / zcode_quota (``mode=ro``). Host
+headers other than 127.0.0.1/localhost:<port> are rejected (DNS-rebinding
+guard), no CORS headers are sent, and every response carries nosniff,
+no-referrer and a same-origin Content-Security-Policy. DIR / --all come from
+the command line only, so the page cannot read another project's sessions.
+
+/api/quota may make one server-side outbound GET to Z.ai's quota API when an
+API key is configured ($ZCODE_BIGMODEL_USAGE_API_KEY / $BIGMODEL_USAGE_API_KEY);
+without a key it stays fully local (an estimate from the db). The key is only
+ever put on the request's authorization header - it never appears in a
+response, error text or log line (see zcode_quota.fetch_api). Quota URL
+overrides must be https (http:// is accepted for loopback test servers only),
+redirects are refused, and any API failure falls back to the local estimate.
 """
 
 from __future__ import annotations
@@ -22,6 +31,7 @@ import importlib.util
 import json
 import os
 import sys
+import threading
 import time
 import webbrowser
 from dataclasses import asdict
@@ -65,11 +75,110 @@ class DashboardState:
     def __init__(self, env: Mapping[str, str], scope_dir: str | None) -> None:
         self.za = _load_sibling("zcode_activity")
         self.cli = _load_sibling("activity_cli")  # ICONS / LABELS / time format
+        self.zq = _load_sibling("zcode_quota")
         self.html = (HERE / "dashboard.html").read_text(encoding="utf-8")
         self.html_bytes = self.html.encode("utf-8")
         self.db_path = self.za.default_db_path(env)
         self.scope_dir = scope_dir
         self.scope_label = "all" if scope_dir is None else str(scope_dir)
+        self.quota = QuotaCache(self.zq, self.db_path, env)
+
+
+class QuotaCache:
+    """/api/quota's server-side cache; the only mutable part of DashboardState.
+
+    The API answer - success AND failure alike - is kept for ``api_ttl`` so a
+    dead network is not hammered and concurrent requests never fire parallel
+    calls (the lock covers the outbound attempt itself, on the request thread,
+    only when the cache is stale). The local estimate is a cheap read-only db
+    query refreshed every ``estimate_ttl``. ``opener`` exists so tests can
+    replace the network call.
+    """
+
+    def __init__(self, zq: ModuleType, db_path: Any, env: Mapping[str, str],
+                 opener: Any = None) -> None:
+        self.zq = zq
+        self.db_path = db_path
+        self.env = env
+        self.opener = opener
+        self.lock = threading.Lock()
+        self.api_ttl = 60.0
+        self.estimate_ttl = 10.0
+        self.api_timeout = 5.0
+        self._api_tried = False
+        self._api_ok: dict[str, Any] | None = None
+        self._api_error: str | None = None
+        self._api_at = 0.0
+        self._api_fetched_ms = 0
+        self._estimate: dict[str, Any] | None = None
+        self._estimate_at = 0.0
+        self._estimate_ms = 0
+
+    def _refresh_estimate(self, now_ms: int, mono: float) -> None:
+        self._estimate = self.zq.local_estimate(self.db_path, now_ms)
+        self._estimate_at = mono
+        self._estimate_ms = int(time.time() * 1000)
+
+    def snapshot(self, now_ms: int | None = None) -> dict[str, Any]:
+        now = int(time.time() * 1000) if now_ms is None else now_ms
+        mono = time.monotonic()
+        with self.lock:
+            if self._estimate is None or mono - self._estimate_at >= self.estimate_ttl:
+                self._refresh_estimate(now, mono)
+            assert self._estimate is not None
+            error: str | None = None
+            level: str | None = None
+            windows: list[dict[str, Any]] = []
+            tools: dict[str, Any] | None = None
+            configured = self.zq.api_key(self.env) is not None
+            if configured:
+                if not self._api_tried or mono - self._api_at >= self.api_ttl:
+                    try:
+                        self._api_ok = self.zq.fetch_api(
+                            self.env, timeout=self.api_timeout, opener=self.opener)
+                        self._api_error = None
+                    except self.zq.QuotaError as exc:
+                        self._api_ok = None
+                        self._api_error = str(exc) or "network error"
+                    except Exception:
+                        # Generic text only: an arbitrary exception's message is
+                        # not trusted to be key-free.
+                        self._api_ok = None
+                        self._api_error = "network error"
+                    self._api_tried = True
+                    self._api_at = mono
+                    self._api_fetched_ms = int(time.time() * 1000)
+                if self._api_ok is not None:
+                    # fetched_ms reflects the primary source's production time
+                    level, windows, tools = (self._api_ok["level"],
+                                             self._api_ok["windows"], self._api_ok["tools"])
+                    return self._payload("api", configured, None, level, windows, tools,
+                                         self._api_fetched_ms)
+                error = self._api_error
+            window = {
+                "id": "5h",
+                "remaining_pct": None,  # the estimate has no plan size to
+                "used_pct": None,       # compute a percentage from
+                "reset_ms": self._estimate["limit_reset_ms"] if self._estimate["limited"] else None,
+                "used": self._estimate["tokens_5h"],
+                "total": None,
+            }
+            return self._payload("estimate", configured, error, None, [window], None,
+                                 self._estimate_ms)
+
+    def _payload(self, source: str, configured: bool, error: str | None,
+                 level: str | None, windows: list[dict[str, Any]],
+                 tools: dict[str, Any] | None, fetched_ms: int) -> dict[str, Any]:
+        assert self._estimate is not None
+        return {
+            "source": source,
+            "fetched_ms": fetched_ms,
+            "api": {"configured": configured, "error": error},
+            "level": level,
+            "windows": windows,
+            "tools": tools,
+            "estimate": self._estimate,
+        }
 
 
 def _parse_limit(qs: Mapping[str, list[str]]) -> int:
@@ -157,6 +266,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send(200, self.state.html_bytes, "text/html; charset=utf-8")
             elif path == "/api/sessions":
                 self._api_sessions(parse_qs(parsed.query))
+            elif path == "/api/quota":
+                self._api_quota()
             elif path.startswith("/api/sessions/") and path.endswith("/activity"):
                 self._api_activity(path[len("/api/sessions/"):-len("/activity")], parse_qs(parsed.query))
             else:
@@ -184,6 +295,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "layoutDegraded": bool(getattr(st.za, "LAYOUT_DEGRADED", False)),
             "sessions": [asdict(s) for s in sessions],
         })
+
+    def _api_quota(self) -> None:
+        try:
+            payload = self.state.quota.snapshot()
+        except Exception:
+            # Fixed text: an exception message is not trusted to be key-free.
+            self._json(503, {"error": "quota unavailable"})
+            return
+        self._json(200, payload)
 
     def _api_activity(self, raw_id: str, qs: Mapping[str, list[str]]) -> None:
         st = self.state

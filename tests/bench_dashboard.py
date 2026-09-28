@@ -1,11 +1,12 @@
 """Dashboard performance baseline benchmark (no UI change).
 
 Builds a synthetic ZCode database, serves it with the real dashboard server
-(scripts/dashboard.py) on 127.0.0.1:0, and times the four requests the page
+(scripts/dashboard.py) on 127.0.0.1:0, and times the five requests the page
 issues: the session list, a full activity fetch, the incremental empty-delta
-activity poll the page runs every 1.5 s, and the page itself. Numbers are for
-before/after comparison on one machine, not absolute truth: the synthetic
-database has no indexes and the timing includes loopback HTTP.
+activity poll the page runs every 1.5 s, the quota status poll, and the page
+itself. Numbers are for before/after comparison on one machine, not absolute
+truth: the synthetic database has no indexes and the timing includes loopback
+HTTP.
 
     python tests/bench_dashboard.py [--n N] [--out PATH]
 
@@ -193,6 +194,7 @@ def run_bench(n: int = DEFAULT_N) -> dict[str, Any]:
                     "sessions_limit_100": "/api/sessions?limit=100",
                     "activity_full": full,
                     "activity_incremental_empty": f"{full}?after={quote(cursor, safe='')}",
+                    "quota": "/api/quota",  # no key in env: cached local estimate
                     "page": "/",
                 }
                 endpoints = {name: _measure(conn, path, n) for name, path in paths.items()}
