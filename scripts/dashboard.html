@@ -7,192 +7,228 @@
 <link rel="icon" href="data:,">
 <style>
   :root {
-    --bezel: #0b0b0a; --panel: #131210; --hair: #2a2622;
-    --text: #e9e4da; --muted: #9a9186;
-    --amber: #ffb000; --red: #ff3b1f; --green: #39ff88;
-    --mono: ui-monospace, Consolas, "Cascadia Mono", Menlo, monospace;
+    --bg: #0f1115; --panel: #15181d; --raised: #1b1f26; --sel: #1f2530;
+    --line: #262b33; --text: #d7dce3; --muted: #8b94a1; --accent: #4c9bf5;
+    --run: #d29922; --fail: #f85149; --done: #3fb950; --idle: #6e7681;
+    --c-read: #58a6ff; --c-edit: #f0883e; --c-run: #3fb950;
+    --c-web: #bc8cff; --c-agent: #39c5cf; --c-msg: #8b949e;
+    --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
   body {
-    margin: 0; background: var(--bezel); color: var(--text);
+    margin: 0; background: var(--bg); color: var(--text); position: relative;
     font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-    font-size: 13px; display: flex; flex-direction: column;
+    font-size: 13px;
   }
-  .vh { position: absolute; width: 1px; height: 1px; overflow: hidden;
-        clip: rect(0 0 0 0); white-space: nowrap; }
   .mono { font-family: var(--mono); }
+  button { font: inherit; color: inherit; background: none; border: none;
+           padding: 0; cursor: pointer; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+         flex: 0 0 auto; background: var(--idle); }
+  .d-run { background: var(--run); animation: pulse 1.6s ease-in-out infinite; }
+  .d-fail { background: var(--fail); }
+  .d-done { background: var(--done); }
+  .d-idle { background: var(--idle); }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+  .placeholder { color: var(--muted); padding: 16px 12px; }
 
-  /* --- header: banners + instrument strip + scope -------------------------- */
-  header { padding: 10px 12px 0; border-bottom: 1px solid var(--hair); flex: 0 0 auto; }
-  .banner { margin-bottom: 8px; padding: 6px 10px; font-size: 13px; border: 1px solid; }
-  #banner-degraded { color: var(--amber); border-color: rgba(255,176,0,.35);
-                     background: rgba(255,176,0,.07); }
-  #banner-error { color: var(--red); border-color: rgba(255,59,31,.4);
-                  background: rgba(255,59,31,.07); word-break: break-word; }
-  #strip { display: flex; flex-wrap: wrap; align-items: flex-end;
-           background: var(--panel); border: 1px solid var(--hair); }
-  #strip .ro { flex: 1 1 auto; padding: 10px 14px 8px; }
-  #strip .ro + .ro { border-left: 1px solid var(--hair); }
-  #scope { display: flex; gap: 10px; color: var(--muted); font-size: 11px;
-           padding: 7px 0 10px; }
-  #scope-path { font-family: var(--mono); word-break: break-all; min-width: 0; }
-  #present-btn { margin-left: auto; flex: 0 0 auto; font: inherit; font-size: 11px;
-                 letter-spacing: .14em; text-transform: uppercase; color: var(--muted);
-                 background: none; border: 1px solid var(--hair); padding: 2px 10px;
-                 cursor: pointer; }
-  #present-btn:hover { color: var(--text); border-color: var(--muted); }
-  #present-btn:focus-visible { outline: 1px solid var(--amber); outline-offset: 1px; }
-  #present-btn[aria-pressed="true"] { color: var(--amber); border-color: var(--amber); }
+  /* --- app shell: title bar / sidebar+main / status bar ------------------- */
+  #app { height: 100%; display: flex; flex-direction: column; }
+  #topbar { flex: 0 0 36px; display: flex; align-items: center; gap: 12px;
+            padding: 0 12px; border-bottom: 1px solid var(--line); min-width: 0; }
+  #wordmark { margin: 0; font-size: 13px; font-weight: 600; flex: 0 0 auto; }
+  #scope { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+           white-space: nowrap; color: var(--muted);
+           font-family: var(--mono); font-size: 11px; }
+  #counts { display: flex; align-items: center; flex: 0 0 auto; }
+  .cnt { display: inline-flex; align-items: center; gap: 6px;
+         font-size: 11px; white-space: nowrap; }
+  .cnt + .cnt::before { content: "·"; margin: 0 8px; color: var(--idle); }
+  #help-btn { flex: 0 0 auto; font-size: 11px; color: var(--muted);
+              padding: 2px 7px; border-radius: 4px; }
+  #help-btn:hover { color: var(--text); background: var(--raised); }
 
-  /* --- seven-segment cells ---------------------------------------------------
-     A cell is 7 absolutely-placed <i> segments in order a,b,c,d,e,f,g. Shapes
-     are hexagonal bars via clip-path; cells lean like a bedside clock. Lit
-     segments carry .on (lit colour + glow); unlit ones stay as 8% ghosts. */
-  .ro { display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 0; }
-  .crow { display: flex; align-items: flex-end; }
-  .cells { display: flex; align-items: flex-end; gap: 4px;
-           --ch: clamp(40px, 4.6vw, 72px); --cw: calc(var(--ch) * .536); }
-  #dh-ros .cells { --ch: calc(clamp(40px, 4.6vw, 72px) * .6); }  /* medium: ~60% of the strip */
-  .unit { font-size: 11px; color: var(--muted); margin-left: 4px; font-family: var(--mono); }
-  .legend { font-size: 11px; letter-spacing: .14em; text-transform: uppercase;
-            color: var(--muted); white-space: nowrap; text-shadow: 0 1px 0 #000; }
-  .am { --lt: #ffb000; --gh: rgba(255,176,0,.08); }
-  .rd { --lt: #ff3b1f; --gh: rgba(255,59,31,.08); }
-  .gn { --lt: #39ff88; --gh: rgba(57,255,136,.08); }
-  .sc, .co { position: relative; display: inline-block; transform: skewX(-6deg); flex: 0 0 auto; }
-  .sc { width: var(--cw); height: var(--ch); }
-  .co { width: calc(var(--cw) * .42); height: var(--ch); }
-  .sc i, .co i { position: absolute; display: block; background: var(--gh); }
-  .sc i.on { background: var(--lt); filter: drop-shadow(0 0 4px var(--lt)); }
-  .sc i:nth-child(1), .sc i:nth-child(4), .sc i:nth-child(7) {
-    left: 27%; width: 46%; height: 14%;
-    clip-path: polygon(16% 0, 84% 0, 100% 50%, 84% 100%, 16% 100%, 0 50%); }
-  .sc i:nth-child(2), .sc i:nth-child(3), .sc i:nth-child(5), .sc i:nth-child(6) {
-    width: 27%; height: 37%;
-    clip-path: polygon(0 21%, 50% 0, 100% 21%, 100% 79%, 50% 100%, 0 79%); }
-  .sc i:nth-child(1) { top: 0; }
-  .sc i:nth-child(2) { left: 73%; top: 9%; }
-  .sc i:nth-child(3) { left: 73%; top: 54%; }
-  .sc i:nth-child(4) { top: 86%; }
-  .sc i:nth-child(5) { left: 0; top: 54%; }
-  .sc i:nth-child(6) { left: 0; top: 9%; }
-  .sc i:nth-child(7) { top: 43%; }
-  .co i { left: 22%; width: 56%; height: 12%; background: var(--lt); }
-  .co i:nth-child(1) { top: 27%; }
-  .co i:nth-child(2) { top: 61%; }
-  .co.off i { background: var(--gh); }
-  @keyframes segblink { 0% { opacity: 1; } 50% { opacity: .1; } }
-  .unset .sc i.on { animation: segblink 1s step-end infinite; }  /* flashing unset clock */
-  #ro-clock .co i { animation: segblink 1s step-end infinite; }  /* 1 Hz colon */
+  #shell { flex: 1 1 auto; display: grid; grid-template-columns: 320px 1fr;
+           min-height: 0; min-width: 0; }
 
-  /* --- main columns --------------------------------------------------------- */
-  main { flex: 1; display: grid; grid-template-columns: minmax(300px, 380px) 1fr;
-         gap: 12px; padding: 12px; min-height: 0; }
-  section { background: var(--panel); border: 1px solid var(--hair);
-            display: flex; flex-direction: column; min-height: 0; min-width: 0; }
-
-  /* --- session rack --------------------------------------------------------- */
-  #rack { flex: 1; overflow-y: auto; }
-  .row { position: relative; padding: 9px 18px 9px 16px; cursor: pointer; }
-  .row + .row { border-top: 1px solid var(--hair); }
-  .row:hover { background: #1b1814; }
-  .row.sel { background: #191713; }
-  .row.sel::before, .row.sel::after { content: ""; position: absolute; top: 5px; bottom: 5px;
-                                      width: 4px; border: 1px solid var(--amber); }
-  .row.sel::before { left: 5px; border-right: none; }
-  .row.sel::after { right: 5px; border-left: none; }
-  .row:focus-visible { outline: 1px solid var(--amber); outline-offset: -1px; }
+  /* --- sidebar: search + session list -------------------------------------- */
+  #side { background: var(--panel); border-right: 1px solid var(--line);
+          display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+  #qwrap { padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  #q { width: 100%; padding: 5px 10px; font: inherit; font-size: 13px;
+       color: var(--text); background: var(--bg);
+       border: 1px solid var(--line); border-radius: 4px; }
+  #q::placeholder { color: var(--muted); }
+  #list { flex: 1 1 auto; overflow-y: auto; min-height: 0; }
+  .row { padding: 8px 12px 9px; cursor: pointer; min-width: 0; }
+  .row + .row { border-top: 1px solid var(--line); }
+  .row:hover { background: var(--raised); }
+  .row.sel { background: var(--sel); outline: 1px solid var(--accent);
+             outline-offset: -1px; }
+  .row.sel:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .row.hit-off { display: none; }
   .r1 { display: flex; align-items: center; gap: 8px; min-width: 0; }
-  .lamp { display: inline-block; width: 7px; height: 7px; flex: 0 0 auto; background: var(--hair); }
-  .lamp.run { background: var(--green); filter: drop-shadow(0 0 2px var(--green)); }
-  .lamp.fail { background: var(--red); filter: drop-shadow(0 0 2px var(--red)); }
-  .lamp.done { background: var(--amber); }
-  .st { font-size: 16px; font-weight: 700; letter-spacing: .1em; flex: 0 0 auto; }
-  .st.run { color: var(--green); }
-  .st.fail { color: var(--red); }
-  .st.done { color: var(--amber); }
-  .st.idle { color: var(--muted); }
-  .sid { font-family: var(--mono); font-size: 13px; color: var(--muted);
+  .stw { font-size: 11px; font-weight: 600; letter-spacing: .08em;
+         text-transform: uppercase; flex: 0 0 auto; }
+  .stw.run { color: var(--run); }
+  .stw.fail { color: var(--fail); }
+  .stw.done { color: var(--done); }
+  .stw.idle { color: var(--idle); }
+  .sid { font-family: var(--mono); font-size: 11px; color: var(--muted);
          overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-  .rtitle { margin-top: 5px; font-size: 16px; overflow: hidden;
-            text-overflow: ellipsis; white-space: nowrap; }
-  .rmeta { display: flex; flex-wrap: wrap; gap: 3px 12px; margin-top: 4px;
-           font-family: var(--mono); font-size: 13px; color: var(--muted); }
-  .m-e.bad { color: var(--red); }
-  .placeholder { color: var(--muted); padding: 24px 14px; font-size: 13px; }
+  .rtitle { margin-top: 3px; font-size: 13px; line-height: 1.35;
+            display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+            overflow: hidden; overflow-wrap: anywhere; }
+  .row.sel .rtitle { color: var(--accent); }
+  .rmeta { margin-top: 3px; font-family: var(--mono); font-size: 11px;
+           color: var(--muted); }
+  .rmeta span { white-space: nowrap; }
+  .rmeta span + span::before { content: "·"; margin: 0 5px; color: var(--idle); }
+  .rmeta span:empty { display: none; }
+  .bad { color: var(--fail); }
 
-  /* --- selected session: head readouts + timeline --------------------------- */
-  #detail-head { padding: 12px 14px 6px; border-bottom: 1px solid var(--hair); flex: 0 0 auto; }
-  .dh-top { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
-  .dh-title { font-size: 20px; font-weight: 600; min-width: 0; overflow: hidden;
+  /* --- main: session header + filter bar + log ----------------------------- */
+  #main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  #shead { flex: 0 0 auto; padding: 12px 16px 10px; border-bottom: 1px solid var(--line); }
+  .sh-top { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+  #sh-title { font-size: 16px; font-weight: 600; min-width: 0; overflow: hidden;
               text-overflow: ellipsis; white-space: nowrap; }
-  .dh-sub { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 4px;
-            font-family: var(--mono); font-size: 11px; color: var(--muted);
-            overflow-wrap: anywhere; }
-  #dh-ros { display: flex; flex-wrap: wrap; margin: 10px -14px 8px; padding: 0 14px; }
-  #dh-ros .ro { padding: 2px 20px 0 0; }
-  #dh-ros .ro + .ro { border-left: 1px solid var(--hair); padding-left: 20px; }
-  #timeline { flex: 1; overflow-y: auto; padding: 8px 6px 12px;
-              font-family: var(--mono); font-size: 13px; }
-  .act { display: flex; gap: 8px; padding: 3px 8px; align-items: baseline; }
-  .act .lamp { align-self: center; }
-  .act.live { background: rgba(57,255,136,.06); }
-  .act.live .lamp { background: var(--green); }
-  .act.live .summary::after { content: " ..."; }
-  .act.err .lamp { background: var(--red); }
-  .act.err .summary { color: var(--red); }
-  .act .t { color: var(--muted); flex: 0 0 auto; }
-  .act .kind { flex: 0 0 52px; color: var(--muted); overflow: hidden;
-               text-overflow: ellipsis; white-space: nowrap; }
-  .act .summary { flex: 1 1 55%; min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
-  .act .detail { flex: 1 1 45%; min-width: 0; color: var(--muted); overflow-wrap: anywhere; }
+  #sh-meta { margin-top: 4px; font-family: var(--mono); font-size: 11px;
+             color: var(--muted); }
+  #sh-meta span { overflow-wrap: anywhere; }
+  #sh-meta span + span::before { content: "·"; margin: 0 5px; color: var(--idle); }
+  #sh-meta span:empty { display: none; }
 
-  /* --- present mode: the demo view follows the runner ------------------------
-     One CSS class on <body>; every render path stays untouched. The rack and the
-     low-value id/path text drop out, the readouts grow, and the timeline keeps
-     only its newest rows visible (they all stay in the DOM). */
-  body.present #rackwrap { display: none; }
-  body.present main { grid-template-columns: 1fr; }
-  body.present #scope span { display: none; }  /* the scope line keeps only the button */
-  body.present .dh-sub { display: none; }       /* session id + directory: demo noise */
-  body.present .dh-title { white-space: normal; overflow-wrap: anywhere;
-                           display: -webkit-box; -webkit-line-clamp: 2;
-                           -webkit-box-orient: vertical; overflow: hidden; }
-  body.present #dh-ros .cells { --ch: clamp(40px, 4.6vw, 72px); }
-  body.present #timeline { font-size: 16px; }
-  body.present .act:not(:nth-last-child(-n+30)) { display: none; }  /* newest 30 only */
-  .act .detail:empty { display: none; }  /* an empty detail must not reserve 45% of the row */
+  #fbar { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center;
+          gap: 6px; padding: 7px 16px; position: sticky; top: 0; z-index: 2;
+          background: #0f1115; border-bottom: 1px solid #262b33; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto;
+          font-family: var(--mono); font-size: 11px; letter-spacing: .04em;
+          padding: 2px 8px; border-radius: 4px; border: 1px solid transparent; }
+  .chip .n { opacity: .75; }
+  .chip:hover { border-color: var(--line); }
+  .chip[aria-pressed="false"] { color: var(--muted); background: transparent; }
+  .c-read { color: var(--c-read); background: rgba(88,166,255,.14); }
+  .c-edit { color: var(--c-edit); background: rgba(240,136,62,.14); }
+  .c-run { color: var(--c-run); background: rgba(63,185,80,.14); }
+  .c-web { color: var(--c-web); background: rgba(188,140,255,.14); }
+  .c-agent { color: var(--c-agent); background: rgba(57,197,207,.14); }
+  .c-msg { color: var(--c-msg); background: rgba(139,148,158,.14); }
+  .fgap { width: 1px; align-self: stretch; margin: 2px 6px;
+          background: var(--line); flex: 0 0 auto; }
+  .ftog { font-size: 11px; color: var(--muted); padding: 2px 8px;
+          border-radius: 4px; border: 1px solid transparent; white-space: nowrap;
+          flex: 0 0 auto; }
+  .ftog:hover { color: var(--text); background: var(--raised); }
+  .ftog[aria-pressed="true"] { color: var(--text); background: var(--raised);
+                               border-color: var(--line); }
+  #errs[aria-pressed="true"] { color: var(--fail);
+                               border-color: rgba(248,81,73,.4); }
+  #follow[aria-pressed="true"] { color: var(--run);
+                                 border-color: rgba(210,153,34,.4); }
 
-  @media (min-width: 761px) {  /* big strip cells only where they cannot overflow a row */
-    body.present #strip .ro { flex: 1 1 0; }  /* one row: 5.2vw keeps a 4-cell clock inside a sixth with room */
-    body.present #strip .cells { --ch: clamp(40px, 5.2vw, 128px); }
-  }
+  #logwrap { flex: 1 1 auto; position: relative; min-height: 0;
+             display: flex; }
+  #log { flex: 1 1 auto; overflow-y: auto; min-width: 0;
+         font-family: var(--mono); font-size: 13px; line-height: 1.45;
+         padding: 6px 0 12px; }
+  #log-empty { position: absolute; top: 6px; left: 16px; color: var(--muted); }
+  .act { display: flex; align-items: baseline; gap: 10px; padding: 2px 16px;
+         min-width: 0; }
+  .act:hover { background: var(--panel); }
+  .act.err { background: rgba(248,81,73,.06); }
+  .act.err:hover { background: rgba(248,81,73,.1); }
+  .act .t { flex: 0 0 auto; color: var(--muted); }
+  .tag { flex: 0 0 auto; width: 48px; text-align: center; font-size: 11px;
+         letter-spacing: .05em; border-radius: 3px; padding: 1px 0; }
+  .tag.c-err { color: var(--fail); background: rgba(248,81,73,.14); }
+  .act .body { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+  .act .summary { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .act.err .summary { color: var(--fail); }
+  .act .detail { color: var(--muted); margin-left: 8px; overflow-wrap: anywhere; }
+  .act .detail:empty { display: none; }
+  .pulse { display: none; width: 7px; height: 7px; border-radius: 50%;
+           background: var(--run); margin-right: 7px;
+           animation: pulse 1.6s ease-in-out infinite; }
+  .act.live .pulse { display: inline-block; }
+  /* Category filters hide rows from CSS on the container; rows are never
+     rebuilt or restyled, so toggling costs no row mutations. */
+  #log[data-f-read="0"] .a-read { display: none; }
+  #log[data-f-edit="0"] .a-edit { display: none; }
+  #log[data-f-run="0"] .a-run { display: none; }
+  #log[data-f-web="0"] .a-web { display: none; }
+  #log[data-f-agent="0"] .a-agent { display: none; }
+  #log[data-f-msg="0"] .a-msg { display: none; }
+  #log[data-errs="1"] .act:not(.err) { display: none; }
 
-  @media (min-width: 900px) {
-    #strip .ro { flex: 1 1 0; }  /* equal shares across the full-width bezel */
-  }
-  @media (max-width: 899px) {
-    body { height: auto; min-height: 100%; }  /* the page scrolls naturally */
-    main { flex: none; grid-template-columns: 1fr; }
-    #rackwrap { max-height: 40vh; }           /* the rack keeps its own scroll */
-    #timeline { min-height: 60vh; }
+  /* --- status bar: connection + quota -------------------------------------- */
+  #sbar { flex: 0 0 24px; display: flex; align-items: center; gap: 14px;
+          padding: 0 12px; background: var(--panel);
+          border-top: 1px solid var(--line); font-size: 11px;
+          color: var(--muted); min-width: 0; }
+  #conn { display: flex; align-items: center; gap: 6px; min-width: 0;
+          overflow: hidden; }
+  #conn .dot { width: 6px; height: 6px; background: var(--done); }
+  #conn.bad .dot { background: var(--fail); }
+  #conn-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #conn.bad #conn-text { color: var(--fail); }
+  #degraded { color: var(--run); white-space: nowrap; }
+  #quota { margin-left: auto; display: flex; align-items: center; gap: 10px;
+           font-family: var(--mono); min-width: 0; overflow: hidden; }
+  #quota .qt { white-space: nowrap; }
+  #quota .qdim { color: var(--muted); }
+  #quota .qtag { color: var(--muted); border: 1px solid var(--line);
+                 border-radius: 3px; padding: 0 3px; }
+  #quota .qlim { color: var(--fail); font-weight: 600; }
+  .meter { width: 60px; height: 6px; border: 1px solid var(--line);
+           border-radius: 3px; overflow: hidden; flex: 0 0 auto;
+           background: var(--bg); }
+  .meter .fill { display: block; height: 100%; }
+  .meter .fill.g { background: var(--done); }
+  .meter .fill.a { background: var(--run); }
+  .meter .fill.r { background: var(--fail); }
+
+  /* --- shortcuts popover ----------------------------------------------------- */
+  #help { position: absolute; top: 42px; right: 12px; z-index: 20;
+          background: var(--panel); border: 1px solid var(--line);
+          border-radius: 6px; padding: 12px 16px; width: 270px;
+          box-shadow: 0 6px 24px rgba(0,0,0,.45); }
+  #help h2 { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
+  .hrow { display: flex; align-items: baseline; gap: 10px; margin-top: 5px;
+          font-size: 11px; }
+  .hrow .keys { flex: 0 0 auto; min-width: 88px; font-family: var(--mono);
+                color: var(--text); }
+  .hrow .what { color: var(--muted); }
+  kbd { font-family: var(--mono); font-size: 11px; background: var(--raised);
+        border: 1px solid var(--line); border-bottom-width: 2px;
+        border-radius: 3px; padding: 0 4px; }
+
+  /* --- responsive -------------------------------------------------------------- */
+  @media (max-width: 899px) {   /* stacked: the page scrolls, panes keep theirs */
+    html, body { height: auto; }
+    #app { height: auto; }
+    #shell { display: flex; flex-direction: column; }
+    #side { border-right: none; border-bottom: 1px solid var(--line); }
+    #list { max-height: 38vh; }
+    #logwrap { min-height: 40vh; }
+    #log { overflow: visible; }
+    #sbar { flex-wrap: wrap; height: auto; min-height: 24px; row-gap: 4px;
+            padding: 5px 12px; }
+    #quota { flex-wrap: wrap; }
   }
   @media (max-width: 760px) {
-    main { gap: 16px; padding: 16px; }
-    header { padding: 10px 16px 0; }
-    #strip .ro { flex: 1 1 25%; padding: 8px 10px 6px; }  /* wraps 4 + 2 */
-    #dh-ros { display: grid; grid-template-columns: 1fr 1fr; }
-    #dh-ros .ro { padding: 2px 0 0; }
-    #dh-ros .ro + .ro { border-left: none; padding-left: 0; }
-    #dh-ros .ro:nth-child(2n) { border-left: 1px solid var(--hair); }
+    #topbar { flex-wrap: wrap; height: auto; min-height: 36px;
+              padding: 6px 16px; row-gap: 4px; }
+    #scope { order: 5; flex-basis: 100%; }
+    #shell { padding: 16px; gap: 16px; }
+    #side { border: 1px solid var(--line); border-radius: 6px; }
+    #main { border: 1px solid var(--line); border-radius: 6px; }
+    #help { right: 16px; }
   }
-  @media (max-width: 430px) {
-    .act .kind { display: none; }
-    .dh-title { white-space: normal; }
-    #strip .ro { flex-basis: 30%; }  /* wraps 3 + 3: four 40px readouts overflow a phone row */
-    #strip .cells { --ch: 32px; }    /* a 4-cell clock must fit a third of 343px */
-    body.present #timeline { font-size: 13px; }  /* 16px leaves ~15 chars per line on a phone */
+  @media (max-width: 430px) {   /* the time column gives way to the text */
+    .act .t { display: none; }
   }
   @media (prefers-reduced-motion: reduce) {
     * { animation: none !important; transition: none !important; }
@@ -201,65 +237,98 @@
 </head>
 <body>
 <!-- DIRECTION CONTRACT
-THESIS: a glance panel of instrument readouts; the fleet's state is read like a clock across the room. Refuses the sidebar+badge dev dashboard.
-OWN-WORLD: seven-segment cells with ghost segments on a matte #0b0b0a bezel; amber #ffb000 readouts, red #ff3b1f failure, green #39ff88 running; engraved small-caps legends; mono data rows.
-STORY: the viewer sees how many workers run or fail, how big the context is and how long it has run, then reads what the selected worker is doing.
-FIRST VIEWPORT: full-width readout strip (RUNNING, FAILED, ERRORS, CTX, ELAPSED, wall clock), then session rack left and live timeline right.
-FORM: challenger signals-instruments-seven-segment-alarm-clock; seed key 98bf20e6.
+THESIS: a calm developer console: status and quota at a glance, a session's activity readable like a deploy log with one color per activity type. Refuses spectacle.
+OWN-WORLD: canon dev-tool dark (VS Code / Vercel logs / k9s): #0f1115 ground, 1px #262b33 lines, system UI + mono data, six category tag colors, status dots, VS Code-style status bar.
+STORY: see what runs or fails and how much quota is left, pick a session, read and filter its log by type or errors.
+FIRST VIEWPORT: title bar with counts; session list left; header, filter chips and log right; quota in the bottom status bar.
+FORM: canon (category standard), seed key ce25968b.
 FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md
 -->
-<header>
-  <h1 class="vh">zcrew dashboard</h1>
-  <div id="banner-degraded" class="banner" hidden>
-    ZCode data layout changed; using slower exact parsing (numbers stay exact).
+<div id="app">
+<header id="topbar">
+  <h1 id="wordmark">zcrew</h1>
+  <span id="scope" class="mono" title=""></span>
+  <div id="counts">
+    <span class="cnt"><i class="dot d-run" aria-hidden="true"></i><span id="cnt-run">0 running</span></span>
+    <span class="cnt"><i class="dot d-fail" aria-hidden="true"></i><span id="cnt-fail">0 failed</span></span>
+    <span class="cnt"><i class="dot d-done" aria-hidden="true"></i><span id="cnt-done">0 done</span></span>
+    <span class="cnt"><i class="dot d-idle" aria-hidden="true"></i><span id="cnt-idle">0 idle</span></span>
   </div>
-  <div id="banner-error" class="banner" hidden></div>
-  <div id="strip">
-    <div class="ro" id="ro-running"></div>
-    <div class="ro" id="ro-failed"></div>
-    <div class="ro" id="ro-errors"></div>
-    <div class="ro" id="ro-ctx"></div>
-    <div class="ro" id="ro-elapsed"></div>
-    <div class="ro" id="ro-clock"></div>
-  </div>
-  <div id="scope"><span>scope</span><span id="scope-path"></span><button id="present-btn" type="button" aria-pressed="false">Present</button></div>
+  <button id="help-btn" type="button" aria-expanded="false">? Shortcuts</button>
 </header>
-<main>
-  <section id="rackwrap">
-    <div id="rackempty" class="placeholder" hidden>No sessions in this scope.</div>
-    <div id="rack" role="listbox" aria-label="Sessions"></div>
-  </section>
-  <section id="detail">
-    <div id="detail-head">
+<div id="shell">
+  <aside id="side">
+    <div id="qwrap">
+      <input id="q" type="text" placeholder="Filter sessions" aria-label="Filter sessions"
+             autocomplete="off" spellcheck="false">
+    </div>
+    <div id="list-empty" class="placeholder" hidden>No sessions in this scope.</div>
+    <div id="list" role="listbox" aria-label="Sessions"></div>
+  </aside>
+  <main id="main">
+    <div id="shead">
       <div id="nosel" class="placeholder">Select a session.</div>
-      <div id="dh" hidden>
-        <div class="dh-top">
-          <span id="dh-st" class="st"></span>
-          <span id="dh-title" class="dh-title"></span>
+      <div id="sh" hidden>
+        <div class="sh-top">
+          <span id="sh-st" class="stw"></span>
+          <span id="sh-title"></span>
         </div>
-        <div class="dh-sub"><span id="dh-id"></span><span id="dh-dir"></span></div>
-        <div id="dh-ros">
-          <div class="ro" id="ro-dur"></div>
-          <div class="ro" id="ro-tools"></div>
-          <div class="ro" id="ro-herr"></div>
-          <div class="ro" id="ro-hctx"></div>
+        <div id="sh-meta">
+          <span id="m-id"></span><span id="m-dir"></span><span id="m-start"></span>
+          <span id="m-dur"></span><span id="m-tools"></span><span id="m-err"></span>
+          <span id="m-ctx"></span>
         </div>
       </div>
     </div>
-    <div id="timeline"></div>
-  </section>
-</main>
+    <div id="fbar">
+      <button class="chip c-read" data-cat="read" type="button" aria-pressed="true"><span class="cname">READ</span><span class="n" id="n-read">0</span></button>
+      <button class="chip c-edit" data-cat="edit" type="button" aria-pressed="true"><span class="cname">EDIT</span><span class="n" id="n-edit">0</span></button>
+      <button class="chip c-run" data-cat="run" type="button" aria-pressed="true"><span class="cname">RUN</span><span class="n" id="n-run">0</span></button>
+      <button class="chip c-web" data-cat="web" type="button" aria-pressed="true"><span class="cname">WEB</span><span class="n" id="n-web">0</span></button>
+      <button class="chip c-agent" data-cat="agent" type="button" aria-pressed="true"><span class="cname">AGENT</span><span class="n" id="n-agent">0</span></button>
+      <button class="chip c-msg" data-cat="msg" type="button" aria-pressed="true"><span class="cname">MSG</span><span class="n" id="n-msg">0</span></button>
+      <span class="fgap" aria-hidden="true"></span>
+      <button id="errs" class="ftog" type="button" aria-pressed="false">Errors only</button>
+      <button id="follow" class="ftog" type="button" aria-pressed="true">Follow running</button>
+    </div>
+    <div id="logwrap">
+      <div id="log" aria-label="Session activity"></div>
+      <div id="log-empty" hidden>No activity.</div>
+    </div>
+  </main>
+</div>
+<footer id="sbar">
+  <span id="conn"><i class="dot" aria-hidden="true"></i><span id="conn-text">live</span></span>
+  <span id="degraded" hidden>layout degraded</span>
+  <div id="quota"></div>
+</footer>
+</div>
+<div id="help" hidden>
+  <h2>Shortcuts</h2>
+  <div class="hrow"><span class="keys"><kbd>j</kbd> <kbd>k</kbd></span><span class="what">move selection (or arrow keys)</span></div>
+  <div class="hrow"><span class="keys"><kbd>Enter</kbd></span><span class="what">select focused session</span></div>
+  <div class="hrow"><span class="keys"><kbd>/</kbd></span><span class="what">filter sessions</span></div>
+  <div class="hrow"><span class="keys"><kbd>Esc</kbd></span><span class="what">clear filter, close this</span></div>
+  <div class="hrow"><span class="keys"><kbd>1</kbd>-<kbd>6</kbd></span><span class="what">toggle category chips</span></div>
+  <div class="hrow"><span class="keys"><kbd>e</kbd></span><span class="what">errors only</span></div>
+  <div class="hrow"><span class="keys"><kbd>f</kbd></span><span class="what">follow running session</span></div>
+  <div class="hrow"><span class="keys"><kbd>?</kbd></span><span class="what">toggle shortcuts</span></div>
+</div>
 <script>
 "use strict";
 (function () {
   var SESSIONS_MS = 3000;    // session list poll interval
   var ACTIVITY_MS = 1500;    // selected-session activity poll interval
+  var QUOTA_MS = 30000;      // quota poll interval
   var SESSIONS_LIMIT = 100;  // below the server cap (200)
 
-  // --- seven-segment readouts -------------------------------------------------
-  // A glyph is a bitmask over segments a,b,c,d,e,f,g (DOM order, bit i = child i).
-  var GLYPH = { "0": 63, "1": 6, "2": 91, "3": 79, "4": 102, "5": 109,
-                "6": 125, "7": 7, "8": 127, "9": 111, "-": 64, " ": 0 };
+  var CATS = ["read", "edit", "run", "web", "agent", "msg"];
+  var MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  var STATUS = {
+    running: ["run", "running"], completed: ["done", "done"],
+    failed: ["fail", "failed"], idle: ["idle", "idle"]
+  };
 
   function el(tag, cls, text) {
     var node = document.createElement(tag);
@@ -273,88 +342,11 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
     if (node.textContent !== s) { node.textContent = s; }
   }
 
-  function segCell() {
-    var c = el("span", "sc");
-    for (var i = 0; i < 7; i++) { c.appendChild(document.createElement("i")); }
-    c._g = " ";
-    return c;
-  }
-
-  function setCell(cell, g) {
-    if (cell._g === g) { return; }
-    cell._g = g;
-    var m = GLYPH[g] || 0, kids = cell.childNodes;
-    for (var i = 0; i < 7; i++) {
-      var want = ((m >> i) & 1) ? "on" : "";
-      if (kids[i].className !== want) { kids[i].className = want; }
-    }
-  }
-
-  // A readout is a fixed number of digit cells (never reflows), with an optional
-  // colon cell after digit `colonAfter`. Units are printed legends, not segments.
-  function makeRO(host, nDigits, colonAfter, hue, legend, unit) {
-    var crow = el("div", "crow");
-    var cellsEl = el("div", "cells " + hue);
-    var cells = [], colon = null;
-    for (var i = 0; i < nDigits; i++) {
-      if (i === colonAfter) {
-        colon = el("span", "co");
-        colon.appendChild(document.createElement("i"));
-        colon.appendChild(document.createElement("i"));
-        cellsEl.appendChild(colon);
-      }
-      var c = segCell();
-      cellsEl.appendChild(c);
-      cells.push(c);
-    }
-    crow.appendChild(cellsEl);
-    if (unit) { crow.appendChild(el("span", "unit", unit)); }
-    host.appendChild(crow);
-    if (legend) { host.appendChild(el("div", "legend", legend)); }
-    return { host: host, cellsEl: cellsEl, cells: cells, colon: colon };
-  }
-
-  // "07:32" maps onto cells left to right; ':' rides the fixed colon slot.
-  function setRO(ro, s) {
-    var ci = 0;
-    for (var i = 0; i < s.length && ci < ro.cells.length; i++) {
-      var ch = s.charAt(i);
-      if (ch !== ":") { setCell(ro.cells[ci++], ch); }
-    }
-    for (; ci < ro.cells.length; ci++) { setCell(ro.cells[ci], " "); }
-    if (ro.colon) {
-      var cls = s.indexOf(":") !== -1 ? "co" : "co off";
-      if (ro.colon.className !== cls) { ro.colon.className = cls; }
-    }
-  }
-
-  function setHue(ro, hue) {
-    var cls = "cells " + hue;
-    if (ro.cellsEl.className !== cls) { ro.cellsEl.className = cls; }
-  }
-
-  // --- formatting ---------------------------------------------------------------
+  // --- formatting ---------------------------------------------------------
 
   function two(n) { return n < 10 ? "0" + n : String(n); }
-  function three(n) { return n < 10 ? "00" + n : (n < 100 ? "0" + n : String(n)); }
-  function padL(s, n) { while (s.length < n) { s = " " + s; } return s; }
 
-  function fmtClock(ms) {
-    var d = new Date(ms);
-    return two(d.getHours()) + ":" + two(d.getMinutes()) + ":" + two(d.getSeconds());
-  }
-
-  function fmtStarted(ms) {
-    var d = new Date(ms);
-    var now = new Date();
-    var sameDay = d.getFullYear() === now.getFullYear()
-      && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
-    return sameDay ? fmtClock(ms).slice(0, 5)
-      : d.getFullYear() + "-" + two(d.getMonth() + 1) + "-" + two(d.getDate())
-        + " " + fmtClock(ms).slice(0, 5);
-  }
-
-  function fmtDur(ms) {  // compact text for rack rows ("42.1s", "3m12s", "2h05m")
+  function fmtDur(ms) {  // "42.1s", "3m12s", "2h05m"
     var secs = Math.max(0, ms) / 1000;
     if (secs < 60) { return secs.toFixed(1) + "s"; }
     var m = Math.floor(secs / 60);
@@ -362,136 +354,128 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
     return Math.floor(m / 60) + "h" + two(m % 60) + "m";
   }
 
-  function fmtElapsedRO(ms) {  // segment display: mm:ss, or h:mm past an hour
-    var s = Math.floor(Math.max(0, ms) / 1000);
-    var h = Math.floor(s / 3600);
-    if (h > 99) { return "--:--"; }  // off the 4-cell scale (>4 days)
-    if (h > 0) { return padL(String(h), 2) + ":" + two(Math.floor((s % 3600) / 60)); }
-    return two(Math.floor(s / 60)) + ":" + two(s % 60);
+  function fmtStarted(ms) {  // "14:02" today, else "Sep 27 14:02"
+    var d = new Date(ms), now = new Date();
+    var hm = two(d.getHours()) + ":" + two(d.getMinutes());
+    var sameDay = d.getFullYear() === now.getFullYear()
+      && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+    return sameDay ? hm : MONTHS[d.getMonth()] + " " + d.getDate() + " " + hm;
   }
 
   function fmtK(tok) { return Math.round(tok / 1000) + "k"; }
 
-  // --- state --------------------------------------------------------------------
+  function fmtTok(n) {  // 1200000 -> "1.2M", 340000 -> "340k"
+    if (n >= 1e6) {
+      var m = n / 1e6;
+      return (m >= 10 ? Math.round(m) : Math.round(m * 10) / 10) + "M";
+    }
+    if (n >= 1e3) { return Math.round(n / 1e3) + "k"; }
+    return String(n);
+  }
 
-  var STATUS = {
-    running: ["run", "RUN"], completed: ["done", "DONE"],
-    failed: ["fail", "FAIL"], idle: ["idle", "IDLE"]
-  };
+  function fmtResets(ms) {  // "19:32" today, else "Oct 3"
+    var d = new Date(ms), now = new Date();
+    var sameDay = d.getFullYear() === now.getFullYear()
+      && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+    return sameDay ? two(d.getHours()) + ":" + two(d.getMinutes())
+      : MONTHS[d.getMonth()] + " " + d.getDate();
+  }
+
+  // --- dom ------------------------------------------------------------------
 
   function byId(id) { return document.getElementById(id); }
-  var scopePathEl = byId("scope-path"), degradedEl = byId("banner-degraded"), errorEl = byId("banner-error");
-  var rackEl = byId("rack"), rackEmptyEl = byId("rackempty");
-  var noselEl = byId("nosel"), dhEl = byId("dh"), timelineEl = byId("timeline");
-  var dhTitle = byId("dh-title"), dhSt = byId("dh-st"), dhId = byId("dh-id"), dhDir = byId("dh-dir");
-  var presentBtn = byId("present-btn");
 
-  var roRun = makeRO(byId("ro-running"), 2, -1, "gn", "Running");
-  var roFail = makeRO(byId("ro-failed"), 2, -1, "rd", "Failed");
-  var roErr = makeRO(byId("ro-errors"), 3, -1, "am", "Errors");
-  var roCtx = makeRO(byId("ro-ctx"), 4, -1, "am", "Context", "k");
-  var roElapsed = makeRO(byId("ro-elapsed"), 4, 2, "am", "Elapsed");
-  var roClock = makeRO(byId("ro-clock"), 4, 2, "am", "Local");
-  var roDur = makeRO(byId("ro-dur"), 4, 2, "am", "Duration");
-  var roTools = makeRO(byId("ro-tools"), 3, -1, "am", "Tools");
-  var roHErr = makeRO(byId("ro-herr"), 3, -1, "am", "Errors");
-  var roHCtx = makeRO(byId("ro-hctx"), 4, -1, "am", "Context", "k");
+  var scopeEl = byId("scope"), helpBtn = byId("help-btn"), helpEl = byId("help");
+  var qEl = byId("q"), listEl = byId("list"), listEmptyEl = byId("list-empty");
+  var noselEl = byId("nosel"), shEl = byId("sh");
+  var logEl = byId("log"), logEmptyEl = byId("log-empty");
+  var shSt = byId("sh-st"), shTitle = byId("sh-title");
+  var mId = byId("m-id"), mDir = byId("m-dir"), mStart = byId("m-start"),
+      mDur = byId("m-dur"), mTools = byId("m-tools"), mErr = byId("m-err"),
+      mCtx = byId("m-ctx");
+  var connEl = byId("conn"), connText = byId("conn-text"), degradedEl = byId("degraded");
+  var quotaEl = byId("quota"), errsBtn = byId("errs"), followBtn = byId("follow");
+  var cntEls = { run: byId("cnt-run"), fail: byId("cnt-fail"),
+                 done: byId("cnt-done"), idle: byId("cnt-idle") };
+  var chipEls = {}, nEls = {};
+  for (var ci = 0; ci < CATS.length; ci++) {
+    chipEls[CATS[ci]] = document.querySelector('.chip[data-cat="' + CATS[ci] + '"]');
+    nEls[CATS[ci]] = byId("n-" + CATS[ci]);
+  }
 
-  var selectedId = null, cursor = null, firstLoad = true;
-  var lastNowMs = 0, lastNowAt = 0;      // the API clock and when we received it
-  var sessList = [], sessById = new Map(), selSummary = null;
-  var rackRows = new Map();              // session id -> row record (keyed diff)
-  var actRows = new Map();               // activity key -> row element
-  var noKeySeq = 0;
-  var presentOn = location.hash === "#present";  // a demo tab can be bookmarked
-  var savedSelId = null;                 // pre-present selection, restored on exit
+  // --- state ------------------------------------------------------------------
 
-  function wallNow() {  // API now_ms advanced locally between polls
+  var sessList = [], sessById = new Map();
+  var rackRows = new Map();      // session id -> row record (keyed diff)
+  var actRows = new Map();       // activity key -> row element
+  var selectedId = null, selSummary = null, cursor = null, noKeySeq = 0;
+  var catCounts = { read: 0, edit: 0, run: 0, web: 0, agent: 0, msg: 0 };
+  var shown = { read: true, edit: true, run: true, web: true, agent: true, msg: true };
+  var errsOnly = false, followOn = true;
+  var qText = "", filterSig = null, quotaSig = null;
+  var connBad = false;
+  var lastNowMs = 0, lastNowAt = 0;  // the API clock and when we received it
+
+  // The API's now_ms advanced locally between polls; a running session's
+  // elapsed time is measured against it, not the client clock.
+  function wallNow() {
     return lastNowMs ? lastNowMs + (Date.now() - lastNowAt) : Date.now();
   }
 
-  // duration_ms only counts finished turns; a running session shows elapsed time
-  // since it started, measured against the API's now_ms (not the client clock).
-  function durationText(s) {
-    if (s.status === "running") {
-      return fmtDur(Math.max(0, (lastNowMs || Date.now()) - s.created_ms));
-    }
-    return fmtDur(s.duration_ms);
+  // duration_ms only counts finished turns; a running session shows elapsed.
+  function durationMs(s) {
+    return s.status === "running"
+      ? Math.max(0, wallNow() - s.created_ms) : s.duration_ms;
   }
 
-  function selDurMs(s) {
-    return s.status === "running" ? Math.max(0, wallNow() - s.created_ms) : s.duration_ms;
-  }
+  // --- title bar counts ----------------------------------------------------------
 
-  function selectedSession() { return selSummary || sessById.get(selectedId) || null; }
-
-  // --- instrument strip -----------------------------------------------------------
-
-  function renderStripCounts() {
-    var run = 0, fail = 0, errs = 0;
+  function renderCounts() {
+    var run = 0, fail = 0, done = 0, idle = 0;
     for (var i = 0; i < sessList.length; i++) {
-      var s = sessList[i];
-      if (s.status === "running") { run++; }
-      else if (s.status === "failed") { fail++; }
-      errs += s.errors || 0;
+      var st = sessList[i].status;
+      if (st === "running") { run++; }
+      else if (st === "failed") { fail++; }
+      else if (st === "completed") { done++; }
+      else { idle++; }
     }
-    setRO(roRun, two(Math.min(run, 99)));
-    setRO(roFail, two(Math.min(fail, 99)));
-    setRO(roErr, three(Math.min(errs, 999)));
-    setHue(roErr, errs > 0 ? "rd" : "am");
+    setText(cntEls.run, run + " running");
+    setText(cntEls.fail, fail + " failed");
+    setText(cntEls.done, done + " done");
+    setText(cntEls.idle, idle + " idle");
   }
 
-  function ctxStr(s) {
-    if (s && s.last_context_tokens != null) {
-      return padL(String(Math.min(Math.round(s.last_context_tokens / 1000), 9999)), 4);
-    }
-    return "    ";
+  // --- session list (keyed diff: unchanged data must not touch the DOM) -----------
+
+  function rowMatches(rec) {
+    if (!qText) { return true; }
+    return rec.lc.indexOf(qText) !== -1
+      || rec.id.toLowerCase().indexOf(qText) !== -1;
   }
-
-  function renderStripSel() {
-    var s = selectedSession();
-    setRO(roCtx, ctxStr(s));
-    setRO(roElapsed, s ? fmtElapsedRO(selDurMs(s)) : "    ");
-  }
-
-  function tickClock() {
-    var d = new Date(wallNow());
-    setRO(roClock, two(d.getHours()) + ":" + two(d.getMinutes()));
-  }
-
-  // API unreachable: every strip readout becomes blinking dashes (unset clock).
-  var stripROs = [roRun, roFail, roErr, roCtx, roElapsed, roClock];
-  var stripUnsetVals = ["--", "--", "---", "----", "--:--", "--:--"];
-  var stripUnsetOn = false;
-
-  function setStripUnset(on) {
-    if (on === stripUnsetOn) { return; }
-    stripUnsetOn = on;
-    for (var i = 0; i < stripROs.length; i++) {
-      stripROs[i].host.classList.toggle("unset", on);
-      if (on) { setRO(stripROs[i], stripUnsetVals[i]); }
-    }
-    if (!on) { tickClock(); }
-  }
-
-  // --- session rack (keyed diff: unchanged data must not touch the DOM) ------------
 
   function decorateRow(rec, s) {
     var pair = STATUS[s.status] || STATUS.idle;
-    setText(rec.st, pair[1]);
-    if (rec.st.className !== "st " + pair[0]) { rec.st.className = "st " + pair[0]; }
-    if (rec.lamp.className !== "lamp " + pair[0]) { rec.lamp.className = "lamp " + pair[0]; }
+    setText(rec.stw, pair[1]);
+    if (rec.stw.className !== "stw " + pair[0]) {
+      rec.stw.className = "stw " + pair[0];
+      rec.dot.className = "dot d-" + pair[0];
+    }
     setText(rec.sid, s.id.slice(0, 13));
     var title = s.title || "(no title)";
     setText(rec.title, title);
-    if (rec.title.getAttribute("title") !== title) { rec.title.setAttribute("title", title); }
+    if (rec.title.getAttribute("title") !== title) {
+      rec.title.setAttribute("title", title);
+    }
+    rec.lc = title.toLowerCase();
     setText(rec.mS, fmtStarted(s.created_ms));
-    setText(rec.mD, durationText(s));
+    setText(rec.mD, fmtDur(durationMs(s)));
     setText(rec.mT, s.tool_calls + (s.tool_calls === 1 ? " tool" : " tools"));
     setText(rec.mE, (s.errors || 0) + " err");
-    var ecls = s.errors ? "m-e bad" : "m-e";
-    if (rec.mE.className !== ecls) { rec.mE.className = ecls; }
-    setText(rec.mC, s.last_context_tokens != null ? "ctx " + fmtK(s.last_context_tokens) : "");
+    var ec = s.errors ? "bad" : "";
+    if (rec.mE.className !== ec) { rec.mE.className = ec; }
+    setText(rec.mC, s.last_context_tokens != null
+            ? "ctx " + fmtK(s.last_context_tokens) : "");
+    rec.el.classList.toggle("hit-off", !rowMatches(rec));
   }
 
   function buildRow(s) {
@@ -501,34 +485,35 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
     row.setAttribute("role", "option");
     row.setAttribute("aria-selected", "false");
     var r1 = el("div", "r1");
-    var lamp = el("i", "lamp");
-    var st = el("span", "st");
+    var dot = el("i", "dot");
+    dot.setAttribute("aria-hidden", "true");
+    var stw = el("span", "stw");
     var sid = el("span", "sid");
-    r1.appendChild(lamp); r1.appendChild(st); r1.appendChild(sid);
+    r1.appendChild(dot); r1.appendChild(stw); r1.appendChild(sid);
     row.appendChild(r1);
     var title = el("div", "rtitle");
     row.appendChild(title);
     var meta = el("div", "rmeta");
     var mS = el("span"), mD = el("span"), mT = el("span");
-    var mE = el("span", "m-e"), mC = el("span");
+    var mE = el("span"), mC = el("span");
     meta.appendChild(mS); meta.appendChild(mD); meta.appendChild(mT);
     meta.appendChild(mE); meta.appendChild(mC);
     row.appendChild(meta);
-    var rec = { id: s.id, el: row, lamp: lamp, st: st, sid: sid, title: title,
-                mS: mS, mD: mD, mT: mT, mE: mE, mC: mC };
+    var rec = { id: s.id, el: row, dot: dot, stw: stw, sid: sid, title: title,
+                mS: mS, mD: mD, mT: mT, mE: mE, mC: mC, lc: "" };
     decorateRow(rec, s);
-    row.addEventListener("click", function () { select(s.id); });
+    row.addEventListener("click", function () { select(s.id, true); });
     row.addEventListener("keydown", function (ev) {
       if (ev.key === "Enter" || ev.key === " " || ev.key === "Spacebar") {
         ev.preventDefault();
-        select(s.id);
+        select(s.id, true);
       }
     });
     rackRows.set(s.id, rec);
     return rec;
   }
 
-  function renderRack() {
+  function renderList() {
     // Update in place, insert new rows at their slot, drop vanished ones;
     // reorder only where the DOM child order actually differs from the data.
     for (var i = 0; i < sessList.length; i++) {
@@ -536,26 +521,34 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
       var rec = rackRows.get(s.id);
       if (!rec) { rec = buildRow(s); }  // buildRow decorates the fresh row
       else { decorateRow(rec, s); }     // diffed: identical values touch nothing
-      var cur = rackEl.children[i];
-      if (cur !== rec.el) { rackEl.insertBefore(rec.el, cur || null); }
+      var cur = listEl.children[i];
+      if (cur !== rec.el) { listEl.insertBefore(rec.el, cur || null); }
     }
-    while (rackEl.children.length > sessList.length) {
-      var last = rackEl.lastChild;
+    while (listEl.children.length > sessList.length) {
+      var last = listEl.lastChild;
       rackRows.delete(last._id);
-      rackEl.removeChild(last);
+      listEl.removeChild(last);
     }
-    rackEmptyEl.hidden = sessList.length !== 0;
+    listEmptyEl.hidden = sessList.length !== 0;
   }
 
-  // --- selection ---------------------------------------------------------------------
+  // --- selection -----------------------------------------------------------------
 
-  function select(id) {
+  function clearActivity() {
+    actRows.clear();
+    logEl.textContent = "";
+    for (var k in catCounts) { catCounts[k] = 0; }
+    updateChipCounts();
+    logEmptyEl.hidden = true;
+  }
+
+  function select(id, byUser) {
+    if (byUser && id !== selectedId && followOn) { setFollow(false); }
     if (selectedId === id) { return; }
     selectedId = id;
     cursor = null;
     selSummary = null;
-    actRows.clear();
-    timelineEl.textContent = "";
+    clearActivity();
     setHead(null);
     rackRows.forEach(function (rec) {
       var sel = rec.id === id;
@@ -564,86 +557,252 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
         rec.el.setAttribute("aria-selected", sel ? "true" : "false");
       }
     });
-    renderStripSel();
     fetchActivity();
+  }
+
+  function selectNone() {
+    selectedId = null;
+    cursor = null;
+    selSummary = null;
+    clearActivity();
+    setHead(null);
+  }
+
+  function ensureSelection() {
+    if (followOn) {  // the list is newest first: the first running is the runner
+      for (var i = 0; i < sessList.length; i++) {
+        if (sessList[i].status === "running") {
+          if (sessList[i].id !== selectedId) { select(sessList[i].id, false); }
+          return;
+        }
+      }
+    }
+    if (!sessById.has(selectedId)) {
+      if (sessList.length) { select(sessList[0].id, false); }
+      else if (selectedId !== null) { selectNone(); }
+    }
   }
 
   function setHead(s) {
     if (!s) {
       noselEl.hidden = false;
-      dhEl.hidden = true;
+      shEl.hidden = true;
       return;
     }
     noselEl.hidden = true;
-    dhEl.hidden = false;
+    shEl.hidden = false;
     var pair = STATUS[s.status] || STATUS.idle;
-    setText(dhSt, pair[1]);
-    if (dhSt.className !== "st " + pair[0]) { dhSt.className = "st " + pair[0]; }
+    setText(shSt, pair[1]);
+    if (shSt.className !== "stw " + pair[0]) { shSt.className = "stw " + pair[0]; }
     var title = s.title || "(no title)";
-    setText(dhTitle, title);
-    if (dhTitle.getAttribute("title") !== title) { dhTitle.setAttribute("title", title); }
-    setText(dhId, s.id);
-    setText(dhDir, s.directory || "");
-    setRO(roDur, fmtElapsedRO(selDurMs(s)));
-    setRO(roTools, three(Math.min(s.tool_calls, 999)));
-    setRO(roHErr, three(Math.min(s.errors || 0, 999)));
-    setHue(roHErr, s.errors > 0 ? "rd" : "am");
-    setRO(roHCtx, ctxStr(s));
-    renderStripSel();
+    setText(shTitle, title);
+    if (shTitle.getAttribute("title") !== title) {
+      shTitle.setAttribute("title", title);
+    }
+    setText(mId, s.id);
+    setText(mDir, s.directory || "");
+    setText(mStart, "started " + fmtStarted(s.created_ms));
+    setText(mDur, fmtDur(durationMs(s)));
+    setText(mTools, s.tool_calls + (s.tool_calls === 1 ? " tool" : " tools"));
+    setText(mErr, (s.errors || 0) + (s.errors === 1 ? " error" : " errors"));
+    var ec = s.errors ? "bad" : "";
+    if (mErr.className !== ec) { mErr.className = ec; }
+    setText(mCtx, s.last_context_tokens != null
+            ? "ctx " + fmtK(s.last_context_tokens) : "");
   }
 
-  // --- activity timeline ---------------------------------------------------------------
+  // --- activity log (keyed; filters are CSS on the container) ----------------------
 
   function nearBottom() {
-    return timelineEl.scrollHeight - timelineEl.scrollTop - timelineEl.clientHeight < 48;
+    return logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 48;
   }
 
   function decorateAct(row, a) {
-    setText(row._t, a.time);
-    setText(row._kind, a.label);
-    setText(row._summary, a.summary);
-    setText(row._detail, (a.detail && a.summary.indexOf(a.detail) === -1)
-      ? "-> " + a.detail : "");
-    var live = a.status === "running" || a.status === "pending";
+    var cat = CATS.indexOf(a.category) !== -1 ? a.category : "msg";
+    if (row._cat !== cat) {
+      if (row._cat) {
+        catCounts[row._cat]--;
+        row.classList.remove("a-" + row._cat);
+      }
+      catCounts[cat]++;
+      row.classList.add("a-" + cat);
+      row._cat = cat;
+      updateChipCounts();
+    }
     var err = a.status === "error" || a.status === "failed";
-    row.classList.toggle("live", live);
+    var live = a.status === "running" || a.status === "pending";
     row.classList.toggle("err", err);
+    row.classList.toggle("live", live);
+    var tagCls = "tag " + (err ? "c-err" : "c-" + cat);
+    if (row._tag.className !== tagCls) { row._tag.className = tagCls; }
+    setText(row._tag, err ? "ERR" : cat.toUpperCase());
+    setText(row._t, a.time || "");
+    setText(row._s, a.summary || "");
+    setText(row._d, (a.detail && a.summary && a.summary.indexOf(a.detail) === -1)
+            ? "-> " + a.detail : "");
   }
 
   function buildAct(a) {
     var row = el("div", "act");
-    row.appendChild(el("i", "lamp"));
     row._t = el("span", "t");
-    row._kind = el("span", "kind");
-    row._summary = el("span", "summary");
-    row._detail = el("span", "detail");
+    row._tag = el("span", "tag");
+    var body = el("span", "body");
+    var pulse = el("i", "pulse");
+    row._s = el("span", "summary");
+    row._d = el("span", "detail");
     row.appendChild(row._t);
-    row.appendChild(row._kind);
-    row.appendChild(row._summary);
-    row.appendChild(row._detail);
+    row.appendChild(row._tag);
+    body.appendChild(pulse);
+    body.appendChild(row._s);
+    body.appendChild(row._d);
+    row.appendChild(body);
     decorateAct(row, a);
     return row;
   }
 
   function appendActivity(items) {
-    if (!items.length) { return; }
-    var stick = presentOn || nearBottom();  // present mode always pins the newest row
-    for (var i = 0; i < items.length; i++) {
-      var a = items[i];
-      var key = a.key || ("_nokey_" + noKeySeq++);
-      var row = actRows.get(key);
-      if (row) {
-        decorateAct(row, a);  // same key re-emitted (running -> completed): replace in place
-      } else {
-        row = buildAct(a);
-        actRows.set(key, row);
-        timelineEl.appendChild(row);
+    if (items.length) {
+      var running = selSummary && selSummary.status === "running";
+      var stick = nearBottom() || (followOn && running);
+      for (var i = 0; i < items.length; i++) {
+        var a = items[i];
+        var key = a.key || ("_nokey_" + noKeySeq++);
+        var row = actRows.get(key);
+        if (row) {
+          decorateAct(row, a);  // same key re-emitted (running -> completed)
+        } else {
+          row = buildAct(a);
+          actRows.set(key, row);
+          logEl.appendChild(row);
+        }
       }
+      if (stick) { logEl.scrollTop = logEl.scrollHeight; }
     }
-    if (stick) { timelineEl.scrollTop = timelineEl.scrollHeight; }
+    var hasRows = actRows.size > 0;
+    if (logEmptyEl.hidden !== hasRows) { logEmptyEl.hidden = hasRows; }  // placeholder only when empty
   }
 
-  // --- polling ----------------------------------------------------------------------------
+  // --- filters ----------------------------------------------------------------------
+
+  function updateChipCounts() {
+    for (var i = 0; i < CATS.length; i++) {
+      setText(nEls[CATS[i]], String(catCounts[CATS[i]]));
+    }
+  }
+
+  function applyFilters() {
+    var sig = errsOnly ? "1" : "0";
+    for (var i = 0; i < CATS.length; i++) {
+      sig += shown[CATS[i]] ? "1" : "0";
+    }
+    if (sig === filterSig) { return; }
+    filterSig = sig;
+    for (var j = 0; j < CATS.length; j++) {
+      var c = CATS[j];
+      logEl.setAttribute("data-f-" + c, shown[c] ? "1" : "0");
+    }
+    logEl.setAttribute("data-errs", errsOnly ? "1" : "0");
+  }
+
+  function toggleChip(cat) {
+    if (!cat) { return; }
+    shown[cat] = !shown[cat];
+    chipEls[cat].setAttribute("aria-pressed", shown[cat] ? "true" : "false");
+    applyFilters();
+  }
+
+  function toggleErrs() {
+    errsOnly = !errsOnly;
+    errsBtn.setAttribute("aria-pressed", errsOnly ? "true" : "false");
+    applyFilters();
+  }
+
+  function setFollow(on) {
+    if (on === followOn) { return; }
+    followOn = on;
+    followBtn.setAttribute("aria-pressed", on ? "true" : "false");
+    if (on) { ensureSelection(); }
+  }
+
+  for (var wi = 0; wi < CATS.length; wi++) {
+    (function (cat) {
+      chipEls[cat].addEventListener("click", function () { toggleChip(cat); });
+    })(CATS[wi]);
+  }
+  errsBtn.addEventListener("click", toggleErrs);
+  followBtn.addEventListener("click", function () { setFollow(!followOn); });
+
+  // --- search ---------------------------------------------------------------------
+
+  qEl.addEventListener("input", function () {
+    qText = qEl.value.trim().toLowerCase();
+    rackRows.forEach(function (rec) {
+      rec.el.classList.toggle("hit-off", !rowMatches(rec));
+    });
+  });
+
+  // --- keyboard ----------------------------------------------------------------------
+
+  function moveSel(dir) {
+    var vis = [];
+    for (var i = 0; i < sessList.length; i++) {
+      var rec = rackRows.get(sessList[i].id);
+      if (rec && !rec.el.classList.contains("hit-off")) { vis.push(rec); }
+    }
+    if (!vis.length) { return; }
+    var at = -1;
+    for (var j = 0; j < vis.length; j++) {
+      if (vis[j].id === selectedId) { at = j; break; }
+    }
+    var next = at === -1 ? 0 : Math.min(vis.length - 1, Math.max(0, at + dir));
+    if (vis[next].id !== selectedId) {
+      select(vis[next].id, true);
+      vis[next].el.focus({ preventScroll: true });
+      vis[next].el.scrollIntoView({ block: "nearest" });
+    }
+  }
+
+  function setHelp(on) {
+    if (helpEl.hidden === !on) { return; }
+    helpEl.hidden = !on;
+    helpBtn.setAttribute("aria-expanded", on ? "true" : "false");
+  }
+
+  document.addEventListener("keydown", function (ev) {
+    var t = ev.target;
+    var typing = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA"
+                       || t.isContentEditable);
+    if (ev.key === "Escape") {
+      if (!helpEl.hidden) { setHelp(false); return; }
+      if (typing && t === qEl) {
+        qEl.value = "";
+        qEl.dispatchEvent(new Event("input"));
+        qEl.blur();
+      }
+      return;
+    }
+    if (typing || ev.ctrlKey || ev.metaKey || ev.altKey) { return; }
+    var k = ev.key;
+    if (k === "j" || k === "J" || k === "ArrowDown") {
+      ev.preventDefault(); moveSel(1);
+    } else if (k === "k" || k === "K" || k === "ArrowUp") {
+      ev.preventDefault(); moveSel(-1);
+    } else if (k === "/") {
+      ev.preventDefault(); qEl.focus(); qEl.select();
+    } else if (k === "?") {
+      setHelp(helpEl.hidden);
+    } else if (k >= "1" && k <= "6") {
+      toggleChip(CATS[Number(k) - 1]);
+    } else if (k === "e" || k === "E") {
+      toggleErrs();
+    } else if (k === "f" || k === "F") {
+      setFollow(!followOn);
+    }
+  });
+
+  helpBtn.addEventListener("click", function () { setHelp(helpEl.hidden); });
+
+  // --- polling ---------------------------------------------------------------------
 
   function fetchJson(url) {
     return fetch(url).then(function (res) {
@@ -658,9 +817,21 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
     });
   }
 
-  function showError(err) {
-    setText(errorEl, "API error: " + (err && err.message ? err.message : String(err)));
-    errorEl.hidden = false;
+  function setOk() {
+    if (connBad) {
+      connBad = false;
+      connEl.className = "";
+      setText(connText, "live");
+    }
+  }
+
+  function setBad(err) {
+    var msg = err && err.message ? err.message : String(err);
+    if (!connBad) {
+      connBad = true;
+      connEl.className = "bad";
+    }
+    setText(connText, "API error: " + msg);
   }
 
   function fetchActivity() {
@@ -668,90 +839,39 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
     var url = "/api/sessions/" + encodeURIComponent(selectedId) + "/activity";
     if (cursor) { url += "?after=" + encodeURIComponent(cursor); }
     return fetchJson(url).then(function (data) {
-      errorEl.hidden = true;
+      setOk();
       selSummary = data.summary || null;
       setHead(selSummary);
       appendActivity(data.activity || []);
-      if (presentOn) { timelineEl.scrollTop = timelineEl.scrollHeight; }  // head reflow can unpin it
       cursor = data.cursor || null;
+      if (followOn && selSummary && selSummary.status === "running") {
+        logEl.scrollTop = logEl.scrollHeight;  // the head reflow can unpin it
+      }
     }, function (err) {
-      showError(err);
+      setBad(err);
       if (String(err && err.message).indexOf("cursor") !== -1) { cursor = null; }
     });
   }
 
-  function autoSelect() {
-    if (!firstLoad) { return; }
-    firstLoad = false;
-    if (!sessList.length) { return; }
-    var newestRunning = null;  // list is newest first
-    for (var i = 0; i < sessList.length; i++) {
-      if (sessList[i].status === "running") { newestRunning = sessList[i]; break; }
-    }
-    select((newestRunning || sessList[0]).id);
-  }
-
-  // --- present mode ---------------------------------------------------------------------
-
-  // The demo view shows the newest running worker (the list is newest first) and
-  // switches when a newer one starts; with nothing running it keeps the selection.
-  function presentFollow() {
-    if (!presentOn) { return; }
-    for (var i = 0; i < sessList.length; i++) {
-      if (sessList[i].status === "running") {
-        if (sessList[i].id !== selectedId) { select(sessList[i].id); }
-        return;
-      }
-    }
-  }
-
-  function setPresent(on) {
-    if (on === presentOn) { return; }
-    presentOn = on;
-    document.body.classList.toggle("present", on);
-    presentBtn.setAttribute("aria-pressed", on ? "true" : "false");
-    history.replaceState(null, "", on ? "#present" : location.pathname + location.search);
-    if (on) {
-      savedSelId = selectedId;  // the user's own selection comes back on exit
-      presentFollow();
-    } else if (savedSelId && savedSelId !== selectedId && sessById.has(savedSelId)) {
-      select(savedSelId);
-    }
-    timelineEl.scrollTop = timelineEl.scrollHeight;
-  }
-
-  document.addEventListener("keydown", function (ev) {
-    if (ev.key === "Escape") {
-      if (presentOn) { setPresent(false); }
-      return;
-    }
-    if (ev.key !== "p" && ev.key !== "P") { return; }
-    if (ev.ctrlKey || ev.metaKey || ev.altKey) { return; }
-    var t = ev.target;
-    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) { return; }
-    setPresent(!presentOn);
-  });
-  presentBtn.addEventListener("click", function () { setPresent(!presentOn); });
-
   function pollSessions() {
     fetchJson("/api/sessions?limit=" + SESSIONS_LIMIT).then(function (data) {
-      errorEl.hidden = true;
+      setOk();
       if (data.now_ms) { lastNowMs = data.now_ms; lastNowAt = Date.now(); }
-      setText(scopePathEl, data.scope || "");
+      setText(scopeEl, data.scope || "");
+      if (scopeEl.getAttribute("title") !== (data.scope || "")) {
+        scopeEl.setAttribute("title", data.scope || "");
+      }
       degradedEl.hidden = !data.layoutDegraded;
       sessList = data.sessions || [];
       sessById = new Map();
-      for (var i = 0; i < sessList.length; i++) { sessById.set(sessList[i].id, sessList[i]); }
-      setStripUnset(false);
-      renderStripCounts();
-      renderRack();
-      renderStripSel();
-      tickClock();
-      autoSelect();
-      presentFollow();
+      for (var i = 0; i < sessList.length; i++) {
+        sessById.set(sessList[i].id, sessList[i]);
+      }
+      renderCounts();
+      renderList();
+      ensureSelection();
     }, function (err) {
-      showError(err);
-      setStripUnset(true);
+      setBad(err);
     }).then(function () {
       setTimeout(pollSessions, SESSIONS_MS);
     });
@@ -763,25 +883,96 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
     });
   }
 
-  // The only local timer: advances the wall clock and running elapsed readouts.
-  setInterval(function () {
-    if (stripUnsetOn) { return; }
-    tickClock();
-    var s = selectedSession();
-    if (s && s.status === "running") {
-      setRO(roElapsed, fmtElapsedRO(selDurMs(s)));
-      if (!dhEl.hidden) { setRO(roDur, fmtElapsedRO(selDurMs(s))); }
-    }
-  }, 1000);
+  // --- quota (status bar) -------------------------------------------------------------
 
-  if (presentOn) {  // #present bookmark: enter the mode before first paint
-    document.body.classList.add("present");
-    presentBtn.setAttribute("aria-pressed", "true");
+  function meterFillCls(rem) {
+    return rem > 30 ? "fill g" : (rem >= 10 ? "fill a" : "fill r");
   }
+
+  function quotaUnavailable() {
+    if (quotaSig === "!") { return; }
+    quotaSig = "!";
+    quotaEl.textContent = "";
+    quotaEl.appendChild(el("span", "qt qdim", "quota unavailable"));
+  }
+
+  function renderQuota(data) {
+    // fetched_ms advances every poll; only the displayed numbers build the key.
+    var sig = JSON.stringify(
+      [data.source, data.api, data.windows, data.tools, data.estimate]);
+    if (sig === quotaSig) { return; }
+    quotaSig = sig;
+    quotaEl.textContent = "";
+    if (data.source === "api") {
+      var wins = data.windows || [];
+      for (var i = 0; i < wins.length; i++) {
+        var w = wins[i];
+        if (typeof w.remaining_pct === "number") {
+          quotaEl.appendChild(el("span", "qt",
+            w.id + " " + Math.round(w.remaining_pct) + "% left"));
+          var meter = el("span", "meter");
+          meter.setAttribute("aria-hidden", "true");
+          var fill = el("span", meterFillCls(w.remaining_pct));
+          fill.style.width = Math.max(0, Math.min(100,
+            Math.round(w.remaining_pct))) + "%";
+          meter.appendChild(fill);
+          quotaEl.appendChild(meter);
+        } else if (typeof w.used === "number" && typeof w.total === "number"
+                   && w.total > 0) {
+          quotaEl.appendChild(el("span", "qt",
+            w.id + " " + fmtTok(w.used) + " of " + fmtTok(w.total)));
+        } else {
+          quotaEl.appendChild(el("span", "qt", String(w.id)));
+        }
+        if (w.reset_ms) {
+          quotaEl.appendChild(el("span", "qt qdim", "resets " + fmtResets(w.reset_ms)));
+        }
+      }
+      var tools = data.tools;
+      if (tools && typeof tools.remaining_pct === "number") {
+        quotaEl.appendChild(el("span", "qt",
+          "tools " + Math.round(tools.remaining_pct) + "%"));
+      }
+      quotaEl.appendChild(el("span", "qtag", "[API]"));
+    } else {
+      var est = data.estimate || {};
+      quotaEl.appendChild(el("span", "qt",
+        "5h est. " + fmtTok(est.tokens_5h || 0) + " tok · "
+        + (est.requests_5h || 0) + " req"));
+      if (est.limited && est.limit_reset_ms) {
+        quotaEl.appendChild(el("span", "qlim",
+          "LIMITED until " + fmtResets(est.limit_reset_ms)));
+      }
+      quotaEl.appendChild(el("span", "qtag", "[est.]"));
+      var ap = data.api;
+      if (ap && ap.configured && ap.error) {
+        quotaEl.appendChild(el("span", "qt qdim", "(quota api: " + ap.error + ")"));
+      }
+    }
+  }
+
+  function pollQuota() {
+    fetchJson("/api/quota").then(function (data) {
+      if (data && (data.source === "api" || data.source === "estimate")) {
+        renderQuota(data);
+      } else {
+        quotaUnavailable();
+      }
+      setTimeout(pollQuota, QUOTA_MS);
+    }, function () {
+      quotaUnavailable();
+      setTimeout(pollQuota, QUOTA_MS);
+    });
+  }
+
+  // --- init --------------------------------------------------------------------------
+
   setHead(null);
-  tickClock();
+  applyFilters();
+  updateChipCounts();
   pollSessions();
   pollActivity();
+  pollQuota();
 })();
 </script>
 </body>

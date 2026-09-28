@@ -310,13 +310,13 @@ class DashboardTest(unittest.TestCase):
         self.assertIn("overflow-wrap: anywhere", text)  # no-space strings wrap
         self.assertIn("text-overflow: ellipsis", text)  # single-line titles clip cleanly
 
-    # --- page source rules: seven-segment instrument panel ------------------------
+    # --- page source rules: dev-tool terminal --------------------------------------
 
     def test_page_direction_contract_is_first_body_child(self) -> None:
         text = (SCRIPTS / "dashboard.html").read_text(encoding="utf-8")
         m = re.search(r"<body>\s*<!--\s*DIRECTION CONTRACT\b", text)
         self.assertIsNotNone(m, "the direction contract comment must open <body>")
-        self.assertIn("seed key 98bf20e6", text)
+        self.assertIn("seed key ce25968b", text)
 
     def test_page_size_within_budget(self) -> None:
         size = (SCRIPTS / "dashboard.html").stat().st_size
@@ -324,16 +324,15 @@ class DashboardTest(unittest.TestCase):
 
     def test_page_is_dark_only_and_motion_safe(self) -> None:
         text = (SCRIPTS / "dashboard.html").read_text(encoding="utf-8")
-        self.assertNotIn("prefers-color-scheme", text)  # one LED-world palette: dark
-        self.assertIn("prefers-reduced-motion", text)   # blink/steady opt-out exists
+        self.assertNotIn("prefers-color-scheme", text)  # one palette: dark
+        self.assertIn("prefers-reduced-motion", text)   # pulse opt-out exists
 
-    def test_page_has_seven_segment_hardware_and_keyboard_rows(self) -> None:
+    def test_page_has_listbox_rows_and_keyboard_selection(self) -> None:
         text = (SCRIPTS / "dashboard.html").read_text(encoding="utf-8")
-        self.assertIn("skewX(-6deg)", text)      # leaning segment cells
-        self.assertIn("clip-path", text)         # hexagonal segment bars
-        self.assertIn('role="listbox"', text)   # the rack is a listbox
+        self.assertIn('role="listbox"', text)   # the session list is a listbox
         self.assertIn('"role", "option"', text)  # rows become keyboard options
         self.assertIn("tabIndex = 0", text)      # rows are keyboard focusable
+        self.assertIn('"aria-selected"', text)   # selection is exposed
 
     def test_page_type_scale_is_four_steps(self) -> None:
         text = (SCRIPTS / "dashboard.html").read_text(encoding="utf-8")
@@ -342,36 +341,36 @@ class DashboardTest(unittest.TestCase):
         self.assertTrue(sizes <= {"11", "13", "16", "20"},
                         f"unexpected font sizes: {sorted(sizes)}")
 
-    def test_page_strip_scales_and_mobile_flows(self) -> None:
+    def test_page_layout_and_mobile_flow(self) -> None:
         text = (SCRIPTS / "dashboard.html").read_text(encoding="utf-8")
-        self.assertIn("clamp(40px, 4.6vw, 72px)", text)        # strip cell height scales with viewport
-        self.assertIn("grid-template-columns: 1fr 1fr", text)  # 2x2 head readouts on mobile
-        self.assertIn("max-height: 40vh", text)                # rack keeps its own scroll
-        self.assertIn("min-height: 60vh", text)                # timeline floor on mobile
+        self.assertIn("grid-template-columns: 320px 1fr", text)  # fixed sidebar + fluid main
+        self.assertIn("max-height: 38vh", text)                  # session list keeps its own scroll
+        self.assertIn("max-width: 430px", text)                  # narrow phones drop the time column
 
-    # --- page source rules: present mode -------------------------------------------
+    # --- page source rules: categories, filters, quota ------------------------------
 
-    def test_page_has_present_mode_toggle(self) -> None:
+    def test_page_has_six_category_chips(self) -> None:
         text = (SCRIPTS / "dashboard.html").read_text(encoding="utf-8")
-        self.assertIn('<button id="present-btn" type="button" aria-pressed="false">Present</button>', text)
-        self.assertIn('setAttribute("aria-pressed"', text)     # aria-pressed tracks the state
-        self.assertIn('"#present"', text)                      # hash enters present mode on load
-        self.assertIn("history.replaceState", text)            # toggling adds no history entries
-        self.assertIn('ev.key === "Escape"', text)             # Esc exits present mode
-        self.assertIn("ev.key !== \"p\" && ev.key !== \"P\"", text)  # p/P toggles
-        self.assertIn("ev.ctrlKey || ev.metaKey || ev.altKey", text)  # modifier chords ignored
-        self.assertIn("t.tagName === \"INPUT\" || t.tagName === \"TEXTAREA\"", text)  # not while typing
+        for cat in ("read", "edit", "run", "web", "agent", "msg"):
+            self.assertIn(f'data-cat="{cat}"', text)
+            self.assertIn(f'"n-{cat}"', text)  # per-category count element
 
-    def test_page_present_mode_css(self) -> None:
+    def test_page_filters_rows_via_container_attributes(self) -> None:
         text = (SCRIPTS / "dashboard.html").read_text(encoding="utf-8")
-        self.assertIn("body.present #rackwrap { display: none; }", text)  # rack hidden, detail full width
-        self.assertIn("body.present main { grid-template-columns: 1fr; }", text)
-        self.assertIn("clamp(40px, 5.2vw, 128px)", text)                   # bigger strip cells, one row
-        self.assertIn("body.present #dh-ros .cells { --ch: clamp(40px, 4.6vw, 72px); }", text)
-        self.assertIn("body.present #timeline { font-size: 16px; }", text)  # allowed scale step
-        self.assertIn(":nth-last-child(-n+30)", text)                     # only newest 30 rows visible
-        self.assertIn("body.present .dh-sub { display: none; }", text)     # session id + dir hidden
-        self.assertIn("body.present #scope span { display: none; }", text)  # scope path hidden
+        self.assertIn('data-f-read="0"', text)  # hiding rows is CSS on the log container
+        self.assertIn('data-errs="1"', text)    # errors-only filter likewise
+
+    def test_page_polls_quota_endpoint(self) -> None:
+        text = (SCRIPTS / "dashboard.html").read_text(encoding="utf-8")
+        self.assertIn("/api/quota", text)
+        self.assertIn("30000", text)  # 30 s quota poll interval
+
+    def test_page_has_search_and_shortcut_keys(self) -> None:
+        text = (SCRIPTS / "dashboard.html").read_text(encoding="utf-8")
+        self.assertIn('placeholder="Filter sessions"', text)
+        self.assertIn("ArrowDown", text)   # j/k or arrows move the selection
+        self.assertIn("ArrowUp", text)
+        self.assertIn('"?"', text)         # shortcuts popover key
 
     # --- entry point --------------------------------------------------------------------
 
