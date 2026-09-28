@@ -15,6 +15,7 @@
     --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   html, body { height: 100%; }
   body {
     margin: 0; background: var(--bg); color: var(--text); position: relative;
@@ -49,13 +50,24 @@
   #help-btn { flex: 0 0 auto; font-size: 11px; color: var(--muted);
               padding: 2px 7px; border-radius: 4px; }
   #help-btn:hover { color: var(--text); background: var(--raised); }
+  #side-btn { flex: 0 0 auto; width: 24px; height: 24px; border-radius: 4px;
+              color: var(--muted); }
+  #side-btn:hover { background: var(--raised); color: var(--text); }
+  .pnl { width: 14px; height: 14px; border: 1px solid currentColor;
+         border-radius: 3px; position: relative; }
+  .pnl::before { content: ""; position: absolute; top: 1px; bottom: 1px;
+                 left: 1px; width: 3px; background: currentColor; }
 
   #shell { flex: 1 1 auto; display: grid; grid-template-columns: 320px 1fr;
-           min-height: 0; min-width: 0; }
+           min-height: 0; min-width: 0; }  /* no track transition: it can stall */
+  body.noside #shell { grid-template-columns: 0 1fr; }
 
   /* --- sidebar: search + session list -------------------------------------- */
   #side { background: var(--panel); border-right: 1px solid var(--line);
-          display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+          display: flex; flex-direction: column; min-height: 0; min-width: 0;
+          overflow: hidden; }
+  body.noside #side { visibility: hidden; border-right-color: transparent;
+                      transition: visibility 0s .14s; }
   #qwrap { padding: 10px 12px; border-bottom: 1px solid var(--line); }
   #q { width: 100%; padding: 5px 10px; font: inherit; font-size: 13px;
        color: var(--text); background: var(--bg);
@@ -136,10 +148,16 @@
          padding: 6px 0 12px; }
   #log-empty { position: absolute; top: 6px; left: 16px; color: var(--muted); }
   .act { display: flex; align-items: baseline; gap: 10px; padding: 2px 16px;
-         min-width: 0; }
-  .act:hover { background: var(--panel); }
-  .act.err { background: rgba(248,81,73,.06); }
-  .act.err:hover { background: rgba(248,81,73,.1); }
+         min-width: 0; margin-bottom: 1px; --tc: 139 148 158;
+         background: rgb(var(--tc) / .055); }
+  .act:hover { background: rgb(var(--tc) / .085); }
+  .a-read { --tc: 88 166 255; }
+  .a-edit { --tc: 240 136 62; }
+  .a-run { --tc: 63 185 80; }
+  .a-web { --tc: 188 140 255; }
+  .a-agent { --tc: 57 197 207; }
+  .act.err { --tc: 248 81 73; background: rgb(var(--tc) / .09); }
+  .act.err:hover { background: rgb(248 81 73 / .12); }
   .act .t { flex: 0 0 auto; color: var(--muted); }
   .tag { flex: 0 0 auto; width: 48px; text-align: center; font-size: 11px;
          letter-spacing: .05em; border-radius: 3px; padding: 1px 0; }
@@ -164,7 +182,7 @@
   #log[data-errs="1"] .act:not(.err) { display: none; }
 
   /* --- status bar: connection + quota -------------------------------------- */
-  #sbar { flex: 0 0 24px; display: flex; align-items: center; gap: 14px;
+  #sbar { flex: 0 0 28px; display: flex; align-items: center; gap: 14px;
           padding: 0 12px; background: var(--panel);
           border-top: 1px solid var(--line); font-size: 11px;
           color: var(--muted); min-width: 0; }
@@ -175,27 +193,28 @@
   #conn-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #conn.bad #conn-text { color: var(--fail); }
   #degraded { color: var(--run); white-space: nowrap; }
-  #quota { margin-left: auto; display: flex; align-items: center; gap: 10px;
-           font-family: var(--mono); min-width: 0; overflow: hidden; }
+  #quota { margin-left: auto; min-width: 0; display: flex; flex-wrap: wrap;
+           align-items: center; gap: 8px; font-family: var(--mono);
+           padding: 3px 6px; }
+  #quota .qlab { color: var(--muted); }
+  #quota .qpct { font-size: 13px; font-weight: 600; color: var(--text);
+                 white-space: nowrap; }
   #quota .qt { white-space: nowrap; }
   #quota .qdim { color: var(--muted); }
   #quota .qtag { color: var(--muted); border: 1px solid var(--line);
                  border-radius: 3px; padding: 0 3px; }
-  #quota .qlim { color: var(--fail); font-weight: 600; }
-  .meter { width: 60px; height: 6px; border: 1px solid var(--line);
-           border-radius: 3px; overflow: hidden; flex: 0 0 auto;
-           background: var(--bg); }
-  .meter .fill { display: block; height: 100%; }
-  .meter .fill.g { background: var(--done); }
-  .meter .fill.a { background: var(--run); }
-  .meter .fill.r { background: var(--fail); }
+  #quota .qlim { color: var(--fail); font-weight: 600; white-space: nowrap; }
+  .meter2 { width: 96px; height: 6px; border-radius: 3px; flex: 0 0 auto;
+            background: var(--line); overflow: hidden; }
+  .meter2.wide { display: block; width: 100%; margin-top: 5px; }
+  .meter2 .fill { display: block; height: 100%; }
 
-  /* --- shortcuts popover ----------------------------------------------------- */
+  /* --- popovers (shortcuts, quota) ------------------------------------------ */
   #help { position: absolute; top: 42px; right: 12px; z-index: 20;
           background: var(--panel); border: 1px solid var(--line);
           border-radius: 6px; padding: 12px 16px; width: 270px;
           box-shadow: 0 6px 24px rgba(0,0,0,.45); }
-  #help h2 { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
+  #help h2, #qpop h2 { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
   .hrow { display: flex; align-items: baseline; gap: 10px; margin-top: 5px;
           font-size: 11px; }
   .hrow .keys { flex: 0 0 auto; min-width: 88px; font-family: var(--mono);
@@ -204,6 +223,25 @@
   kbd { font-family: var(--mono); font-size: 11px; background: var(--raised);
         border: 1px solid var(--line); border-bottom-width: 2px;
         border-radius: 3px; padding: 0 4px; }
+  #qpop { position: absolute; bottom: 34px; right: 12px; z-index: 20;
+          background: var(--panel); border: 1px solid var(--line);
+          border-radius: 6px; padding: 12px 14px; width: 300px;
+          max-width: calc(100vw - 32px);
+          box-shadow: 0 6px 24px rgba(0,0,0,.45); }
+  .qblk { margin-top: 9px; }
+  .qn { font-size: 11px; font-weight: 600; color: var(--muted); }
+  .qv { margin-top: 4px; }
+  .qv .u, .qr, .qf { color: var(--muted); }
+  .qr, .qf { font-size: 11px; font-family: var(--mono); margin-top: 2px; }
+  .qf { margin-top: 10px; padding-top: 8px;
+        border-top: 1px solid var(--line); }
+
+  /* --- scrollbars: thin and themed ------------------------------------------ */
+  * { scrollbar-width: thin; scrollbar-color: #2a303a transparent; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #2a303a; border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: #3a424e; }
 
   /* --- responsive -------------------------------------------------------------- */
   @media (max-width: 899px) {   /* stacked: the page scrolls, panes keep theirs */
@@ -211,12 +249,13 @@
     #app { height: auto; }
     #shell { display: flex; flex-direction: column; }
     #side { border-right: none; border-bottom: 1px solid var(--line); }
+    body.noside #side { display: none; }
     #list { max-height: 38vh; }
     #logwrap { min-height: 40vh; }
     #log { overflow: visible; }
-    #sbar { flex-wrap: wrap; height: auto; min-height: 24px; row-gap: 4px;
-            padding: 5px 12px; }
-    #quota { flex-wrap: wrap; }
+    #sbar { flex-wrap: wrap; height: auto; min-height: 28px; row-gap: 4px;
+            padding: 5px 12px; position: sticky; bottom: 0; z-index: 3;
+            flex: 0 0 auto; }  /* quota stays in view, unclipped */
   }
   @media (max-width: 760px) {
     #topbar { flex-wrap: wrap; height: auto; min-height: 36px;
@@ -225,7 +264,7 @@
     #shell { padding: 16px; gap: 16px; }
     #side { border: 1px solid var(--line); border-radius: 6px; }
     #main { border: 1px solid var(--line); border-radius: 6px; }
-    #help { right: 16px; }
+    #help, #qpop { right: 16px; }
   }
   @media (max-width: 430px) {   /* the time column gives way to the text */
     .act .t { display: none; }
@@ -246,7 +285,10 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 -->
 <div id="app">
 <header id="topbar">
+  <button id="side-btn" type="button" aria-expanded="true" aria-controls="side"
+          aria-label="Toggle sessions"><span class="pnl" aria-hidden="true"></span></button>
   <h1 id="wordmark">zcrew</h1>
+  <i id="qlow" class="dot d-fail" aria-hidden="true" hidden></i>
   <span id="scope" class="mono" title=""></span>
   <div id="counts">
     <span class="cnt"><i class="dot d-run" aria-hidden="true"></i><span id="cnt-run">0 running</span></span>
@@ -300,7 +342,8 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 <footer id="sbar">
   <span id="conn"><i class="dot" aria-hidden="true"></i><span id="conn-text">live</span></span>
   <span id="degraded" hidden>layout degraded</span>
-  <div id="quota"></div>
+  <button id="quota" type="button" aria-expanded="false"
+          aria-controls="qpop"></button>
 </footer>
 </div>
 <div id="help" hidden>
@@ -308,12 +351,14 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
   <div class="hrow"><span class="keys"><kbd>j</kbd> <kbd>k</kbd></span><span class="what">move selection (or arrow keys)</span></div>
   <div class="hrow"><span class="keys"><kbd>Enter</kbd></span><span class="what">select focused session</span></div>
   <div class="hrow"><span class="keys"><kbd>/</kbd></span><span class="what">filter sessions</span></div>
+  <div class="hrow"><span class="keys"><kbd>b</kbd></span><span class="what">toggle sessions panel</span></div>
   <div class="hrow"><span class="keys"><kbd>Esc</kbd></span><span class="what">clear filter, close this</span></div>
   <div class="hrow"><span class="keys"><kbd>1</kbd>-<kbd>6</kbd></span><span class="what">toggle category chips</span></div>
   <div class="hrow"><span class="keys"><kbd>e</kbd></span><span class="what">errors only</span></div>
   <div class="hrow"><span class="keys"><kbd>f</kbd></span><span class="what">follow running session</span></div>
   <div class="hrow"><span class="keys"><kbd>?</kbd></span><span class="what">toggle shortcuts</span></div>
 </div>
+<div id="qpop" hidden></div>
 <script>
 "use strict";
 (function () {
@@ -385,6 +430,10 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 
   function byId(id) { return document.getElementById(id); }
 
+  // localStorage throws in private mode; never let it bubble.
+  function lsGet(key) { try { return localStorage.getItem(key); } catch (e) { return null; } }
+  function lsSet(key, val) { try { localStorage.setItem(key, val); } catch (e) {} }
+
   var scopeEl = byId("scope"), helpBtn = byId("help-btn"), helpEl = byId("help");
   var qEl = byId("q"), listEl = byId("list"), listEmptyEl = byId("list-empty");
   var noselEl = byId("nosel"), shEl = byId("sh");
@@ -394,7 +443,9 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
       mDur = byId("m-dur"), mTools = byId("m-tools"), mErr = byId("m-err"),
       mCtx = byId("m-ctx");
   var connEl = byId("conn"), connText = byId("conn-text"), degradedEl = byId("degraded");
-  var quotaEl = byId("quota"), errsBtn = byId("errs"), followBtn = byId("follow");
+  var quotaEl = byId("quota"), qpopEl = byId("qpop"),
+      qlowEl = byId("qlow"), sideBtn = byId("side-btn");
+  var errsBtn = byId("errs"), followBtn = byId("follow");
   var cntEls = { run: byId("cnt-run"), fail: byId("cnt-fail"),
                  done: byId("cnt-done"), idle: byId("cnt-idle") };
   var chipEls = {}, nEls = {};
@@ -412,7 +463,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
   var catCounts = { read: 0, edit: 0, run: 0, web: 0, agent: 0, msg: 0 };
   var shown = { read: true, edit: true, run: true, web: true, agent: true, msg: true };
   var errsOnly = false, followOn = true;
-  var qText = "", filterSig = null, quotaSig = null;
+  var qText = "", filterSig = null;
   var connBad = false;
   var lastNowMs = 0, lastNowAt = 0;  // the API clock and when we received it
 
@@ -768,11 +819,45 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
     helpBtn.setAttribute("aria-expanded", on ? "true" : "false");
   }
 
+  // --- sidebar collapse ------------------------------------------------------
+
+  var sideOpen = lsGet("zcrew-side") !== "0";
+
+  function applySide() {
+    document.body.classList.toggle("noside", !sideOpen);
+    sideBtn.setAttribute("aria-expanded", sideOpen ? "true" : "false");
+  }
+
+  function toggleSide() {
+    sideOpen = !sideOpen;
+    lsSet("zcrew-side", sideOpen ? "1" : "0");
+    applySide();
+  }
+
+  sideBtn.addEventListener("click", toggleSide);
+  applySide();
+
+  // --- quota popover ----------------------------------------------------------
+
+  function setQpop(on) {
+    if (qpopEl.hidden === !on) { return; }
+    qpopEl.hidden = !on;
+    quotaEl.setAttribute("aria-expanded", on ? "true" : "false");
+    if (on) { buildQpop(); }
+  }
+
+  quotaEl.addEventListener("click", function () { setQpop(qpopEl.hidden); });
+  document.addEventListener("click", function (ev) {
+    if (!qpopEl.hidden && !qpopEl.contains(ev.target)
+        && !quotaEl.contains(ev.target)) { setQpop(false); }
+  });
+
   document.addEventListener("keydown", function (ev) {
     var t = ev.target;
     var typing = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA"
                        || t.isContentEditable);
     if (ev.key === "Escape") {
+      if (!qpopEl.hidden) { setQpop(false); return; }
       if (!helpEl.hidden) { setHelp(false); return; }
       if (typing && t === qEl) {
         qEl.value = "";
@@ -797,6 +882,8 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
       toggleErrs();
     } else if (k === "f" || k === "F") {
       setFollow(!followOn);
+    } else if (k === "b" || k === "B") {
+      toggleSide();
     }
   });
 
@@ -883,72 +970,204 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
     });
   }
 
-  // --- quota (status bar) -------------------------------------------------------------
+  // --- quota (status bar + popover) ------------------------------------------
 
-  function meterFillCls(rem) {
-    return rem > 30 ? "fill g" : (rem >= 10 ? "fill a" : "fill r");
+  var quotaData = null, quotaSig = null, barLow = false;
+  var cdBar = [], cdPop = [];  // time-dependent spans: {ms, el, pre, ago}
+
+  function fillColor(rem) {
+    return rem >= 20 ? "var(--done)" : rem >= 10 ? "var(--run)" : "var(--fail)";
+  }
+
+  function fmtIn(ms) {
+    var m = Math.max(1, Math.round((ms - Date.now()) / 60000));
+    if (m < 60) { return "in " + m + "m"; }
+    var h = Math.floor(m / 60);
+    if (h < 24) { return "in " + h + "h " + (m % 60) + "m"; }
+    var d = Math.floor(h / 24);
+    return d < 10 ? "in " + d + "d " + (h % 24) + "h" : "in " + d + "d";
+  }
+
+  function fmtAgo(ms) {
+    var s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+    return s < 60 ? s + "s ago" : s < 3600
+      ? Math.floor(s / 60) + "m ago" : Math.floor(s / 3600) + "h ago";
+  }
+
+  function winName(id) {
+    return id === "5h" ? "5-hour window" : id === "week" ? "Weekly" : id;
+  }
+
+  function mkMeter(pct, wide) {
+    var m = el("span", wide ? "meter2 wide" : "meter2");
+    var f = el("span", "fill");
+    f.style.background = fillColor(pct);
+    f.style.width = Math.max(0, Math.min(100, Math.round(pct))) + "%";
+    m.appendChild(f);
+    return m;
+  }
+
+  // addCd: pre + fmtIn/fmtAgo text, re-ticked each minute.
+  function addCd(list, parent, cls, ms, pre, ago) {
+    var e = el("span", cls, pre + (ago ? fmtAgo(ms) : fmtIn(ms)));
+    list.push({ ms: ms, el: e, pre: pre, ago: !!ago });
+    parent.appendChild(e);
+  }
+
+  setInterval(function () {
+    var all = cdBar.concat(cdPop);
+    for (var i = 0; i < all.length; i++) {
+      setText(all[i].el, all[i].pre + (all[i].ago ? fmtAgo(all[i].ms)
+                                                  : fmtIn(all[i].ms)));
+    }
+  }, 60000);
+
+  function buildQuotaBar() {
+    cdBar = [];
+    quotaEl.textContent = "";
+    var d = quotaData;
+    if (!d) {
+      quotaEl.appendChild(el("span", "qt qdim", "quota unavailable"));
+      return;
+    }
+    if (d.source === "api") {
+      var wins = d.windows || [];
+      for (var i = 0; i < wins.length; i++) {
+        var w = wins[i];
+        quotaEl.appendChild(el("span", "qlab",
+          w.id === "week" ? "Week" : w.id));
+        if (typeof w.remaining_pct === "number") {
+          quotaEl.appendChild(mkMeter(w.remaining_pct));
+          quotaEl.appendChild(el("span", "qpct",
+            Math.round(w.remaining_pct) + "% left"));
+          if (w.id === "5h" && w.remaining_pct < 10) { barLow = true; }
+          if (w.reset_ms) {
+            addCd(cdBar, quotaEl, "qt qdim", w.reset_ms, "resets ");
+          }
+        } else if (typeof w.used === "number" && typeof w.total === "number"
+                   && w.total > 0) {
+          quotaEl.appendChild(el("span", "qpct",
+            fmtTok(w.used) + " of " + fmtTok(w.total)));
+        }
+      }
+      if (d.tools && typeof d.tools.remaining_pct === "number") {
+        quotaEl.appendChild(el("span", "qpct",
+          "Tools " + Math.round(d.tools.remaining_pct) + "%"));
+      }
+      quotaEl.appendChild(el("span", "qtag", "[API]"));
+    } else {
+      var est = d.estimate || {};
+      quotaEl.appendChild(el("span", "qpct",
+        "5h used " + fmtTok(est.tokens_5h || 0) + " tok · "
+        + (est.requests_5h || 0) + " req"));
+      if (est.limited) {
+        if (est.limit_reset_ms) {
+          addCd(cdBar, quotaEl, "qlim", est.limit_reset_ms,
+                 "LIMITED — resets ");
+        } else {
+          quotaEl.appendChild(el("span", "qlim", "LIMITED"));
+        }
+      }
+      quotaEl.appendChild(el("span", "qtag", "[est.]"));
+      var ap = d.api;
+      if (ap && ap.configured && ap.error) {
+        quotaEl.appendChild(el("span", "qt qdim",
+          "(quota API: " + ap.error + ")"));
+      } else if (ap && !ap.configured) {
+        quotaEl.appendChild(el("span", "qt qdim",
+          "set ZCODE_BIGMODEL_USAGE_API_KEY for % left"));
+      }
+    }
+  }
+
+  function qpopWin(w, name) {
+    var blk = el("div", "qblk");
+    blk.appendChild(el("div", "qn", name || winName(w.id)));
+    if (typeof w.remaining_pct === "number") {
+      blk.appendChild(mkMeter(w.remaining_pct, true));
+      var v = el("div", "qv");
+      v.appendChild(el("span", null, Math.round(w.remaining_pct) + "% left"));
+      if (typeof w.used_pct === "number") {
+        v.appendChild(el("span", "u",
+          " · " + Math.round(w.used_pct) + "% used"));
+      }
+      blk.appendChild(v);
+      if (w.reset_ms) {
+        var r = el("div", "qr");
+        addCd(cdPop, r, "", w.reset_ms,
+              "resets " + fmtResets(w.reset_ms) + " (");
+        r.appendChild(el("span", null, ")"));
+        blk.appendChild(r);
+      }
+    }
+    if (typeof w.used === "number" && typeof w.total === "number"
+        && w.total > 0) {
+      blk.appendChild(el("div", "qr",
+        "used " + fmtTok(w.used) + " of " + fmtTok(w.total)));
+    }
+    qpopEl.appendChild(blk);
+  }
+
+  function buildQpop() {
+    cdPop = [];
+    qpopEl.textContent = "";
+    var d = quotaData;
+    if (!d) {
+      qpopEl.appendChild(el("div", "qr", "quota unavailable"));
+      return;
+    }
+    qpopEl.appendChild(el("h2", null,
+      d.level ? "ZCode quota — " + d.level : "ZCode quota"));
+    if (d.source === "api") {
+      var wins = d.windows || [];
+      for (var i = 0; i < wins.length; i++) { qpopWin(wins[i]); }
+      if (d.tools && typeof d.tools.remaining_pct === "number") {
+        qpopWin({ id: "tools", remaining_pct: d.tools.remaining_pct,
+                  reset_ms: d.tools.reset_ms }, "Tools (monthly)");
+      }
+    } else {
+      var est = d.estimate || {};
+      var blk = el("div", "qblk");
+      blk.appendChild(el("div", "qn", "5-hour window"));
+      blk.appendChild(el("div", "qv", fmtTok(est.tokens_5h || 0)
+        + " tokens · " + (est.requests_5h || 0) + " requests"));
+      if (est.limited && est.limit_reset_ms) {
+        var le = el("div", "qr");
+        addCd(cdPop, le, "", est.limit_reset_ms, "LIMITED — resets ");
+        blk.appendChild(le);
+      }
+      qpopEl.appendChild(blk);
+    }
+    var foot = el("div", "qf");
+    foot.appendChild(el("span", null, "source: "
+      + (d.source === "api" ? "Z.ai API" : "local estimate (model_usage)")
+      + " · updated "));
+    addCd(cdPop, foot, "", d.fetched_ms, "", true);
+    qpopEl.appendChild(foot);
   }
 
   function quotaUnavailable() {
     if (quotaSig === "!") { return; }
     quotaSig = "!";
-    quotaEl.textContent = "";
-    quotaEl.appendChild(el("span", "qt qdim", "quota unavailable"));
+    quotaData = null;
+    barLow = false;
+    buildQuotaBar();
+    if (!qpopEl.hidden) { buildQpop(); }
+    qlowEl.hidden = true;
   }
 
   function renderQuota(data) {
-    // fetched_ms advances every poll; only the displayed numbers build the key.
+    // fetched_ms advances every poll; only the displayed values build the key.
     var sig = JSON.stringify(
-      [data.source, data.api, data.windows, data.tools, data.estimate]);
-    if (sig === quotaSig) { return; }
-    quotaSig = sig;
-    quotaEl.textContent = "";
-    if (data.source === "api") {
-      var wins = data.windows || [];
-      for (var i = 0; i < wins.length; i++) {
-        var w = wins[i];
-        if (typeof w.remaining_pct === "number") {
-          quotaEl.appendChild(el("span", "qt",
-            w.id + " " + Math.round(w.remaining_pct) + "% left"));
-          var meter = el("span", "meter");
-          meter.setAttribute("aria-hidden", "true");
-          var fill = el("span", meterFillCls(w.remaining_pct));
-          fill.style.width = Math.max(0, Math.min(100,
-            Math.round(w.remaining_pct))) + "%";
-          meter.appendChild(fill);
-          quotaEl.appendChild(meter);
-        } else if (typeof w.used === "number" && typeof w.total === "number"
-                   && w.total > 0) {
-          quotaEl.appendChild(el("span", "qt",
-            w.id + " " + fmtTok(w.used) + " of " + fmtTok(w.total)));
-        } else {
-          quotaEl.appendChild(el("span", "qt", String(w.id)));
-        }
-        if (w.reset_ms) {
-          quotaEl.appendChild(el("span", "qt qdim", "resets " + fmtResets(w.reset_ms)));
-        }
-      }
-      var tools = data.tools;
-      if (tools && typeof tools.remaining_pct === "number") {
-        quotaEl.appendChild(el("span", "qt",
-          "tools " + Math.round(tools.remaining_pct) + "%"));
-      }
-      quotaEl.appendChild(el("span", "qtag", "[API]"));
-    } else {
-      var est = data.estimate || {};
-      quotaEl.appendChild(el("span", "qt",
-        "5h est. " + fmtTok(est.tokens_5h || 0) + " tok · "
-        + (est.requests_5h || 0) + " req"));
-      if (est.limited && est.limit_reset_ms) {
-        quotaEl.appendChild(el("span", "qlim",
-          "LIMITED until " + fmtResets(est.limit_reset_ms)));
-      }
-      quotaEl.appendChild(el("span", "qtag", "[est.]"));
-      var ap = data.api;
-      if (ap && ap.configured && ap.error) {
-        quotaEl.appendChild(el("span", "qt qdim", "(quota api: " + ap.error + ")"));
-      }
+      [data.source, data.api, data.level, data.windows, data.tools, data.estimate]);
+    if (sig !== quotaSig) {
+      quotaSig = sig;
+      quotaData = data;
+      barLow = false;
+      buildQuotaBar();
+      if (!qpopEl.hidden) { buildQpop(); }
     }
+    if (qlowEl.hidden !== barLow) { qlowEl.hidden = !barLow; }
   }
 
   function pollQuota() {

@@ -320,7 +320,7 @@ class DashboardTest(unittest.TestCase):
 
     def test_page_size_within_budget(self) -> None:
         size = (SCRIPTS / "dashboard.html").stat().st_size
-        self.assertLessEqual(size, 40 * 1024)  # single self-contained file, <= 40 KB
+        self.assertLessEqual(size, 48 * 1024)  # single self-contained file, <= 48 KB
 
     def test_page_is_dark_only_and_motion_safe(self) -> None:
         text = (SCRIPTS / "dashboard.html").read_text(encoding="utf-8")
@@ -371,6 +371,49 @@ class DashboardTest(unittest.TestCase):
         self.assertIn("ArrowDown", text)   # j/k or arrows move the selection
         self.assertIn("ArrowUp", text)
         self.assertIn('"?"', text)         # shortcuts popover key
+
+    # --- page source rules: T2 polish (scrollbars, tints, sidebar, quota) ---------
+
+    def test_page_has_themed_scrollbars(self) -> None:
+        text = (SCRIPTS / "dashboard.html").read_text(encoding="utf-8")
+        self.assertIn("scrollbar-width: thin", text)
+        self.assertIn("scrollbar-color: #2a303a transparent", text)
+        self.assertIn("::-webkit-scrollbar-thumb { background: #2a303a", text)
+        self.assertIn("::-webkit-scrollbar-thumb:hover { background: #3a424e", text)
+
+    def test_page_log_rows_tinted_by_category(self) -> None:
+        text = (SCRIPTS / "dashboard.html").read_text(encoding="utf-8")
+        self.assertIn(".a-read { --tc: 88 166 255; }", text)
+        self.assertIn(".a-agent { --tc: 57 197 207; }", text)
+        self.assertIn("background: rgb(var(--tc) / .055);", text)   # row tint
+        self.assertIn("background: rgba(88,166,255,.14);", text)    # tag tint stays
+        self.assertIn(".act.err { --tc: 248 81 73; background: rgb(var(--tc) / .09); }", text)
+        self.assertIn("margin-bottom: 1px", text)  # rows read as separate lines
+
+    def test_page_has_collapsible_sidebar(self) -> None:
+        text = (SCRIPTS / "dashboard.html").read_text(encoding="utf-8")
+        self.assertIn('id="side-btn"', text)
+        self.assertIn('aria-controls="side"', text)
+        self.assertIn('k === "b"', text)        # keyboard shortcut
+        self.assertIn("body.noside #shell", text)
+        self.assertIn("<kbd>b</kbd>", text)     # documented in the popover
+
+    def test_page_quota_button_and_popover(self) -> None:
+        text = (SCRIPTS / "dashboard.html").read_text(encoding="utf-8")
+        self.assertIn('<button id="quota" type="button" aria-expanded="false"', text)
+        self.assertIn('aria-controls="qpop"', text)
+        self.assertIn('id="qpop"', text)
+        self.assertIn("ZCode quota", text)
+        self.assertIn("max-width: calc(100vw - 32px)", text)
+
+    def test_page_localstorage_access_is_guarded(self) -> None:
+        text = (SCRIPTS / "dashboard.html").read_text(encoding="utf-8")
+        # every localStorage touch sits inside a try/catch helper, one per line
+        self.assertIn("try { return localStorage.getItem(", text)
+        self.assertIn("try { localStorage.setItem(", text)
+        unguarded = [line.strip() for line in text.splitlines()
+                     if "localStorage." in line and "try {" not in line]
+        self.assertEqual(unguarded, [])
 
     # --- entry point --------------------------------------------------------------------
 

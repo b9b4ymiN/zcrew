@@ -20,6 +20,9 @@ colors:
   cat-web: "#bc8cff"
   cat-agent: "#39c5cf"
   cat-msg: "#8b949e"
+  scrollbar-thumb: "#2a303a"
+  scrollbar-thumb-hover: "#3a424e"
+  popover-shadow: "rgba(0,0,0,.45)"
 typography:
   title:
     fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif"
@@ -63,7 +66,7 @@ components:
     backgroundColor: "{colors.panel}"
     textColor: "{colors.muted}"
     typography: "{typography.label}"
-    height: "24px"
+    height: "28px"
 ---
 
 # zcrew dashboard — design system
@@ -84,8 +87,8 @@ Restrained strategy: neutral layered greys, one blue accent for focus and select
 - **Text:** `text` for content, `muted` for metadata (≥ 4.5:1 on `panel`).
 - **Accent:** `accent` is for focus rings, the selected row's title, and pressed toggles. Never decorative.
 - **Session status** (dot + uppercase word, never color alone): running `status-running` (amber, dot pulses), failed `status-failed`, done `status-done`, idle `status-idle`.
-- **Activity categories** (the log's tag and the filter chips): READ `cat-read`, EDIT `cat-edit`, RUN `cat-run`, WEB `cat-web`, AGENT `cat-agent`, MSG `cat-msg`. A tag is a fixed 48px cell: the category color as text on the same color at 14% alpha. Errors override the category: tag reads `ERR` in `status-failed`, the summary turns red, the row gets a faint red tint.
-- Quota meter fill: green above 30% remaining, amber 10–30%, red below 10%.
+- **Activity categories** (the log's tag and the filter chips): READ `cat-read`, EDIT `cat-edit`, RUN `cat-run`, WEB `cat-web`, AGENT `cat-agent`, MSG `cat-msg`. A tag is a fixed 48px cell: the category color as text on the same color at 14% alpha. Each log row also carries its category as a ~5.5% alpha background tint (one `--tc` triplet per category) so types separate at a glance; hover raises it to ~8.5%. Errors override the category: tag reads `ERR` in `status-failed`, the summary turns red, the row gets a ~9% red tint. Adjacent rows keep a 1px transparent gap so same-type rows still read as separate lines.
+- Quota meter fill: green at 20% remaining or more, amber 10–20%, red below 10%.
 
 ## Typography
 
@@ -95,11 +98,12 @@ Two families: the platform UI stack for chrome and labels, the mono stack for ev
 
 App shell with no page scroll on desktop; each pane scrolls on its own.
 
-- Title bar (~36px): wordmark, scope path, status counts, shortcuts button.
-- Sidebar 320px: filter input, then the session list.
+- Title bar (~36px): sidebar toggle, wordmark (red dot beside it while the 5h quota is under 10%), scope path, status counts, shortcuts button.
+- Sidebar 320px: filter input, then the session list. Collapsible: the title-bar toggle or `b` hides it (grid track 0, no transition: a track transition can stall), main takes full width, the state persists in localStorage (default open). ≤ 899px the toggle hides the whole list block.
 - Main pane: session header, sticky filter bar (solid `ground` background, 1px `line` below), then the log.
-- Status bar 24px at the bottom, full width: connection state left, quota right.
-- ≤ 899px: panes stack and the page scrolls. ≤ 760px: title bar and status bar wrap; the session list is capped at ~38vh. ≤ 430px: the log's time column is hidden. No horizontal scroll at 375px.
+- Status bar 28px at the bottom, full width: connection state left, quota right.
+- Every scrolling pane (session list, log, popovers) gets a thin themed scrollbar (`scrollbar-width: thin`, 8px webkit, thumb `#2a303a` → `#3a424e` on hover); never the OS default.
+- ≤ 899px: panes stack and the page scrolls; the status bar stays pinned to the bottom (sticky) so quota is always in view. ≤ 760px: title bar and status bar wrap; the session list is capped at ~38vh. ≤ 430px: the log's time column is hidden. No horizontal scroll at 375px.
 
 ## Elevation & Depth
 
@@ -112,16 +116,16 @@ Small radii only: 3px tags, 4px controls and chips, 6px panels and popover. Rows
 ## Components
 
 - **Session row:** line 1 status dot + STATUS word + short id (mono, muted); line 2 title, two-line clamp, full text in the `title` attribute; line 3 mono meta (started · duration · tools · errors in red when > 0 · ctx). Hover uses `raised`; selected uses `selected` with an accent title and a 1px outline. `role=option` inside a `role=listbox`.
-- **Log row:** time (muted) | category tag | summary | `-> detail` (muted, omitted when empty). Running rows show a small pulsing amber dot.
+- **Log row:** time (muted) | category tag | summary | `-> detail` (muted, omitted when empty), on the row's category tint. Running rows show a small pulsing amber dot.
 - **Filter chips:** one per category with its live count; toggles with `aria-pressed`. Plus "Errors only" and "Follow running". Filtering is CSS on the log container (data attributes), never by rebuilding rows.
-- **Status bar quota:** per window `5h 68% left` + 60px meter + `resets 19:32`, then `week`, then `tools`; a `[API]` or `[est.]` tag always names the source. Estimate mode shows tokens and requests in the last 5 h, and `LIMITED until HH:mm` in red when a limit is active.
-- **Shortcuts popover:** non-modal, opened with `?`, closed with Esc. Keys: `j/k` or arrows move, Enter/Space select, `/` filter sessions, `1–6` toggle categories, `e` errors only, `f` follow running.
+- **Status bar quota:** a real button (aria-expanded). API source: per window (5h, then Week) a muted 11px label, a 96×6 meter of the remaining share, `68% left` at 13px/600, a muted relative countdown `resets in 1h 12m`; then `Tools 95%`; a `[API]` tag names the source. Estimate source: `5h used 13.4M tok · 107 req`, `[est.]`, the hint `set ZCODE_BIGMODEL_USAGE_API_KEY for % left` when unconfigured, a muted `(quota API: <error>)` when configured but failing, and red `LIMITED — resets in 1h 12m` while limited. Clicking opens a popover above the bar, right-aligned: title `ZCode quota` (+ plan level), one block per window (name, full-width meter, `% left · % used`, `resets 19:32 (in 1h 12m)`, used/total), footer `source: … · updated 12s ago`. Countdown texts re-tick at most once a minute on one shared 60 s timer; the quota DOM updates only when values change.
+- **Shortcuts popover:** non-modal, opened with `?`, closed with Esc. Keys: `j/k` or arrows move, Enter/Space select, `/` filter sessions, `b` toggle the sessions panel, `1–6` toggle categories, `e` errors only, `f` follow running.
 - **Focus:** 2px `accent` outline on every interactive element (`:focus-visible`).
 
 ## Do's and Don'ts
 
 - Do keep rendering keyed and diffed: an unchanged poll must cause zero DOM mutations in the session list and the log.
-- Do insert all server text with `textContent`; keep everything inline (no external URLs, fonts or CDNs) under the strict CSP; keep the page ≤ 40 KB.
+- Do insert all server text with `textContent`; keep everything inline (no external URLs, fonts or CDNs) under the strict CSP; keep the page ≤ 48 KB.
 - Do pair every status color with a word, and every category color with its tag text.
 - Do respect `prefers-reduced-motion`: the running pulse is the only animation and it stops there.
 - Don't add new font sizes, gradients, glass, shadows on in-flow elements, card grids, emoji or unicode glyphs as icons, or accent bars thicker than 1px.
