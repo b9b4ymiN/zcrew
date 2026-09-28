@@ -8,16 +8,16 @@ web
 
 ## Users
 
-- Primary: the developer running zcrew (a senior engineer acting as "client" to a Claude Code / Codex commander). While the commander delegates tasks to ZCode workers, they keep the dashboard open on a second screen and glance at it to know who is running, who failed, and whether something needs them.
-- Secondary: an audience watching a demo or a screen recording of zcrew (a team, a video viewer). They have never seen the tool before and must understand what the crew is doing from the screen alone.
+- Primary: the developer running zcrew (a senior engineer acting as "client" to a Claude Code / Codex commander). While the commander delegates tasks to ZCode workers, they keep the dashboard open on a second screen to check status, read what a worker is doing, and see how much ZCode quota is left.
+- Secondary (occasional): someone watching over their shoulder or a screen recording. Not a design driver; presentation-first design was tried (v0.8 seven-segment panel) and rejected on 2026-09-28 as "too presentational".
 
 ## Product Purpose
 
-`zcrew dashboard` is a local, read-only live view of ZCode worker sessions for one project directory (or all directories with `--all`). It replaces tailing `zcrew watch` in a terminal with a browser view: session list with status, and a live activity timeline for the selected session. Success means a glance answers "is anything running, stuck, or failing right now?", and in a demo the crew's work reads clearly on a large screen, without making the dashboard slower or heavier than it is today.
+`zcrew dashboard` is a local, read-only terminal-style view of ZCode worker sessions for one project directory (or all with `--all`). Success means, at a glance: which sessions are running / failed / done, how much ZCode Coding Plan quota remains and when it resets; and on reading: a session's activity is easy to scan, with each activity's type (read, edit, run, web, agent, message) and errors clearly color-coded. Readability and status beat spectacle. Performance must not drop.
 
 ## Positioning
 
-It is the only view of what zcrew's ZCode workers are doing, built from ZCode's own database, opened read-only, and served offline from 127.0.0.1. There is no cloud, no telemetry and no write path. It shows the worker side that the commander's own transcript cannot show.
+It is the only view of what zcrew's ZCode workers are doing, built from ZCode's own database, opened read-only, and served from 127.0.0.1. There is no telemetry and no write path; the only outbound call is the opt-in Z.ai quota lookup. It shows the worker side that the commander's own transcript cannot show.
 
 ## Operating Context
 
@@ -29,28 +29,31 @@ It is the only view of what zcrew's ZCode workers are doing, built from ZCode's 
 
 ## Capabilities and Constraints
 
-- Read-only by design, with no actions on workers. Stdlib-only Python server, a single self-contained HTML file, no dependencies, no CDN, no web fonts, and a strict same-origin CSP.
-- Performance must not drop: polling cost, server CPU and page responsiveness must stay at or better than the current baseline. This is a hard constraint, confirmed by the user.
-- API change policy: **undecided**. The user is unsure. Any change must be justified by monitoring value and must not add measurable cost. The existing endpoints are shared with `zcrew runs/show/watch`.
+- Read-only by design, no actions on workers. Stdlib-only Python server, single self-contained HTML file, no dependencies, no CDN, no web fonts, strict same-origin CSP.
+- Performance must not drop (hard constraint): unchanged polls cause zero DOM churn (keyed rendering, kept from v0.8); polling cost and API latency stay at the baseline in tests/bench_baseline.json.
+- API: additive changes allowed for new data (quota, activity type). Existing endpoints stay backward compatible for `zcrew runs/show/watch`.
+- Activity types (confirmed 2026-09-28): READ (Read/Grep/Glob), EDIT (Edit/Write), RUN (Bash/commands), WEB (WebFetch/WebSearch/browser & network MCP), AGENT (Agent/Todo/Task), MSG (model messages/steps); errors override with a red marker. Source: ZCode `tool_usage` (tool_name, read_only, side_effect_scope) and part tool names.
+- Quota (confirmed hybrid, 2026-09-28): if env `ZCODE_BIGMODEL_USAGE_API_KEY` is set (same name ZCode itself reads; URL override `ZCODE_BIGMODEL_USAGE_QUOTA_URL`), the server calls `GET https://api.z.ai/api/monitor/usage/quota/limit` (raw key in `authorization`, no Bearer), cached ~60 s; key never reaches the browser or logs. Parse TOKENS_LIMIT/CREDIT_LIMIT unit=3 (5 h window) and unit=6 (weekly), TIME_LIMIT (monthly tools/MCP); `percentage` is USED share, remaining = 100 - percentage; `nextResetTime` epoch ms. Without the key or on API failure: local estimate from `model_usage` tokens in the last 5 h plus the last "Usage limit reached ... reset at" event from ZCode logs. The UI always labels the source (API / est.). This is the one outbound network call; it is opt-in by setting the key.
 
 ## Brand Commitments
 
 - Name: `zcrew`, always lowercase. Tone of the existing CLI and docs: plain, factual, engineer-to-engineer.
-- The user asked for a modern terminal look designed for presenting data, one that must not look like a generic AI-made dashboard.
+- The user asked for a modern terminal that is easy to use and read, not a presentation piece, and not a generic AI-made dashboard. The v0.8 seven-segment instrument look is retired.
+- Standing preference (2026-09-28): the category standard, executed at full craft. Quality bar = VS Code (dark), Vercel / Railway deploy logs, k9s / lazygit. Conventions embraced, no novelty skin.
 
 ## Evidence on Hand
 
 - Real session data from ZCode's local db (e.g. THP-CV worker runs). There are no screenshots, testimonials or usage metrics, and none should be invented.
-- Test suite: 363 unittest tests (tests/test_dashboard.py covers the server).
+- Test suite: 373 unittest tests (tests/test_dashboard.py covers the server).
 
 ## Product Principles
 
-1. A glance is enough: status and trouble surface before detail.
-2. Legible to a stranger: a demo viewer can follow what a worker is doing without narration.
+1. Status first: running / failed / quota visible without scrolling or clicking.
+2. Readable detail: a session's activity scans like a good terminal log; type and outcome are clear from color plus a text tag.
 3. Never heavier: every feature earns its cost against the performance baseline.
-4. Truthful and read-only: show exactly what the db says, never infer or act.
-5. Local and private: nothing leaves 127.0.0.1.
+4. Truthful: show exactly what the db or API says; label estimates as estimates.
+5. Local by default: nothing leaves 127.0.0.1 unless the user sets the quota key.
 
 ## Accessibility & Inclusion
 
-Status must never be conveyed by color alone. The dashboard must stay readable at projector/recording scale and respect `prefers-reduced-motion`. Thai and English text must render correctly in the same line.
+Status must never be conveyed by color alone. The dashboard must stay readable on a second monitor at normal viewing distance and respect `prefers-reduced-motion`. Thai and English text must render correctly in the same line.
