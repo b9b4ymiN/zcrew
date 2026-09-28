@@ -314,6 +314,30 @@ class DashboardTest(unittest.TestCase):
         self.assertIn("max-height: 40vh", text)                # rack keeps its own scroll
         self.assertIn("min-height: 60vh", text)                # timeline floor on mobile
 
+    # --- page source rules: present mode -------------------------------------------
+
+    def test_page_has_present_mode_toggle(self) -> None:
+        text = (SCRIPTS / "dashboard.html").read_text(encoding="utf-8")
+        self.assertIn('<button id="present-btn" type="button" aria-pressed="false">Present</button>', text)
+        self.assertIn('setAttribute("aria-pressed"', text)     # aria-pressed tracks the state
+        self.assertIn('"#present"', text)                      # hash enters present mode on load
+        self.assertIn("history.replaceState", text)            # toggling adds no history entries
+        self.assertIn('ev.key === "Escape"', text)             # Esc exits present mode
+        self.assertIn("ev.key !== \"p\" && ev.key !== \"P\"", text)  # p/P toggles
+        self.assertIn("ev.ctrlKey || ev.metaKey || ev.altKey", text)  # modifier chords ignored
+        self.assertIn("t.tagName === \"INPUT\" || t.tagName === \"TEXTAREA\"", text)  # not while typing
+
+    def test_page_present_mode_css(self) -> None:
+        text = (SCRIPTS / "dashboard.html").read_text(encoding="utf-8")
+        self.assertIn("body.present #rackwrap { display: none; }", text)  # rack hidden, detail full width
+        self.assertIn("body.present main { grid-template-columns: 1fr; }", text)
+        self.assertIn("clamp(40px, 5.2vw, 128px)", text)                   # bigger strip cells, one row
+        self.assertIn("body.present #dh-ros .cells { --ch: clamp(40px, 4.6vw, 72px); }", text)
+        self.assertIn("body.present #timeline { font-size: 16px; }", text)  # allowed scale step
+        self.assertIn(":nth-last-child(-n+30)", text)                     # only newest 30 rows visible
+        self.assertIn("body.present .dh-sub { display: none; }", text)     # session id + dir hidden
+        self.assertIn("body.present #scope span { display: none; }", text)  # scope path hidden
+
     # --- entry point --------------------------------------------------------------------
 
     def test_run_port_in_use_message(self) -> None:

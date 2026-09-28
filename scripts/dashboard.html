@@ -37,6 +37,13 @@
   #scope { display: flex; gap: 10px; color: var(--muted); font-size: 11px;
            padding: 7px 0 10px; }
   #scope-path { font-family: var(--mono); word-break: break-all; min-width: 0; }
+  #present-btn { margin-left: auto; flex: 0 0 auto; font: inherit; font-size: 11px;
+                 letter-spacing: .14em; text-transform: uppercase; color: var(--muted);
+                 background: none; border: 1px solid var(--hair); padding: 2px 10px;
+                 cursor: pointer; }
+  #present-btn:hover { color: var(--text); border-color: var(--muted); }
+  #present-btn:focus-visible { outline: 1px solid var(--amber); outline-offset: 1px; }
+  #present-btn[aria-pressed="true"] { color: var(--amber); border-color: var(--amber); }
 
   /* --- seven-segment cells ---------------------------------------------------
      A cell is 7 absolutely-placed <i> segments in order a,b,c,d,e,f,g. Shapes
@@ -141,6 +148,27 @@
   .act .summary { flex: 1 1 55%; min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
   .act .detail { flex: 1 1 45%; min-width: 0; color: var(--muted); overflow-wrap: anywhere; }
 
+  /* --- present mode: the demo view follows the runner ------------------------
+     One CSS class on <body>; every render path stays untouched. The rack and the
+     low-value id/path text drop out, the readouts grow, and the timeline keeps
+     only its newest rows visible (they all stay in the DOM). */
+  body.present #rackwrap { display: none; }
+  body.present main { grid-template-columns: 1fr; }
+  body.present #scope span { display: none; }  /* the scope line keeps only the button */
+  body.present .dh-sub { display: none; }       /* session id + directory: demo noise */
+  body.present .dh-title { white-space: normal; overflow-wrap: anywhere;
+                           display: -webkit-box; -webkit-line-clamp: 2;
+                           -webkit-box-orient: vertical; overflow: hidden; }
+  body.present #dh-ros .cells { --ch: clamp(40px, 4.6vw, 72px); }
+  body.present #timeline { font-size: 16px; }
+  body.present .act:not(:nth-last-child(-n+30)) { display: none; }  /* newest 30 only */
+  .act .detail:empty { display: none; }  /* an empty detail must not reserve 45% of the row */
+
+  @media (min-width: 761px) {  /* big strip cells only where they cannot overflow a row */
+    body.present #strip .ro { flex: 1 1 0; }  /* one row: 5.2vw keeps a 4-cell clock inside a sixth with room */
+    body.present #strip .cells { --ch: clamp(40px, 5.2vw, 128px); }
+  }
+
   @media (min-width: 900px) {
     #strip .ro { flex: 1 1 0; }  /* equal shares across the full-width bezel */
   }
@@ -164,6 +192,7 @@
     .dh-title { white-space: normal; }
     #strip .ro { flex-basis: 30%; }  /* wraps 3 + 3: four 40px readouts overflow a phone row */
     #strip .cells { --ch: 32px; }    /* a 4-cell clock must fit a third of 343px */
+    body.present #timeline { font-size: 13px; }  /* 16px leaves ~15 chars per line on a phone */
   }
   @media (prefers-reduced-motion: reduce) {
     * { animation: none !important; transition: none !important; }
@@ -193,7 +222,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
     <div class="ro" id="ro-elapsed"></div>
     <div class="ro" id="ro-clock"></div>
   </div>
-  <div id="scope"><span>scope</span><span id="scope-path"></span></div>
+  <div id="scope"><span>scope</span><span id="scope-path"></span><button id="present-btn" type="button" aria-pressed="false">Present</button></div>
 </header>
 <main>
   <section id="rackwrap">
@@ -355,6 +384,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
   var rackEl = byId("rack"), rackEmptyEl = byId("rackempty");
   var noselEl = byId("nosel"), dhEl = byId("dh"), timelineEl = byId("timeline");
   var dhTitle = byId("dh-title"), dhSt = byId("dh-st"), dhId = byId("dh-id"), dhDir = byId("dh-dir");
+  var presentBtn = byId("present-btn");
 
   var roRun = makeRO(byId("ro-running"), 2, -1, "gn", "Running");
   var roFail = makeRO(byId("ro-failed"), 2, -1, "rd", "Failed");
@@ -373,6 +403,8 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
   var rackRows = new Map();              // session id -> row record (keyed diff)
   var actRows = new Map();               // activity key -> row element
   var noKeySeq = 0;
+  var presentOn = location.hash === "#present";  // a demo tab can be bookmarked
+  var savedSelId = null;                 // pre-present selection, restored on exit
 
   function wallNow() {  // API now_ms advanced locally between polls
     return lastNowMs ? lastNowMs + (Date.now() - lastNowAt) : Date.now();
@@ -595,7 +627,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 
   function appendActivity(items) {
     if (!items.length) { return; }
-    var stick = nearBottom();  // stick to bottom only when already near it
+    var stick = presentOn || nearBottom();  // present mode always pins the newest row
     for (var i = 0; i < items.length; i++) {
       var a = items[i];
       var key = a.key || ("_nokey_" + noKeySeq++);
@@ -640,6 +672,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
       selSummary = data.summary || null;
       setHead(selSummary);
       appendActivity(data.activity || []);
+      if (presentOn) { timelineEl.scrollTop = timelineEl.scrollHeight; }  // head reflow can unpin it
       cursor = data.cursor || null;
     }, function (err) {
       showError(err);
@@ -658,6 +691,48 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
     select((newestRunning || sessList[0]).id);
   }
 
+  // --- present mode ---------------------------------------------------------------------
+
+  // The demo view shows the newest running worker (the list is newest first) and
+  // switches when a newer one starts; with nothing running it keeps the selection.
+  function presentFollow() {
+    if (!presentOn) { return; }
+    for (var i = 0; i < sessList.length; i++) {
+      if (sessList[i].status === "running") {
+        if (sessList[i].id !== selectedId) { select(sessList[i].id); }
+        return;
+      }
+    }
+  }
+
+  function setPresent(on) {
+    if (on === presentOn) { return; }
+    presentOn = on;
+    document.body.classList.toggle("present", on);
+    presentBtn.setAttribute("aria-pressed", on ? "true" : "false");
+    history.replaceState(null, "", on ? "#present" : location.pathname + location.search);
+    if (on) {
+      savedSelId = selectedId;  // the user's own selection comes back on exit
+      presentFollow();
+    } else if (savedSelId && savedSelId !== selectedId && sessById.has(savedSelId)) {
+      select(savedSelId);
+    }
+    timelineEl.scrollTop = timelineEl.scrollHeight;
+  }
+
+  document.addEventListener("keydown", function (ev) {
+    if (ev.key === "Escape") {
+      if (presentOn) { setPresent(false); }
+      return;
+    }
+    if (ev.key !== "p" && ev.key !== "P") { return; }
+    if (ev.ctrlKey || ev.metaKey || ev.altKey) { return; }
+    var t = ev.target;
+    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) { return; }
+    setPresent(!presentOn);
+  });
+  presentBtn.addEventListener("click", function () { setPresent(!presentOn); });
+
   function pollSessions() {
     fetchJson("/api/sessions?limit=" + SESSIONS_LIMIT).then(function (data) {
       errorEl.hidden = true;
@@ -673,6 +748,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
       renderStripSel();
       tickClock();
       autoSelect();
+      presentFollow();
     }, function (err) {
       showError(err);
       setStripUnset(true);
@@ -698,6 +774,10 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
     }
   }, 1000);
 
+  if (presentOn) {  // #present bookmark: enter the mode before first paint
+    document.body.classList.add("present");
+    presentBtn.setAttribute("aria-pressed", "true");
+  }
   setHead(null);
   tickClock();
   pollSessions();
