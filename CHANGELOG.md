@@ -2,6 +2,25 @@
 
 All notable changes to the Claude Commander × ZCode Executor Kit are recorded here.
 
+## Unreleased
+
+A dashboard you can read at a glance.
+
+### Added
+
+- `zcrew dashboard` shows the remaining ZCode Coding Plan quota in its status bar (5-hour window, weekly, and monthly tools/MCP), with the reset time.
+  - With `ZCODE_BIGMODEL_USAGE_API_KEY` set (the same variable ZCode reads; `ZCODE_BIGMODEL_USAGE_QUOTA_URL` overrides the URL), the server asks Z.ai's quota API, caches the answer for 60 s, and labels it `[API]`. This is the dashboard's only outbound call, and it happens only when the key is set.
+  - The key never reaches the browser, a response, or a log. Redirects are refused, and a URL override must be https (plain http only to loopback).
+  - Without a key, or when the API fails, it shows a local estimate labelled `[est.]`: tokens and requests in the last 5 hours, and `LIMITED until HH:mm` after a rate limit.
+  - New endpoint: `GET /api/quota`.
+- Every activity row now has a `category` field: `read`, `edit`, `run`, `web`, `agent` or `msg`. The dashboard colors and filters by it. The field is additive, so `zcrew runs/show/watch` are unchanged.
+- `tests/bench_dashboard.py` measures the dashboard endpoints so changes can be compared against `tests/bench_baseline.json`.
+
+### Changed
+
+- The dashboard page is redesigned as a developer console: session list on the left, a deploy-log style activity stream with category tags, filter chips, "Errors only" and "Follow running", and a status bar. Keyboard: `j/k`, `/`, `1–6`, `e`, `f`, `?`. The design is recorded in `DESIGN.md`.
+- An unchanged poll no longer rebuilds the page. DOM mutations in the list and log dropped from about 633 per 10 s to 0.
+
 ## 0.7.0 — 2026-09-27
 
 Live view of the crew.
