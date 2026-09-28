@@ -19,6 +19,8 @@ A dashboard you can read at a glance.
 ### Changed
 
 - The dashboard page is redesigned as a developer console: session list on the left, a deploy-log style activity stream with category tags, filter chips, "Errors only" and "Follow running", and a status bar. Keyboard: `j/k`, `/`, `1–6`, `e`, `f`, `?`. The design is recorded in `DESIGN.md`.
+- Quota in the status bar shows what is left: a colored meter per window (green, amber below 20%, red below 10%), "68% left" and a reset countdown. Clicking it opens a detail panel with the 5-hour, weekly and monthly tools windows, the source and when it was last updated. On narrow screens the status bar stays pinned to the bottom.
+- The session sidebar can be hidden with the title-bar button or `b`, and the choice is remembered. Log rows are lightly tinted by activity type, and scrollbars match the dark theme.
 - An unchanged poll no longer rebuilds the page. DOM mutations in the list and log dropped from about 633 per 10 s to 0.
 
 ## 0.7.0 — 2026-09-27
