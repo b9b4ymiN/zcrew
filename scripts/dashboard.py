@@ -86,12 +86,13 @@ def _is_not_found(message: str) -> bool:
     return "no ZCode session matches" in message or "ambiguous" in message or "empty session id" in message
 
 
-def _activity_dict(cli: ModuleType, act: Any) -> dict[str, Any]:
+def _activity_dict(cli: ModuleType, za: ModuleType, act: Any) -> dict[str, Any]:
     """An Activity as a dict plus the display fields the page renders."""
     out = asdict(act)
     out["time"] = cli._hms(act.at_ms)
     out["icon"] = cli.ICONS.get(act.kind, "*")
     out["label"] = cli.LABELS.get(act.kind, act.kind)
+    out["category"] = za.activity_category(act.kind, act.tool)
     return out
 
 
@@ -206,7 +207,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         self._json(200, {
             "summary": asdict(summary),
-            "activity": [_activity_dict(st.cli, a) for a in activities],
+            "activity": [_activity_dict(st.cli, st.za, a) for a in activities],
             "cursor": cursor,
         })
 

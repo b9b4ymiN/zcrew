@@ -537,6 +537,72 @@ class ZCodeActivityTest(unittest.TestCase):
         self.assertLessEqual(len(acts[0].summary), za.COMMAND_CHARS)
         self.assertTrue(acts[0].summary.endswith("..."))
 
+    def test_activity_category_rules(self) -> None:
+        self.assertEqual(za.CATEGORIES, ("read", "edit", "run", "web", "agent", "msg"))
+        cases = [
+            # kind alone decides these; rule 1 wins over any tool name
+            ("message", "Bash", "msg"),
+            ("step", None, "msg"),
+            ("turn_end", None, "msg"),
+            ("file_read", None, "read"),
+            ("search", None, "read"),
+            ("file_edit", None, "edit"),
+            ("file_write", None, "edit"),
+            ("command", None, "run"),
+            # tool names seen in real databases (kind is "tool" for these)
+            ("tool", "Bash", "run"),
+            ("tool", "Read", "read"),
+            ("tool", "Edit", "edit"),
+            ("tool", "Write", "edit"),
+            ("tool", "TodoWrite", "agent"),
+            ("tool", "WebFetch", "web"),
+            ("tool", "WebSearch", "web"),
+            ("tool", "Agent", "agent"),
+            ("tool", "TaskOutput", "run"),
+            ("tool", "TaskStop", "run"),
+            ("tool", "AskUserQuestion", "agent"),
+            ("tool", "SendMessage", "agent"),
+            ("tool", "Skill", "agent"),
+            ("tool", "CronCreate", "agent"),
+            ("tool", "ListModels", "agent"),
+            ("tool", "GetWorkflowRun", "agent"),
+            ("tool", "RespondToCoordinator", "agent"),
+            ("tool", "mcp__local-web-search__searxng_web_search", "web"),
+            ("tool", "mcp__local-web-search__web_url_read", "web"),
+            ("tool", "mcp__playwright__browser_navigate", "web"),
+            ("tool", "mcp__plugin_playwright_playwright__browser_click", "web"),
+            ("tool", "mcp__youtube-research__get_transcript", "web"),
+            ("tool", "mcp__tradingview__yahoo_price", "web"),
+            ("tool", "mcp__plugin_document-skills_image_search__search_image", "web"),
+            # "search"/"url" tools of local knowledge servers are not web
+            ("tool", "mcp__brain__wiki_search", "agent"),
+            ("tool", "mcp__brain__brain_capture", "agent"),
+            ("tool", "mcp__codegraph__codegraph_search", "agent"),
+            ("tool", "mcp__agentmemory__memory_recall", "agent"),
+            ("tool", "mcp__alexandria__get_document", "agent"),
+            ("tool", "mcp__obsidian__search", "agent"),
+            ("tool", "mcp__node_repl__js", "agent"),
+            ("tool", "mcp__computer-use__wait", "agent"),
+            # tool branches that normally arrive via their own kind
+            ("tool", "Grep", "read"),
+            ("tool", "Glob", "read"),
+            ("tool", "LS", "read"),
+            ("tool", "NotebookRead", "read"),
+            ("tool", "MultiEdit", "edit"),
+            ("tool", "NotebookEdit", "edit"),
+            ("tool", "PowerShell", "run"),
+            ("tool", "BashOutput", "run"),
+            ("tool", "KillShell", "run"),
+            # unknowns fall through to agent
+            ("tool", None, "agent"),
+            ("tool", "SomeBrandNewTool", "agent"),
+            ("tool", "mcp__future_server__do_thing", "agent"),
+        ]
+        for kind, tool_name, expected in cases:
+            with self.subTest(kind=kind, tool=tool_name):
+                self.assertIn(expected, za.CATEGORIES)
+                self.assertEqual(za.activity_category(kind, tool_name), expected)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -69,6 +69,22 @@ FILE_KINDS = {
 SHELL_TOOLS = {"Bash", "PowerShell", "Shell"}
 SEARCH_TOOLS = {"Grep", "Glob"}
 
+# Activity categories for dashboard color-coding; every activity maps to one.
+CATEGORIES = ("read", "edit", "run", "web", "agent", "msg")
+
+READ_TOOLS = {"Read", "Grep", "Glob", "LS", "NotebookRead"}
+EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+RUN_TOOLS = {"Bash", "PowerShell", "TaskOutput", "TaskStop", "BashOutput", "KillShell"}
+WEB_TOOLS = {"WebFetch", "WebSearch"}
+# A mcp__ tool whose full name carries one of these (lowercase) is web access,
+# except servers serving local knowledge bases: their wiki_search/codegraph_search/
+# memory_recall style tools contain "search"/"url" without touching the network.
+WEB_NAME_HINTS = (
+    "playwright", "browser", "web", "search", "fetch", "url", "http", "youtube",
+    "tradingview", "image_search",
+)
+LOCAL_MCP_SERVERS = {"brain", "codegraph", "agentmemory", "alexandria", "obsidian"}
+
 Db = Union[str, "os.PathLike[str]", sqlite3.Connection]
 
 
@@ -101,6 +117,30 @@ class Activity:
     tool: str | None = None
     detail: str | None = None  # command outcome / error line
     key: str = ""  # stable id: an updated item re-uses its key
+
+
+def activity_category(kind: str, tool: str | None) -> str:
+    """One of CATEGORIES for an activity; ordered rules, first match wins.
+
+    Status never matters here (the UI shows it separately); anything unknown
+    falls to "agent".
+    """
+    if kind in ("message", "step", "turn_end"):
+        return "msg"
+    if kind in ("file_read", "search") or tool in READ_TOOLS:
+        return "read"
+    if kind in ("file_edit", "file_write") or tool in EDIT_TOOLS:
+        return "edit"
+    if kind == "command" or tool in RUN_TOOLS:
+        return "run"
+    if tool in WEB_TOOLS:
+        return "web"
+    if tool is not None and tool.startswith("mcp__"):
+        if tool[len("mcp__"):].split("__", 1)[0] not in LOCAL_MCP_SERVERS:
+            name = tool.lower()
+            if any(hint in name for hint in WEB_NAME_HINTS):
+                return "web"
+    return "agent"
 
 
 # --- database access --------------------------------------------------------------------

@@ -231,6 +231,41 @@ class DashboardTest(unittest.TestCase):
         self.assertEqual((row["key"], row["status"]), (pid, "completed"))  # same key, new status
         self.assertEqual(row["detail"], "2 failed, 5 passed in 1s")
 
+    def test_activity_rows_carry_category(self) -> None:
+        fx = self.fx
+        sid = "sess_cats"
+        fx.session(sid, SANDBOX, "cats", 1_000, 1_000)
+        fx.message("ma", sid, "assistant", 1_000)
+        t = 1_000
+        for name in ("Read", "Bash", "Edit", "TodoWrite", "WebFetch", "Agent",
+                     "mcp__brain__wiki_search", "mcp__playwright__browser_navigate"):
+            t += 10
+            fx.part(sid, "ma", tool(name, "completed", {"file_path": SANDBOX + r"\x.py"}), t)
+        t += 10
+        fx.part(sid, "ma", {"type": "text", "text": "done", "time": {"start": 1, "end": 2}}, t)
+        fx.turn(sid, "turn_1", "completed", 1_000, t + 10, tools=8, errors=0)
+        srv = self.serve()
+        status, _, data = srv.get_json(f"/api/sessions/{sid}/activity")
+        self.assertEqual(status, 200)
+        cats = srv.state.za.CATEGORIES
+        rows = data["activity"]
+        self.assertEqual(len(rows), 10)
+        for row in rows:
+            with self.subTest(key=row["key"]):
+                self.assertIn(row["category"], cats)
+        by_tool = {row["tool"]: row["category"] for row in rows if row.get("tool")}
+        self.assertEqual(by_tool["Read"], "read")
+        self.assertEqual(by_tool["Edit"], "edit")
+        self.assertEqual(by_tool["Bash"], "run")
+        self.assertEqual(by_tool["TodoWrite"], "agent")
+        self.assertEqual(by_tool["WebFetch"], "web")
+        self.assertEqual(by_tool["Agent"], "agent")
+        self.assertEqual(by_tool["mcp__brain__wiki_search"], "agent")
+        self.assertEqual(by_tool["mcp__playwright__browser_navigate"], "web")
+        by_kind = {row["kind"]: row["category"] for row in rows}
+        self.assertEqual(by_kind["message"], "msg")
+        self.assertEqual(by_kind["turn_end"], "msg")
+
     def test_activity_out_of_scope_session_404(self) -> None:
         self.seed_completed("sess_eeee5-elsewhere", OTHER_DIR, at=NOW - 50_000)
         self.seed_completed("sess_aaaa1111-done", SANDBOX, at=NOW - 60_000)
