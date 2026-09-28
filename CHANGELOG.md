@@ -2,7 +2,7 @@
 
 All notable changes to the Claude Commander × ZCode Executor Kit are recorded here.
 
-## Unreleased
+## 0.8.0 — 2026-09-28
 
 A dashboard you can read at a glance.
 
