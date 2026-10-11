@@ -691,13 +691,25 @@ class TaskStats:
     elapsed_ms: int
     tool_calls: int
     errors: int
+    tokens: int | None = None  # every turn's tokens (re-sent context included); None on builds without them
+    context_tokens: int | None = None  # context size at the last step
 
 
 _TASK_TURN_SQL = (
     "SELECT session_id, COUNT(*), MIN(started_at), MAX(COALESCE(completed_at, started_at)),"
-    " COALESCE(SUM(duration_ms), 0), SUM(CASE WHEN status = 'completed' THEN 0 ELSE 1 END)"
+    " COALESCE(SUM(duration_ms), 0), SUM(CASE WHEN status = 'completed' THEN 0 ELSE 1 END), {tokens}"
     " FROM turn_usage WHERE session_id IN ({ids}) GROUP BY session_id"
 )
+
+
+def _token_sql(conn: sqlite3.Connection) -> str:
+    """The turn_usage token sum this ZCode build allows (older ones lack the columns)."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(turn_usage)")}
+    if "computed_total_tokens" in cols:
+        return "SUM(computed_total_tokens)"
+    if {"input_tokens", "output_tokens"} <= cols:
+        return "SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0))"
+    return "NULL"
 
 
 def task_stats(
@@ -718,15 +730,16 @@ def task_stats(
     ]
     turns: dict[str, tuple[Any, ...]] = {}
     with _session(db) as conn:
+        sql = _TASK_TURN_SQL.replace("{tokens}", _token_sql(conn))
         for chunk in _chunks([s.id for s in summaries], SCAN_CHUNK):
             ids = ",".join("?" * len(chunk))
-            for sid, *rest in conn.execute(_TASK_TURN_SQL.replace("{ids}", ids), chunk):
+            for sid, *rest in conn.execute(sql.replace("{ids}", ids), chunk):
                 turns[sid] = tuple(rest)
     out: list[TaskStats] = []
     for s in summaries:
         if s.id not in turns:
             continue
-        count, first, last, work, failed = turns[s.id]
+        count, first, last, work, failed, tokens = turns[s.id]
         started, ended = int(first or 0), int(last or 0)
         out.append(TaskStats(
             id=s.id,
@@ -741,6 +754,8 @@ def task_stats(
             elapsed_ms=max(0, ended - started),
             tool_calls=s.tool_calls,
             errors=s.errors,
+            tokens=int(tokens) if tokens is not None else None,
+            context_tokens=s.last_context_tokens,
         ))
     return out
 

@@ -236,6 +236,12 @@ zcrew stats                 # สรุป 7 วันล่าสุด: เว
 zcrew gate                  # ตรวจรับแบบอัตโนมัติ: แก้นอก SCOPE? แตะไฟล์ DO NOT? เทสต์ถูกลบ? VERIFY ผ่านไหม
 ```
 
+ผู้ใช้ Claude Code ติดตั้ง mod ได้: Claude ไม่ต้องคอยเช็กช่างทุกนาที (mod เฝ้าแทนและปลุก Claude เมื่องานจบ พร้อมผลตรวจ) และมีแถบเหนือช่องพิมพ์บอกว่าช่างทำอะไรอยู่ ถึงไหนแล้ว
+
+```text
+/plugin install zcrew --marketplace b9b4ymiN/zcrew
+```
+
 เพิ่ม `--all` ถ้าอยากดูทุก project พร้อมกัน ตัวอย่างที่เห็นใน `zcrew watch`:
 
 ```text

@@ -1,0 +1,14 @@
+{
+  "name": "zcrew",
+  "description": "zcrew add-ons for Claude Code: the zcrew mod that watches ZCode worker runs.",
+  "owner": {
+    "name": "b9b4ymiN"
+  },
+  "plugins": [
+    {
+      "name": "zcrew",
+      "source": "./mod/zcrew",
+      "description": "Watches ZCode worker runs for Claude Code: waits so the model does not, shows progress beside the prompt, runs zcrew gate and wakes Claude when work is ready to review."
+    }
+  ]
+}

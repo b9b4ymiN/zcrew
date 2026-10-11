@@ -533,6 +533,7 @@ class StatsCliTest(unittest.TestCase):
         self.assertIn("failed tasks     1 of 3, 30.0s of ZCode time", out)
         self.assertIn("ZCode share      64% of elapsed time", out)
         self.assertIn("workers busy     avg 1.0 at a time (peak 2)", out)
+        self.assertNotIn("ZCode tokens", out)  # no token columns filled in this fixture
         row = next(line for line in lines if line.startswith("sess_three"))
         self.assertEqual(row.split()[3:7], ["4m00s", "2m00s", "2m00s", "3"])
 
@@ -560,6 +561,15 @@ class StatsCliTest(unittest.TestCase):
         code, out, _ = self.run_cli(stats_args())
         self.assertEqual(code, 0)
         self.assertIn("no worker tasks in the last 7 days", out)
+
+    def test_token_line(self) -> None:
+        self.seed()
+        self.fx.exec("UPDATE turn_usage SET computed_total_tokens = 1200000 WHERE session_id = 'sess_one'")
+        self.fx.exec("UPDATE turn_usage SET computed_total_tokens = 1000000 WHERE session_id = 'sess_three'")
+        _, out, _ = self.run_cli(stats_args())
+        self.assertIn("ZCode tokens     avg 2.1M per task", out)  # (1.2M + 3 turns x 1.0M) / 2 tasks with tokens
+        self.assertEqual(cli._fmt_tokens(950), "950")
+        self.assertEqual(cli._fmt_tokens(138_000), "138k")
 
     def test_only_unfinished(self) -> None:
         summary = cli.summarize_tasks([SimpleNamespace(status="running", turns=1, tool_calls=2, errors=0,

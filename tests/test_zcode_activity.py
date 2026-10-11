@@ -628,6 +628,28 @@ class TaskStatsTest(unittest.TestCase):
         self.assertEqual((task.started_ms, task.ended_ms), (NOW - 100_000, NOW - 10_000))
         self.assertEqual(task.status, "completed")
 
+    def test_tokens_and_context(self) -> None:
+        fx = self.fx
+        fx.session("sess_tok", SANDBOX, "Tokens", NOW - 9_000, NOW - 1_000)
+        fx.turn("sess_tok", "t1", "completed", NOW - 9_000, NOW - 5_000)
+        fx.turn("sess_tok", "t2", "completed", NOW - 4_000, NOW - 1_000)
+        fx.exec("UPDATE turn_usage SET computed_total_tokens = 1500 WHERE session_id = 'sess_tok'")
+        fx.message("m_tok", "sess_tok", "assistant", NOW - 2_000)
+        fx.part("sess_tok", "m_tok", {"type": "step-finish", "reason": "stop", "tokens": {"total": 42000}}, NOW - 2_000)
+        [task] = za.task_stats(self.db, cwd=SANDBOX, since_ms=0, now_ms=NOW)
+        self.assertEqual((task.tokens, task.context_tokens), (3000, 42000))
+
+    def test_token_sql_fits_the_schema(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE turn_usage (session_id TEXT)")
+        self.assertEqual(za._token_sql(conn), "NULL")
+        conn.execute("ALTER TABLE turn_usage ADD COLUMN input_tokens INTEGER")
+        conn.execute("ALTER TABLE turn_usage ADD COLUMN output_tokens INTEGER")
+        self.assertIn("input_tokens", za._token_sql(conn))
+        conn.execute("ALTER TABLE turn_usage ADD COLUMN computed_total_tokens INTEGER")
+        self.assertEqual(za._token_sql(conn), "SUM(computed_total_tokens)")
+        conn.close()
+
     def test_skips_subagents_turnless_old_and_other_dirs(self) -> None:
         fx = self.fx
         fx.session("sess_keep", SANDBOX, "Keep", NOW - 9_000, NOW - 1_000)

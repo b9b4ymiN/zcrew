@@ -345,12 +345,20 @@ def summarize_tasks(tasks: list[Any]) -> dict[str, Any]:
         "elapsed_median_ms": None,
         "work_median_ms": None,
         "zcode_share": None,
+        "tokens_avg": None,
+        "context_avg": None,
         "busy_avg": None,
         "busy_peak": None,
         "tool_calls": sum(t.tool_calls for t in done),
         "errors": sum(t.errors for t in done),
         "failed_turns": sum(t.failed_turns for t in done),
     }
+    tokens = [t.tokens for t in done if getattr(t, "tokens", None) is not None]
+    if tokens:
+        summary["tokens_avg"] = int(sum(tokens) / len(tokens))
+    contexts = [t.context_tokens for t in done if getattr(t, "context_tokens", None) is not None]
+    if contexts:
+        summary["context_avg"] = int(sum(contexts) / len(contexts))
     busy = concurrency(tasks)
     if busy:
         summary.update(busy_avg=round(busy[0], 3), busy_peak=busy[1])
@@ -365,6 +373,12 @@ def summarize_tasks(tasks: list[Any]) -> dict[str, Any]:
             zcode_share=round(min(1.0, sum(t.work_ms for t in done) / elapsed), 3) if elapsed else None,
         )
     return summary
+
+
+def _fmt_tokens(n: int) -> str:
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    return f"{n / 1000:.0f}k" if n >= 1000 else str(n)
 
 
 def _summary_lines(s: dict[str, Any]) -> list[str]:
@@ -385,6 +399,11 @@ def _summary_lines(s: dict[str, Any]) -> list[str]:
     if s["zcode_share"] is not None:
         lines.append(f"ZCode share      {round(100 * s['zcode_share'])}% of elapsed time"
                      " (the rest is between turns: commander review and corrections)")
+    if s["tokens_avg"] is not None:
+        line = f"ZCode tokens     avg {_fmt_tokens(s['tokens_avg'])} per task"
+        if s["context_avg"] is not None:
+            line += f" · final context avg {_fmt_tokens(s['context_avg'])}"
+        lines.append(line)
     if s["busy_avg"] is not None:
         lines.append(f"workers busy     avg {s['busy_avg']:.1f} at a time (peak {s['busy_peak']})")
     lines.append(f"tool errors      {s['errors']} in {s['tool_calls']} tool calls"

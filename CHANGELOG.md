@@ -6,11 +6,20 @@ All notable changes to the Claude Commander × ZCode Executor Kit are recorded h
 
 ### Added
 
+- **zcrew mod for Claude Code** (`mod/zcrew/`, install with `/plugin install zcrew --marketplace b9b4ymiN/zcrew`).
+  - Hands-free waiting: while a run works, `agent-wait` is answered at once with a note telling Claude to end its turn (two quick answers per run at most, then waits block as before). The mod observes each run every 15 s over the same MCP connection, with no model call; when runs end it runs `zcrew gate <run> --json` and wakes Claude with one `[zcrew]` prompt carrying the results, plus a native notification.
+  - Always in view: a band above the prompt (summary, then only the runs that need someone: gate failed, near the time box, waiting for review), a status-line count, and a sidebar pane that opens by itself in the fullscreen layout (`/zcrew` or `[details]` elsewhere). Thai by default (`language` option).
+  - Thin by design: the logic stays in the `zcrew` CLI; the mod calls it and draws.
+- `zcrew stats` shows `ZCode tokens` per task (from `turn_usage`, when the ZCode build records them) and the average final context.
 - **Time box.** A worker run that is still going after `wrapUpSeconds` (new config key, default 1200; 0 turns it off; always at least 120 s before the run's own timeout) gets one `interrupt` asking it to stop experimenting and write its REPORT, instead of being cancelled with nothing to show. The first prompt of a thread also gets a short time-box notice (open-ended tasks: at most 3 approaches, then report). A `TIMEBOX: 40m` line in a contract overrides the default. Implemented in the bridge shim (`bridge_compat.patch_run_hooks`), so it works for Claude Code and Codex alike.
 - **`zcrew gate [RUN|THREAD]`** (review gate, warn mode). At `agent-start` the shim records the worker contract (SCOPE, DO NOT, VERIFY, ACCEPTANCE CRITERIA), the git base commit and the files already modified, in `~/.zcode-commander/gate/`. `zcrew gate` then checks what a program can check: changed files against the `backticked` SCOPE and DO NOT patterns, removed tests / skip markers / deleted test files (warning), and every `backticked` VERIFY command (full output to a log file, only the failing lines printed). Acceptance criteria written as plain text are listed for the reviewer's judgment, and a failing check comes with a draft correction ("round N of `maxCorrectionRounds`"). `--accept` / `--reject` record the reviewer's verdict (accepting a failed check needs `--override "reason"`); `--self` is the same check for a worker, recording nothing.
   - `agent-start` results carry a `gate` hint (and warn when the contract lacks sections); `agent-close` warns while no verdict exists. Nothing is blocked. `gateMode: "off"` or `ZCODE_COMMANDER_RUN_HOOKS=off` disables the hooks.
 - `zcrew stats` shows `workers busy` (average and peak number of tasks open at once).
 - New config keys `wrapUpSeconds` and `gateMode` (validated by `zcrew config`).
+
+### Changed
+
+- `policy/COMMANDER.md`: `zcrew gate` is the evidence step (its VERIFY run counts as the commander's own, so the same commands are not run twice; the diff is still read for the judgment criteria) and decisions are recorded with `--accept` / `--reject`; with the zcrew mod, a `[zcrew]` note means end the turn instead of polling; contracts write SCOPE / DO NOT paths and VERIFY commands in backticks, and open-ended tasks get a stop rule.
 
 ### Fixed
 

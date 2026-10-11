@@ -1,0 +1,34 @@
+{
+  "name": "zcrew",
+  "version": "0.1.0",
+  "author": { "name": "b9b4ymiN" },
+  "description": "Watches ZCode worker runs for Claude Code: waits so the model does not, shows progress beside the prompt, runs zcrew gate and wakes Claude when work is ready to review.",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "language": {
+      "type": "string",
+      "title": "Language",
+      "description": "Language of the band, pane and notifications (Thai or English).",
+      "default": "th",
+      "options": ["th", "en"]
+    },
+    "handsFree": {
+      "type": "boolean",
+      "title": "Hands-free waiting",
+      "description": "Answer agent-wait at once and wake Claude when a run ends, instead of letting the model poll every minute.",
+      "default": true
+    },
+    "python": {
+      "type": "string",
+      "title": "Python command",
+      "description": "Python used to run zcrew (python on Windows, python3 elsewhere).",
+      "default": "python"
+    },
+    "zcrewScript": {
+      "type": "string",
+      "title": "zcrew.py path",
+      "description": "Full path of zcrew.py; empty means ZCREW_HOME or ~/.zcrew, then src/scripts/zcrew.py.",
+      "default": ""
+    }
+  }
+}
