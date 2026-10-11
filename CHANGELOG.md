@@ -2,7 +2,9 @@
 
 All notable changes to the Claude Commander × ZCode Executor Kit are recorded here.
 
-## Unreleased
+## 0.9.0 — 2026-10-11
+
+See where the time of each worker task goes.
 
 ### Added
 
