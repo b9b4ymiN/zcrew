@@ -661,6 +661,90 @@ def session_summary(db: Db, session_id: str, *, now_ms: int | None = None) -> Se
         return _summarize_many(conn, [row], now)[0]
 
 
+# --- task stats -------------------------------------------------------------------------
+
+
+# Sessions read per stats call; a week of heavy use stays far below this.
+STATS_SESSION_LIMIT = 1000
+
+
+@dataclass(frozen=True)
+class TaskStats:
+    """One top-level worker session seen as a task, from its turn_usage rows.
+
+    Every message sent on a thread starts a turn: agent-start is the first and
+    each correction adds one, so ``turns - 1`` is the correction count. ZCode
+    does not record the commander's verdict, so first-pass acceptance derived
+    from it is an estimate. ``elapsed_ms - work_ms`` is time between turns
+    (the commander reviewing and writing corrections).
+    """
+
+    id: str
+    directory: str
+    title: str
+    status: str
+    started_ms: int
+    ended_ms: int
+    turns: int
+    failed_turns: int
+    work_ms: int
+    elapsed_ms: int
+    tool_calls: int
+    errors: int
+
+
+_TASK_TURN_SQL = (
+    "SELECT session_id, COUNT(*), MIN(started_at), MAX(COALESCE(completed_at, started_at)),"
+    " COALESCE(SUM(duration_ms), 0), SUM(CASE WHEN status = 'completed' THEN 0 ELSE 1 END)"
+    " FROM turn_usage WHERE session_id IN ({ids}) GROUP BY session_id"
+)
+
+
+def task_stats(
+    db: Db,
+    *,
+    cwd: str | None = None,
+    since_ms: int,
+    now_ms: int | None = None,
+) -> list[TaskStats]:
+    """Top-level sessions updated since ``since_ms``, newest first.
+
+    Sub-agent sessions are left out (their time is inside the parent's turns),
+    and so are sessions without any turn_usage row (nothing to measure).
+    """
+    summaries = [
+        s for s in list_sessions(db, cwd=cwd, since_ms=since_ms, limit=STATS_SESSION_LIMIT, now_ms=now_ms)
+        if not s.parent_id
+    ]
+    turns: dict[str, tuple[Any, ...]] = {}
+    with _session(db) as conn:
+        for chunk in _chunks([s.id for s in summaries], SCAN_CHUNK):
+            ids = ",".join("?" * len(chunk))
+            for sid, *rest in conn.execute(_TASK_TURN_SQL.replace("{ids}", ids), chunk):
+                turns[sid] = tuple(rest)
+    out: list[TaskStats] = []
+    for s in summaries:
+        if s.id not in turns:
+            continue
+        count, first, last, work, failed = turns[s.id]
+        started, ended = int(first or 0), int(last or 0)
+        out.append(TaskStats(
+            id=s.id,
+            directory=s.directory,
+            title=s.title,
+            status=s.status,
+            started_ms=started,
+            ended_ms=ended,
+            turns=int(count),
+            failed_turns=int(failed or 0),
+            work_ms=int(work or 0),
+            elapsed_ms=max(0, ended - started),
+            tool_calls=s.tool_calls,
+            errors=s.errors,
+        ))
+    return out
+
+
 # --- activity ---------------------------------------------------------------------------
 
 

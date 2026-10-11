@@ -2,6 +2,12 @@
 
 All notable changes to the Claude Commander × ZCode Executor Kit are recorded here.
 
+## Unreleased
+
+### Added
+
+- `zcrew stats [DIR] [--all] [--days N] [--limit N] [--json]` sums up recent worker tasks from ZCode's own `turn_usage` rows (read-only): per task the elapsed time, the time ZCode spent working, the time between turns (commander review and corrections), and the number of turns. Below the table: finished tasks, first-pass share, corrections per task, median time per task, ZCode's share of elapsed time, and tool errors. A turn is one message on the thread, so `turns - 1` is the correction count. ZCode does not record the commander's verdict, so first pass is an estimate. Sub-agent sessions are left out because their time is already inside the parent's turns.
+
 ## 0.8.0 — 2026-09-28
 
 A dashboard you can read at a glance.

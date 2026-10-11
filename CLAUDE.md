@@ -2,7 +2,7 @@
 
 ## What this project is
 
-zcrew turns Claude Code or Codex into a commander that plans, delegates to ZCode (GLM) workers over MCP, reviews their diffs and runs the tests itself. It ships as a Windows installer plus a stdlib-only Python CLI (`zcrew`), and includes read-only views of worker activity (`zcrew runs/show/watch` and `zcrew dashboard`).
+zcrew turns Claude Code or Codex into a commander that plans, delegates to ZCode (GLM) workers over MCP, reviews their diffs and runs the tests itself. It ships as a Windows installer plus a stdlib-only Python CLI (`zcrew`), and includes read-only views of worker activity (`zcrew runs/show/stats/watch` and `zcrew dashboard`).
 
 ## Architecture
 

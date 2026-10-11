@@ -43,6 +43,12 @@ def show_args(session: str, **over: object) -> SimpleNamespace:
     return SimpleNamespace(**base)
 
 
+def stats_args(**over: object) -> SimpleNamespace:
+    base: dict[str, object] = dict(command="stats", dir=SANDBOX, days=7.0, limit=15, all=False, json=False)
+    base.update(over)
+    return SimpleNamespace(**base)
+
+
 def watch_args(**over: object) -> SimpleNamespace:
     base: dict[str, object] = dict(command="watch", dir=SANDBOX, all=False, interval=0.0, since=10.0)
     base.update(over)
@@ -471,9 +477,89 @@ class ZcrewWiringTest(unittest.TestCase):
         self.assertEqual(parser.parse_args(["runs"]).command, "runs")
         self.assertEqual(parser.parse_args(["runs", "--limit", "3", "--all", "--json"]).limit, 3)
         self.assertEqual(parser.parse_args(["show", "sess_x"]).command, "show")
+        stats = parser.parse_args(["stats", "--days", "3"])
+        self.assertEqual((stats.command, stats.days, stats.limit, stats.all), ("stats", 3.0, 15, False))
         watch = parser.parse_args(["watch", "--all"])
         self.assertEqual(watch.command, "watch")
         self.assertEqual((watch.interval, watch.since), (1.5, 10.0))
+
+
+class StatsCliTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.fx = Fixture(Path(self._tmp.name))
+        self.db = self.fx.path
+        cli._layout_note_shown = False
+        cli._library().LAYOUT_DEGRADED = False
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def run_cli(self, args: SimpleNamespace) -> tuple[int, str, str]:
+        out, err = io.StringIO(), io.StringIO()
+        code = cli.run(args, env={"ZCREW_ZCODE_DB": str(self.db)}, out=out, err=err, clock=lambda: NOW)
+        return code, out.getvalue(), err.getvalue()
+
+    def seed(self) -> None:
+        fx = self.fx
+        # first pass: one turn, 60 s of work in 60 s
+        fx.session("sess_one", SANDBOX, "One shot", NOW - 300_000, NOW - 240_000)
+        fx.turn("sess_one", "t1", "completed", NOW - 300_000, NOW - 240_000)
+        # two corrections: 120 s of work in 240 s
+        fx.session("sess_three", SANDBOX, "Needed fixes", NOW - 250_000, NOW - 10_000)
+        fx.turn("sess_three", "t1", "completed", NOW - 250_000, NOW - 190_000)
+        fx.turn("sess_three", "t2", "completed", NOW - 150_000, NOW - 120_000)
+        fx.turn("sess_three", "t3", "completed", NOW - 40_000, NOW - 10_000)
+        # still running: a part newer than its only turn
+        fx.session("sess_live", SANDBOX, "In flight", NOW - 20_000, NOW - 1_000)
+        fx.turn("sess_live", "t1", "completed", NOW - 20_000, NOW - 15_000)
+        fx.message("m_live", "sess_live", "assistant", NOW - 2_000)
+        fx.part("sess_live", "m_live", tool("Bash", "running", {"command": "sleep 5"}), NOW - 2_000)
+
+    def test_table_and_summary(self) -> None:
+        self.seed()
+        code, out, err = self.run_cli(stats_args())
+        self.assertEqual((code, err), (0, ""))
+        lines = out.splitlines()
+        header = next(line for line in lines if line.startswith("ID"))
+        self.assertIn("TURNS", header)
+        self.assertIn("finished tasks   2  (unfinished 1)", out)
+        self.assertIn("first pass       1 of 2 (50%)", out)
+        self.assertIn("corrections      avg 1.0 per task, max 2", out)
+        self.assertIn("median 2m30s elapsed, 1m30s ZCode working", out)
+        self.assertIn("ZCode share      60% of elapsed time", out)
+        row = next(line for line in lines if line.startswith("sess_three"))
+        self.assertEqual(row.split()[3:7], ["4m00s", "2m00s", "2m00s", "3"])
+
+    def test_json(self) -> None:
+        self.seed()
+        code, out, _ = self.run_cli(stats_args(json=True))
+        self.assertEqual(code, 0)
+        data = json.loads(out)
+        self.assertEqual(data["scope"], SANDBOX)
+        self.assertEqual(data["since_ms"], NOW - 7 * 86_400_000)
+        self.assertEqual([t["id"] for t in data["tasks"]], ["sess_live", "sess_three", "sess_one"])
+        self.assertEqual(data["summary"]["first_pass"], 1)
+        self.assertEqual(data["summary"]["zcode_share"], 0.6)
+        self.assertEqual(data["summary"]["elapsed_median_ms"], 150_000)
+
+    def test_limit_notes_older_tasks(self) -> None:
+        self.seed()
+        _, out, _ = self.run_cli(stats_args(limit=1))
+        self.assertIn("... 2 older (--limit to show more)", out)
+        self.assertIn("finished tasks   2", out)  # totals still cover every task
+
+    def test_empty(self) -> None:
+        code, out, _ = self.run_cli(stats_args())
+        self.assertEqual(code, 0)
+        self.assertIn("no worker tasks in the last 7 days", out)
+
+    def test_only_unfinished(self) -> None:
+        summary = cli.summarize_tasks([SimpleNamespace(status="running", turns=1, tool_calls=2, errors=0,
+                                                       failed_turns=0, elapsed_ms=5, work_ms=5)])
+        self.assertEqual((summary["finished"], summary["unfinished"]), (0, 1))
+        self.assertIsNone(summary["zcode_share"])
+        self.assertEqual(cli._summary_lines(summary), ["finished tasks   0  (unfinished 1)"])
 
 
 if __name__ == "__main__":

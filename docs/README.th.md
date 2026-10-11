@@ -232,6 +232,7 @@ zcrew watch                 # ดูสดใน terminal (Ctrl+C เพื่�
 zcrew dashboard             # เปิดหน้าเว็บในเครื่อง http://127.0.0.1:8765
 zcrew runs                  # รายการงานของ worker ล่าสุด
 zcrew show sess_83cb        # ดูรายละเอียดงานเดียว (ใส่ต้น id ก็พอ)
+zcrew stats                 # สรุป 7 วันล่าสุด: เวลาต่องาน, ส่งแก้กี่รอบ, ผ่านรอบแรกกี่ %
 ```
 
 เพิ่ม `--all` ถ้าอยากดูทุก project พร้อมกัน ตัวอย่างที่เห็นใน `zcrew watch`:

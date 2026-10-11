@@ -9,6 +9,7 @@
     zcrew context [DIR] [--session ID|PATH] [--top N] [--json] [--commander claude|codex]
     zcrew runs   [DIR] [--limit N] [--all] [--json]
     zcrew show   SESSION [--json]
+    zcrew stats  [DIR] [--days N] [--limit N] [--all] [--json]
     zcrew watch  [DIR] [--all] [--interval SECONDS] [--since MINUTES]
     zcrew dashboard [DIR] [--all] [--port N] [--no-open]
     zcrew update  [--commander auto|claude|codex|both]
@@ -474,6 +475,12 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("show", help="print one session's activity timeline (read-only)")
     p.add_argument("session", metavar="SESSION", help="session id or unique prefix")
     p.add_argument("--json", action="store_true", help="machine-readable output")
+    p = sub.add_parser("stats", help="time, correction turns and errors of recent worker tasks (read-only)")
+    p.add_argument("dir", nargs="?", default=None, metavar="DIR")
+    p.add_argument("--days", type=float, default=7, metavar="N", help="look back N days (default 7)")
+    p.add_argument("--limit", type=int, default=15, metavar="N", help="tasks to list in the table (default 15)")
+    p.add_argument("--all", action="store_true", help="every directory, not just DIR (default: current dir)")
+    p.add_argument("--json", action="store_true", help="machine-readable output")
     p = sub.add_parser("watch", help="follow live worker activity (read-only; Ctrl+C to stop)")
     p.add_argument("dir", nargs="?", default=None, metavar="DIR")
     p.add_argument("--all", action="store_true", help="every directory, not just DIR (default: current dir)")
@@ -530,7 +537,7 @@ def main(
         ))
     if args.command == "dashboard":
         return int(_load_sibling("dashboard").run(args, env=env))
-    if args.command in ("runs", "show", "watch"):
+    if args.command in ("runs", "show", "stats", "watch"):
         return int(_load_sibling("activity_cli").run(args, env=env))
     if args.command == "update":
         return cmd_update(paths, run, args.commander)

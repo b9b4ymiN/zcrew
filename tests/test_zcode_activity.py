@@ -604,5 +604,47 @@ class ZCodeActivityTest(unittest.TestCase):
                 self.assertEqual(za.activity_category(kind, tool_name), expected)
 
 
+class TaskStatsTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.fx = Fixture(Path(self._tmp.name))
+        self.db = self.fx.path
+        za.LAYOUT_DEGRADED = False
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_turns_work_and_elapsed(self) -> None:
+        fx = self.fx
+        fx.session("sess_task1", SANDBOX, "Fix tax", NOW - 100_000, NOW - 10_000)
+        fx.turn("sess_task1", "t1", "completed", NOW - 100_000, NOW - 70_000)
+        fx.turn("sess_task1", "t2", "error", NOW - 50_000, NOW - 40_000)
+        fx.turn("sess_task1", "t3", "completed", NOW - 30_000, NOW - 10_000)
+        [task] = za.task_stats(self.db, cwd=SANDBOX, since_ms=0, now_ms=NOW)
+        self.assertEqual(task.id, "sess_task1")
+        self.assertEqual((task.turns, task.failed_turns), (3, 1))
+        self.assertEqual(task.work_ms, 60_000)
+        self.assertEqual(task.elapsed_ms, 90_000)
+        self.assertEqual((task.started_ms, task.ended_ms), (NOW - 100_000, NOW - 10_000))
+        self.assertEqual(task.status, "completed")
+
+    def test_skips_subagents_turnless_old_and_other_dirs(self) -> None:
+        fx = self.fx
+        fx.session("sess_keep", SANDBOX, "Keep", NOW - 9_000, NOW - 1_000)
+        fx.turn("sess_keep", "t1", "completed", NOW - 9_000, NOW - 1_000)
+        fx.exec("INSERT INTO session (id, parent_id, directory, title, time_created, time_updated)"
+                " VALUES (?,?,?,?,?,?)", ("sess_child", "sess_keep", SANDBOX, "Child", NOW - 8_000, NOW - 2_000))
+        fx.turn("sess_child", "t1", "completed", NOW - 8_000, NOW - 2_000)
+        fx.session("sess_noturn", SANDBOX, "Empty", NOW - 5_000, NOW - 5_000)
+        fx.session("sess_old", SANDBOX, "Old", 1_000, 2_000)
+        fx.turn("sess_old", "t1", "completed", 1_000, 2_000)
+        fx.session("sess_elsewhere", r"D:\elsewhere", "Other", NOW - 5_000, NOW - 4_000)
+        fx.turn("sess_elsewhere", "t1", "completed", NOW - 5_000, NOW - 4_000)
+        ids = [t.id for t in za.task_stats(self.db, cwd=SANDBOX, since_ms=NOW - 60_000, now_ms=NOW)]
+        self.assertEqual(ids, ["sess_keep"])
+        everywhere = [t.id for t in za.task_stats(self.db, since_ms=NOW - 60_000, now_ms=NOW)]
+        self.assertEqual(sorted(everywhere), ["sess_elsewhere", "sess_keep"])
+
+
 if __name__ == "__main__":
     unittest.main()

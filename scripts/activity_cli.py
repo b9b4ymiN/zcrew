@@ -1,7 +1,8 @@
-"""zcrew runs / show / watch - read-only terminal view of ZCode worker sessions.
+"""zcrew runs / show / stats / watch - read-only terminal view of ZCode worker sessions.
 
 Thin renderers over zcode_activity.py (same directory): ``runs`` lists sessions
-as an aligned table, ``show`` prints one session's activity timeline, ``watch``
+as an aligned table, ``show`` prints one session's activity timeline, ``stats``
+sums up recent tasks (time, correction turns, errors), ``watch``
 follows live activity with one line per event prefixed by a stable w1/w2/...
 worker label. Colour is applied to worker labels and session statuses only, and
 only when stdout is a TTY without NO_COLOR set (on Windows VT processing is
@@ -16,6 +17,7 @@ import errno
 import importlib.util
 import json
 import os
+import statistics
 import sys
 import time
 from pathlib import Path
@@ -298,6 +300,120 @@ def run_show(
     return 0
 
 
+# --- stats ------------------------------------------------------------------------------
+
+
+STATS_HEADER = ("ID", "STATUS", "STARTED", "ELAPSED", "ZCODE", "BETWEEN", "TURNS", "ERR", "TITLE")
+FINISHED_STATUSES = ("completed", "failed")
+
+
+def summarize_tasks(tasks: list[Any]) -> dict[str, Any]:
+    """Totals over finished tasks only; a running task's numbers are still moving."""
+    done = [t for t in tasks if t.status in FINISHED_STATUSES]
+    summary: dict[str, Any] = {
+        "finished": len(done),
+        "unfinished": len(tasks) - len(done),
+        "first_pass": sum(1 for t in done if t.turns == 1),
+        "corrections_avg": None,
+        "corrections_max": None,
+        "elapsed_median_ms": None,
+        "work_median_ms": None,
+        "zcode_share": None,
+        "tool_calls": sum(t.tool_calls for t in done),
+        "errors": sum(t.errors for t in done),
+        "failed_turns": sum(t.failed_turns for t in done),
+    }
+    if done:
+        corrections = [t.turns - 1 for t in done]
+        elapsed = sum(t.elapsed_ms for t in done)
+        summary.update(
+            corrections_avg=round(sum(corrections) / len(done), 2),
+            corrections_max=max(corrections),
+            elapsed_median_ms=int(statistics.median(t.elapsed_ms for t in done)),
+            work_median_ms=int(statistics.median(t.work_ms for t in done)),
+            zcode_share=round(min(1.0, sum(t.work_ms for t in done) / elapsed), 3) if elapsed else None,
+        )
+    return summary
+
+
+def _summary_lines(s: dict[str, Any]) -> list[str]:
+    if not s["finished"]:
+        return [f"finished tasks   0  (unfinished {s['unfinished']})"]
+    pct = round(100 * s["first_pass"] / s["finished"])
+    lines = [
+        f"finished tasks   {s['finished']}  (unfinished {s['unfinished']})",
+        f"first pass       {s['first_pass']} of {s['finished']} ({pct}%)  estimate: one turn, no correction sent",
+        f"corrections      avg {s['corrections_avg']:.1f} per task, max {s['corrections_max']}",
+        f"time per task    median {_fmt_duration(s['elapsed_median_ms'])} elapsed,"
+        f" {_fmt_duration(s['work_median_ms'])} ZCode working",
+    ]
+    if s["zcode_share"] is not None:
+        lines.append(f"ZCode share      {round(100 * s['zcode_share'])}% of elapsed time"
+                     " (the rest is between turns: commander review and corrections)")
+    lines.append(f"tool errors      {s['errors']} in {s['tool_calls']} tool calls"
+                 f"; failed turns {s['failed_turns']}")
+    return lines
+
+
+def run_stats(
+    za: ModuleType,
+    db: Any,
+    *,
+    cwd: str | None,
+    days: float,
+    limit: int,
+    as_json: bool = False,
+    out: Any = None,
+    env: Mapping[str, str] | None = None,
+    now_ms: int | None = None,
+) -> int:
+    now = int(time.time() * 1000) if now_ms is None else int(now_ms)
+    since = now - int(max(0.0, float(days)) * 86_400_000)
+    tasks = za.task_stats(db, cwd=cwd, since_ms=since, now_ms=now)
+    summary = summarize_tasks(tasks)
+    if as_json:
+        payload = {
+            "scope": "all" if cwd is None else str(cwd),
+            "since_ms": since,
+            "summary": summary,
+            "tasks": [dataclasses.asdict(t) for t in tasks],
+        }
+        out.write(json.dumps(payload, indent=2) + "\n")
+        return 0
+    scope = "all directories" if cwd is None else str(cwd)
+    if not tasks:
+        out.write(f"no worker tasks in the last {days:g} days ({scope})\n")
+        return 0
+    out.write(f"worker tasks, last {days:g} days ({scope}); sub-agent sessions excluded\n\n")
+    rows = [list(STATS_HEADER)]
+    for t in tasks[: max(1, int(limit))]:
+        rows.append([
+            t.id[:SHORT_ID],
+            t.status,
+            _fmt_started(t.started_ms, now),
+            _fmt_duration(t.elapsed_ms),
+            _fmt_duration(t.work_ms),
+            _fmt_duration(t.elapsed_ms - t.work_ms),
+            str(t.turns),
+            str(t.errors),
+            t.title or "(no title)",
+        ])
+    widths = [max(len(row[i]) for row in rows) for i in range(len(STATS_HEADER))]
+    fixed = sum(widths[:-1]) + 2 * (len(widths) - 1)
+    widths[-1] = min(widths[-1], max(20, LINE_WIDTH - fixed))
+    for row in rows:
+        row[-1] = _clip_cell(row[-1], widths[-1])
+    use_colour = _use_colour(out, env or {})
+    out.write(_table_line(rows[0], widths) + "\n")
+    for row in rows[1:]:
+        paint = {1: STATUS_COLOURS[row[1]]} if use_colour and row[1] in STATUS_COLOURS else None
+        out.write(_table_line(row, widths, paint) + "\n")
+    if len(tasks) > len(rows) - 1:
+        out.write(f"... {len(tasks) - (len(rows) - 1)} older (--limit to show more)\n")
+    out.write("\n" + "\n".join(_summary_lines(summary)) + "\n")
+    return 0
+
+
 # --- watch ------------------------------------------------------------------------------
 
 
@@ -399,6 +515,13 @@ def run(
         elif args.command == "show":
             rc = run_show(
                 za, db, args.session, as_json=args.json, out=out, env=env,
+                now_ms=int(clock()) if clock else None,
+            )
+        elif args.command == "stats":
+            rc = run_stats(
+                za, db,
+                cwd=None if args.all else (args.dir or os.getcwd()),
+                days=args.days, limit=args.limit, as_json=args.json, out=out, env=env,
                 now_ms=int(clock()) if clock else None,
             )
         elif args.command == "watch":

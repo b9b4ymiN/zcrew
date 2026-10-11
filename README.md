@@ -153,6 +153,7 @@ zcrew watch [DIR] [--all] [--since MIN]                follow ZCode workers live
 zcrew dashboard [DIR] [--all] [--port N] [--no-open]   the same in a local browser page (127.0.0.1 only)
 zcrew runs [DIR] [--all] [--limit N] [--json]          list worker runs, newest first
 zcrew show SESSION [--json]                            one run's activity (id or prefix, e.g. sess_83cb)
+zcrew stats [DIR] [--all] [--days N] [--json]          time, correction turns and errors of recent tasks
 zcrew update [--commander auto|claude|codex|both]     pull the latest release and re-run setup
 zcrew uninstall [--keep-config] [--yes]                remove zcrew
 zcrew version
@@ -286,7 +287,7 @@ scripts/commander.py        enable/disable/status/config
 scripts/doctor.py           readiness checks
 scripts/context_report.py   zcrew context
 scripts/zcode_activity.py   read-only reader over ZCode's database (sessions + activity)
-scripts/activity_cli.py     zcrew runs / show / watch
+scripts/activity_cli.py     zcrew runs / show / stats / watch
 scripts/dashboard.py        zcrew dashboard server (+ dashboard.html)
 templates/                  CLAUDE.md + AGENTS.md starters for projects
 policy/COMMANDER.md         the commander policy (Claude Code and Codex)
