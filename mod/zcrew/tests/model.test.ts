@@ -3,7 +3,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import type { RunView } from '../types'
 import {
   BACKGROUND_GRACE_MS, activityOf, bandLines, bandVisible, boxFromConfig, detailOf, gateSummary, liveJobs,
-  parseSnapshot, stageOf, statusText, titleOf, turnOver, wakeMessage,
+  nudgeMessage, parseSnapshot, planOf, planSuffix, stageOf, statusText, titleOf, turnOver, wakeMessage,
 } from '../hooks/model'
 
 const BOX = 20 * 60_000
@@ -115,5 +115,29 @@ describe('background jobs', () => {
     const text = wakeMessage([held], NOW)
     expect(text).toContain('background job(s) still run and keep the run open: a (npm run dev)')
     expect(text).toContain('"action": "cancel-background", "taskId": "<id>"')
+  })
+})
+
+describe('plan', () => {
+  const plan = planOf({ ready: ['T4', 'T5', 'T6'], accepted: 3, total: 7, max_workers: 3 })
+
+  test('reads zcrew plan --json', () => {
+    expect(plan).toEqual({ ready: ['T4', 'T5', 'T6'], accepted: 3, total: 7, maxWorkers: 3 })
+    expect(planOf({})).toBeUndefined()
+    expect(planSuffix(plan, 'th')).toBe(' · แผน 3/7 · พร้อมเริ่ม 3')
+    expect(planSuffix(planOf({ ready: [], accepted: 7, total: 7 }), 'en')).toBe(' · plan 7/7')
+  })
+
+  test('nudge names only as many tasks as there are free workers', () => {
+    const text = nudgeMessage(plan, 1)
+    expect(text).toContain('ready to start: T4, T5, T6. Workers busy: 1 of 3.')
+    expect(text).toContain('Start T4, T5 now')
+    expect(nudgeMessage(plan, 3)).toBeUndefined()
+    expect(nudgeMessage(planOf({ ready: [], accepted: 0, total: 2 }), 0)).toBeUndefined()
+    expect(nudgeMessage(undefined, 0)).toBeUndefined()
+  })
+
+  test('the band carries the plan', () => {
+    expect(bandLines([run({})], NOW, BOX, 'en', 3, plan)[0]).toBe('zcrew  🔧 1 working · plan 3/7 · ready 3')
   })
 })

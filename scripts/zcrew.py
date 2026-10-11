@@ -10,6 +10,8 @@
     zcrew runs   [DIR] [--limit N] [--all] [--json]
     zcrew show   SESSION [--json]
     zcrew stats  [DIR] [--days N] [--limit N] [--all] [--json]
+    zcrew plan   [DIR] [--json]
+    zcrew worktree add TASK [--base REF] [--no-shared] | remove TASK [--force]
     zcrew gate   [RUN|THREAD] [--self] [--no-verify] [--no-queue] [--accept NOTE | --reject NOTE] [--override REASON] [--json]
     zcrew watch  [DIR] [--all] [--interval SECONDS] [--since MINUTES]
     zcrew dashboard [DIR] [--all] [--port N] [--no-open]
@@ -482,6 +484,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--limit", type=int, default=15, metavar="N", help="tasks to list in the table (default 15)")
     p.add_argument("--all", action="store_true", help="every directory, not just DIR (default: current dir)")
     p.add_argument("--json", action="store_true", help="machine-readable output")
+    p = sub.add_parser("plan", help="state of the approved task plan (.zcrew/plan.json): ready, started, accepted")
+    p.add_argument("dir", nargs="?", default=None, metavar="DIR")
+    p.add_argument("--json", action="store_true", help="machine-readable output")
+    p = sub.add_parser("worktree", help="git worktree per plan task, sharing node_modules with the main checkout")
+    wt = p.add_subparsers(dest="action", required=True)
+    w = wt.add_parser("add", help="create ../<repo>-zc-TASK on branch zc/TASK")
+    w.add_argument("task", metavar="TASK")
+    w.add_argument("--base", default=None, metavar="REF", help="start point (default: the current HEAD)")
+    w.add_argument("--no-shared", action="store_true", help="do not link node_modules from the main checkout")
+    w = wt.add_parser("remove", help="unlink shared folders, then remove the worktree (the branch stays)")
+    w.add_argument("task", metavar="TASK")
+    w.add_argument("--force", action="store_true", help="remove even with uncommitted changes")
     p = sub.add_parser("gate", help="mechanical review gate for a worker run: scope, DO NOT, tests, VERIFY")
     p.add_argument("ident", nargs="?", default=None, metavar="RUN|THREAD",
                    help="run id or thread id (prefix ok); default: newest run recorded for this folder")
@@ -554,6 +568,8 @@ def main(
         return int(_load_sibling("dashboard").run(args, env=env))
     if args.command in ("runs", "show", "stats", "watch"):
         return int(_load_sibling("activity_cli").run(args, env=env))
+    if args.command in ("plan", "worktree"):
+        return int(_load_sibling("plan").run(args, env=env))
     if args.command == "gate":
         return int(_load_sibling("gate").run(args, env=env))
     if args.command == "update":

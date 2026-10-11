@@ -28,6 +28,7 @@ const WORDS = {
     think: 'กำลังคิด', queued: 'รอคิว', stopping: 'กำลังหยุดและเขียนรายงาน', web: 'กำลังค้นเว็บ',
     finished: 'เสร็จ', today: 'รวม', workers: 'ช่าง',
     lingering: 'งานเสร็จแต่มีโปรเซสค้าง',
+    plan: 'แผน', readyToStart: 'พร้อมเริ่ม',
   },
   en: {
     running: 'working', review: 'to review', accepted: 'accepted', rejected: 'sent back', failed: 'failed',
@@ -38,6 +39,7 @@ const WORDS = {
     think: 'thinking', queued: 'queued', stopping: 'stopping to report', web: 'searching the web',
     finished: 'done', today: 'total', workers: 'workers',
     lingering: 'done, but background jobs still run',
+    plan: 'plan', readyToStart: 'ready',
   },
 } as const
 
@@ -153,8 +155,40 @@ export function bandVisible(runs: RunView[], now: number): boolean {
   return runs.some(r => isActive(r) || !r.verdict || now - (r.endedAt ?? 0) < LINGER_MS)
 }
 
+/** What `zcrew plan --json` says, as far as the mod needs it. */
+export type PlanView = { ready: string[]; accepted: number; total: number; maxWorkers: number }
+
+export function planOf(report: Record<string, unknown> | undefined): PlanView | undefined {
+  if (!report || !Array.isArray(report.ready)) return undefined
+  return {
+    ready: report.ready.map(String),
+    accepted: Number(report.accepted ?? 0),
+    total: Number(report.total ?? 0),
+    maxWorkers: Number(report.max_workers ?? 5),
+  }
+}
+
+export function planSuffix(plan: PlanView | undefined, lang: Lang): string {
+  if (!plan || plan.total === 0) return ''
+  const w = words(lang)
+  return ` · ${w.plan} ${plan.accepted}/${plan.total}${plan.ready.length ? ` · ${w.readyToStart} ${plan.ready.length}` : ''}`
+}
+
+/** The prompt that tells Claude ready tasks are waiting while workers are free; undefined when there is nothing to say. */
+export function nudgeMessage(plan: PlanView | undefined, active: number): string | undefined {
+  if (!plan || plan.ready.length === 0) return undefined
+  const free = plan.maxWorkers - active
+  if (free <= 0) return undefined
+  const start = plan.ready.slice(0, free)
+  return [
+    `[zcrew] Plan tasks ready to start: ${plan.ready.join(', ')}. Workers busy: ${active} of ${plan.maxWorkers}.`,
+    `Start ${start.join(', ')} now, each in its own worktree (\`zcrew worktree add <task>\`, then agent-start with that cwd and a \`TASK: <id>\` line in the contract), then end your turn.`,
+    'If a task needs the user first, say so instead; this reminder is not repeated until the plan or the workers change.',
+  ].join('\n')
+}
+
 /** The band: one summary line, then the runs that need someone, most urgent first. */
-export function bandLines(runs: RunView[], now: number, boxMs: number, lang: Lang, maxRows: number): string[] {
+export function bandLines(runs: RunView[], now: number, boxMs: number, lang: Lang, maxRows: number, plan?: PlanView): string[] {
   const w = words(lang)
   if (runs.length === 0) return []
   const stages = runs.map(r => stageOf(r, now, boxMs))
@@ -166,9 +200,9 @@ export function bandLines(runs: RunView[], now: number, boxMs: number, lang: Lan
   if (count('accepted')) parts.push(`✅ ${count('accepted')} ${w.accepted}`)
   if (count('attention')) parts.push(`❌ ${count('attention')} ${w.failed}`)
   if (working === 0 && count('review', 'attention') === 0) {
-    return [`zcrew  🎉 ${w.allDone} ${runs.length} ${w.tasks}`]
+    return [`zcrew  🎉 ${w.allDone} ${runs.length} ${w.tasks}${planSuffix(plan, lang)}`]
   }
-  const lines = [`zcrew  ${parts.join(' · ')}`]
+  const lines = [`zcrew  ${parts.join(' · ')}${planSuffix(plan, lang)}`]
   for (const run of sorted(runs, now, boxMs)) {
     if (lines.length >= Math.max(1, Math.min(3, maxRows))) break
     const stage = stageOf(run, now, boxMs)

@@ -128,3 +128,30 @@ test('a run held open by a background job wakes Claude after the grace, once', {
   await clock.advance(120_000)
   expect(prompts.length).toBe(1)
 })
+
+test('when Claude ends a turn with ready plan tasks and free workers, it is reminded once', { timeoutMs: 20000 }, async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  mock.env(on, { HOME: '/home/u' })
+  const prompts: string[] = []
+  let ready = ['T2', 'T3']
+  on('process.run', ($, e) => ({ value: { exitCode: 0, stderr: '', stdout: e.argv.includes('plan')
+    ? JSON.stringify({ ready, accepted: 1, total: 3, max_workers: 2 })
+    : '{}' } }) as never)
+  on('fs.read', () => ({ deny: 'absent' }) as never)
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('command.register', () => ({ value: {} }) as never)
+  on('prompt.submit', ($, e) => { prompts.push(e.text); return { text: e.text } as never })
+  on('turn.complete', ($, e) => ({ text: (e as { text?: string }).text ?? '' }) as never)
+  for (const op of ['ui.status', 'ui.toast', 'ui.open', 'ui.close'] as const) on(op, () => ({ value: undefined }) as never)
+  await $.session.start({ cwd: '/work' } as never)
+  const turn = { answer: 'ok', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer', text: 'ok' }
+  await $.turn.complete(turn as never)
+  await $.turn.complete({ ...turn, turnId: 't2' } as never)
+  expect(prompts.length).toBe(1)
+  expect(prompts[0]).toContain('Start T2, T3 now')
+  ready = ['T3']
+  await $.turn.complete({ ...turn, turnId: 't3' } as never)
+  expect(prompts.length).toBe(2)
+  await $.turn.complete({ ...turn, turnId: 't4', isAborted: true } as never)
+  expect(prompts.length).toBe(2)
+})

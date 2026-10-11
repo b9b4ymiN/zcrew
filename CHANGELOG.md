@@ -6,12 +6,16 @@ All notable changes to the Claude Commander × ZCode Executor Kit are recorded h
 
 ### Added
 
+- **Parallel by default.** `.zcrew/plan.json` lists the approved tasks with the files they touch and the tasks they wait for. `zcrew plan [DIR] [--json]` shows each task as accepted / started / ready / waiting (read from the gate records: a contract names its task with a `TASK: T1` line, `zcrew gate --accept` marks it accepted) and warns about unknown or circular dependencies and about tasks that touch the same files without one waiting for the other.
+- `zcrew worktree add TASK [--base REF] [--no-shared]` creates `../<repo>-zc-<task>` on branch `zc/<task>` and links the main checkout's `node_modules` into it (a junction on Windows, no admin rights needed), so a parallel worker does not install everything again. `zcrew worktree remove TASK [--force]` unlinks it first, so removing the worktree never reaches the shared copy.
+- zcrew mod (0.3.0): when Claude ends a turn while plan tasks are ready and workers are free, one `[zcrew]` prompt names the tasks to start (no repeat until the plan or the workers change); the band shows `plan 3/7 · ready 2`.
+
 - zcrew mod: a run whose turn ended but whose background jobs (a dev server, a watcher) keep it open is flagged on the band, and after 90 s Claude is woken with the job ids and the `agent-control cancel-background` call to stop them. Until now such a run looked busy until its whole-run timeout.
 - `zcrew gate` queues VERIFY machine-wide: one gate runs its VERIFY commands at a time, so parallel workers' test suites (browsers, builds) do not slow each other down or turn flaky. It waits at most 15 min, then runs anyway; a lock older than 2 h is taken over; `--no-queue` skips it.
 
 ### Changed
 
-- `policy/COMMANDER.md`: pick the thought level per task (`high` for mechanical work that follows an existing pattern, the configured level otherwise; when unsure, keep the configured level).
+- `policy/COMMANDER.md`: parallel is the default (write `.zcrew/plan.json` after approval, start every ready task in its own `zcrew worktree`, `TASK:` line in each contract, remove worktrees with `zcrew worktree remove`); pick the thought level per task (`high` for mechanical work that follows an existing pattern, the configured level otherwise; when unsure, keep the configured level).
 
 ## 0.9.1 — 2026-10-11
 

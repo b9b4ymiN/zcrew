@@ -155,6 +155,8 @@ zcrew runs [DIR] [--all] [--limit N] [--json]          list worker runs, newest 
 zcrew show SESSION [--json]                            one run's activity (id or prefix, e.g. sess_83cb)
 zcrew stats [DIR] [--all] [--days N] [--json]          time, correction turns, errors and parallelism of recent tasks
 zcrew gate [RUN|THREAD] [--self] [--accept|--reject]   mechanical review gate: scope, DO NOT, tests, VERIFY
+zcrew plan [DIR] [--json]                              the approved plan: ready / started / accepted tasks
+zcrew worktree add|remove TASK                         a worktree per task, sharing node_modules
 ```
 
 Claude Code users can add the zcrew mod: Claude stops polling workers (the mod watches them and wakes Claude when a run ends, with its gate result), and a band above the prompt shows what the workers are doing. See [mod/zcrew/README.md](mod/zcrew/README.md).

@@ -571,6 +571,7 @@ REQUIRED_SECTIONS = ("OBJECTIVE", "SCOPE", "DO NOT", "ACCEPTANCE CRITERIA", "VER
 _SECTION_RE = re.compile(r"^\s*(?:#{1,6}\s*)?\**(%s)\**\s*:?\s*\**\s*$" % "|".join(SECTION_NAMES))
 _BULLET_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+(.*\S)\s*$")
 _BACKTICK_RE = re.compile(r"`([^`\n]+)`")
+_TASK_RE = re.compile(r"^\s*TASK\s*:\s*([A-Za-z0-9][A-Za-z0-9_.-]{0,40})\s*$", re.MULTILINE)
 _TIMEBOX_RE = re.compile(r"^\s*TIMEBOX\s*:\s*(\d+)\s*(s|sec|m|min|h)?\s*$", re.IGNORECASE | re.MULTILINE)
 WRAP_UP_PROMPT = (
     WRAP_UP_MARK + " Time is almost up. Stop experimenting now and write your REPORT: what you changed, "
@@ -650,6 +651,8 @@ def parse_contract(prompt: str) -> dict:
     def ticked(name: str) -> list[str]:
         return [t.strip() for item in sections.get(name, []) for t in _BACKTICK_RE.findall(item) if t.strip()]
 
+    task = _TASK_RE.search(prompt or "")
+
     def pathlike(tokens: list[str]) -> list[str]:
         return [t for t in tokens if re.search(r"[/\\*.]", t) and " " not in t]
 
@@ -659,6 +662,7 @@ def parse_contract(prompt: str) -> dict:
         "scope": pathlike(ticked("SCOPE")),
         "do_not": pathlike(ticked("DO NOT")),
         "verify": ticked("VERIFY"),
+        "task": task.group(1) if task else None,
     }
 
 

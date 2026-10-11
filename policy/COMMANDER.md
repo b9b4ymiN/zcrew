@@ -19,7 +19,7 @@ You may do tiny edits yourself (≤3 lines, docs/config/metadata) when delegatin
 1. **Brief (requirements).** If a personal knowledge MCP is available (e.g. `brain`), search it first for past context. Then ask the user simple, plain-language questions, 1–2 at a time, each with a short example, until the requirement is genuinely clear. Never ask what the code, the knowledge base, or earlier answers already tell you.
 2. **Plan for review.** Write a 200–300 word plan a non-specialist can follow, with a concrete example of the result. Split it into Phases → Tasks, each with a DoD. End by asking for approval.
 3. **Hard gate.** Do not delegate implementation until the user approves the plan. Skip steps 1–3 only for tiny edits, a clear bug with a known root cause in 1–2 files, or when the user says "go", "do it", "ship", "YOLO", or continues approved work ("ทำต่อ", "next step").
-4. **Execute task by task.** For each task: write a worker contract → delegate to ZCode → review against the DoD → correct on the same thread → accept. Do not run too many unrelated things at once.
+4. **Execute the plan.** Write `.zcrew/plan.json` and start every ready task at once (see Parallel workers). For each task: write a worker contract → delegate to ZCode → review against the DoD → correct on the same thread → accept.
 5. **Report per task.** What changed, evidence (diff/tests/build you ran yourself), DoD status, anything left.
 6. **Errors are feedback.** Feed the exact error message back into the next correction and retry within budget.
 7. **Unsure → ask.** One question that unblocks the most, in plain language.
@@ -76,15 +76,16 @@ ZCode automatically reads `AGENTS.md` from the working directory and its parents
 
 ## Parallel workers (swarm)
 
-Use parallel workers only for tasks that are independent and touch disjoint files. Up to `maxWorkers` at once.
+Parallel is the default: tasks that touch different files run at the same time, up to `maxWorkers`. Run tasks one after another only when one needs another's result or they touch the same files. Workers wait on a slow endpoint, so idle worker slots are lost time.
 
-1. For each parallel task create a worktree from the current branch: `git worktree add ../<repo>-zc-<task> -b zc/<task>`.
-2. Start one ZCode run per worktree (`cwd` = that worktree). Each keeps its own `threadId` for corrections.
-3. Review each worktree independently exactly as in the execution loop.
-4. After acceptance, merge each `zc/<task>` branch into the working branch one at a time and re-run VERIFY after each merge. A conflict is yours to resolve, or it goes back to that worker's thread.
-5. `agent-close` every run of that worktree first, then remove merged worktrees and branches (`git worktree remove`, `git branch -d`). On Windows the bridge's app-server can keep the folder open after close ("Permission denied"/"busy"): `git worktree prune` still unregisters it; leave the empty folder and remove it later. Never delete an unmerged branch without asking.
+1. **Plan file.** Once the user approves a plan, write `.zcrew/plan.json`: `{"tasks": [{"id": "T1", "title": "...", "files": ["src/hero/**"], "after": []}, ...]}`. `files` are the paths the task may change (the same patterns as its SCOPE); `after` lists the tasks it waits for. Run `zcrew plan` and fix every warning: two tasks that touch the same files need one in the other's `after`.
+2. **Start every ready task.** `zcrew plan` lists the ready ones. For each: `zcrew worktree add <id>` (creates `../<repo>-zc-<id>` on branch `zc/<id>` and links the main checkout's `node_modules`), then `agent-start` with that `cwd` and a `TASK: <id>` line in the contract. Each run keeps its own `threadId` for corrections. Start them all, then end your turn (with the zcrew mod) or wait.
+3. Review each worktree independently exactly as in the execution loop; `zcrew gate <runId> --accept` marks the task accepted in `zcrew plan`, which makes the tasks waiting for it ready.
+4. After acceptance, merge each `zc/<id>` branch into the working branch one at a time and re-run VERIFY after each merge. A conflict is yours to resolve, or it goes back to that worker's thread.
+5. `agent-close` every run of that worktree first, then `zcrew worktree remove <id>` (it unlinks the shared `node_modules` before removing, so the shared copy is never touched; do not use `git worktree remove` on a worktree with a linked folder) and `git branch -d zc/<id>`. On Windows the bridge's app-server can keep the folder open after close ("Permission denied"/"busy"): `git worktree prune` still unregisters it; leave the empty folder and remove it later. Never delete an unmerged branch without asking.
+6. With the zcrew mod, a `[zcrew]` message tells you when plan tasks are ready and workers are free. Start them, or tell the user why not.
 
-Sequential or overlapping work stays in one thread and one working copy.
+Work that is truly sequential or overlapping stays in one thread and one working copy.
 
 ## Progress visibility
 

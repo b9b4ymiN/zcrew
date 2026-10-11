@@ -15,9 +15,9 @@ import type { RunView } from '../types'
 import {
   HANDS_FREE_LIMIT, SERVER, TERMINAL,
   bandLines, bandVisible, bar, boxFromConfig, detailOf, gateSummary, handsFreeNote, iconOf,
-  isActive, liveJobs, minutes, notifyText, parseSnapshot, sorted, statusText, titleOf, turnOver, wakeMessage, words,
+  isActive, liveJobs, minutes, notifyText, nudgeMessage, parseSnapshot, planOf, sorted, statusText, titleOf, turnOver, wakeMessage, words,
 } from './model'
-import type { Lang } from './model'
+import type { Lang, PlanView } from './model'
 
 const PANE = 'zcrew'
 const TICK_MS = 15_000
@@ -40,6 +40,9 @@ const ctx = {
   ticking: false,
   wakeTimer: undefined as { cancel: () => void } | undefined,
   quickWaits: new Map<string, number>(),
+  cwd: undefined as string | undefined,
+  plan: undefined as PlanView | undefined,
+  lastNudge: '',
   gating: new Set<string>(),
 }
 
@@ -102,6 +105,31 @@ async function runGate($: EngineInterface, run: RunView): Promise<void> {
   }
 }
 
+async function refreshPlan($: EngineInterface): Promise<void> {
+  if (!ctx.cwd) return
+  try {
+    const done = await $.process.run(await zcrewArgv($, ['plan', '--json']), { cwd: ctx.cwd, timeoutMs: 30_000 })
+    ctx.plan = done.exitCode === 0 ? planOf(parseSnapshot(done.stdout)) : undefined
+  } catch {
+    ctx.plan = undefined
+  }
+}
+
+async function maybeNudge($: EngineInterface): Promise<void> {
+  if (!ctx.handsFree) return
+  await refreshPlan($)
+  const active = (await allRuns($)).filter(isActive).length
+  const text = nudgeMessage(ctx.plan, active)
+  const signature = `${ctx.plan?.ready.join(',')}|${active}`
+  if (!text || signature === ctx.lastNudge) return
+  ctx.lastNudge = signature
+  try {
+    await $.prompt.submit({ text })
+  } catch {
+    // refused by another plugin: the band still shows the ready count
+  }
+}
+
 async function wake($: EngineInterface): Promise<void> {
   ctx.wakeTimer = undefined
   const list = await allRuns($)
@@ -122,6 +150,7 @@ async function wake($: EngineInterface): Promise<void> {
     // notifications turned off
   }
   if (!list.some(isActive)) $.ui.toast(`zcrew: ${words(ctx.lang).allDone} ${list.length} ${words(ctx.lang).tasks}`)
+  await refreshPlan($)
 }
 
 async function observe($: EngineInterface, runId: string): Promise<Record<string, unknown> | undefined> {
@@ -244,11 +273,25 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     const started = await next(e)
+    ctx.cwd = e.cwd
     await loadBox($, e.cwd)
+    await refreshPlan($)
     await $.command.register({ name: 'zcrew', description: 'Show the ZCode worker runs zcrew is watching' })
     $.clock.every(TICK_MS, () => void tick($))
     await refreshChrome($)
     return started
+  })
+
+  on('turn.complete', async ($, e, next) => {
+    const done = await next(e)
+    if (!e.agentId && !e.isAborted) {
+      try {
+        await maybeNudge($)
+      } catch {
+        // a reminder is never worth failing the turn's completion over
+      }
+    }
+    return done
   })
 
   on('command.run', { command: 'zcrew' }, async $ => {
@@ -290,7 +333,7 @@ export const register: Register = (on, options) => {
     const list = await allRuns($)
     const now = await $.clock.now()
     if (e.props.hasSurvey || !bandVisible(list, now)) return next(e)
-    const lines = bandLines(list, now, ctx.boxMs, ctx.lang, e.props.maxRows)
+    const lines = bandLines(list, now, ctx.boxMs, ctx.lang, e.props.maxRows, ctx.plan)
     if (lines.length === 0) return next(e)
     const { Box, Text, Button } = $.ui.resolve(e)
     return (
