@@ -2,7 +2,9 @@
 
 All notable changes to the Claude Commander × ZCode Executor Kit are recorded here.
 
-## Unreleased
+## 0.9.1 — 2026-10-11
+
+A time box for workers, a review gate, and a Claude Code mod that watches them.
 
 ### Added
 
