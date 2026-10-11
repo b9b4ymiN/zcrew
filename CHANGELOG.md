@@ -2,6 +2,17 @@
 
 All notable changes to the Claude Commander × ZCode Executor Kit are recorded here.
 
+## Unreleased
+
+### Added
+
+- zcrew mod: a run whose turn ended but whose background jobs (a dev server, a watcher) keep it open is flagged on the band, and after 90 s Claude is woken with the job ids and the `agent-control cancel-background` call to stop them. Until now such a run looked busy until its whole-run timeout.
+- `zcrew gate` queues VERIFY machine-wide: one gate runs its VERIFY commands at a time, so parallel workers' test suites (browsers, builds) do not slow each other down or turn flaky. It waits at most 15 min, then runs anyway; a lock older than 2 h is taken over; `--no-queue` skips it.
+
+### Changed
+
+- `policy/COMMANDER.md`: pick the thought level per task (`high` for mechanical work that follows an existing pattern, the configured level otherwise; when unsure, keep the configured level).
+
 ## 0.9.1 — 2026-10-11
 
 A time box for workers, a review gate, and a Claude Code mod that watches them.

@@ -99,3 +99,32 @@ test('band stays out of the way with no runs', async ($, on) => {
   expect(await band.find({ type: 'Text', text: /zcrew/ } as never)).toBeUndefined()
   await band.unmount()
 })
+
+test('a run held open by a background job wakes Claude after the grace, once', { timeoutMs: 20000 }, async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  mock.env(on, { HOME: '/home/u' })
+  const prompts: string[] = []
+  on('tool.call', { tool: START }, () => ({ result: {}, text: '{"runId":"run_1","status":"running","revision":1}' }))
+  on('mcp.call', () => ({ value: { content: [{ type: 'text', text: JSON.stringify({
+    runId: 'run_1', status: 'background', revision: 4,
+    backgroundTasks: [{ taskId: 'job_9', status: 'running', description: 'npm run dev' }],
+  }) }], isError: false } }) as never)
+  on('process.run', () => ({ value: { exitCode: 0, stdout: JSON.stringify({ mechanical: 'PASS', checks: [] }), stderr: '' } }) as never)
+  on('fs.read', () => ({ deny: 'absent' }) as never)
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('command.register', () => ({ value: {} }) as never)
+  on('prompt.submit', ($, e) => { prompts.push(e.text); return { text: e.text } as never })
+  on('ui.notify', () => ({ value: { isSent: true, channel: 'terminal_bell' } }) as never)
+  for (const op of ['ui.status', 'ui.toast', 'ui.open', 'ui.close'] as const) on(op, () => ({ value: undefined }) as never)
+  await $.session.start({ cwd: '/work' } as never)
+  await $.tool.call({ tool: START, prompt: CONTRACT, cwd: '/work' } as never)
+  await clock.advance(15_000)
+  await clock.advance(30_000)
+  expect(prompts.length).toBe(0) // still inside the grace
+  await clock.advance(90_000)
+  await clock.advance(25_000)
+  expect(prompts.length).toBe(1)
+  expect(prompts[0]).toContain('job_9 (npm run dev)')
+  await clock.advance(120_000)
+  expect(prompts.length).toBe(1)
+})

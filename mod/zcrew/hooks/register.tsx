@@ -15,7 +15,7 @@ import type { RunView } from '../types'
 import {
   HANDS_FREE_LIMIT, SERVER, TERMINAL,
   bandLines, bandVisible, bar, boxFromConfig, detailOf, gateSummary, handsFreeNote, iconOf,
-  isActive, minutes, notifyText, parseSnapshot, sorted, statusText, titleOf, wakeMessage, words,
+  isActive, liveJobs, minutes, notifyText, parseSnapshot, sorted, statusText, titleOf, turnOver, wakeMessage, words,
 } from './model'
 import type { Lang } from './model'
 
@@ -105,10 +105,10 @@ async function runGate($: EngineInterface, run: RunView): Promise<void> {
 async function wake($: EngineInterface): Promise<void> {
   ctx.wakeTimer = undefined
   const list = await allRuns($)
-  const ready = list.filter(r => !isActive(r) && !r.woke && !ctx.gating.has(r.runId))
+  const now = await $.clock.now()
+  const ready = list.filter(r => turnOver(r, now) && !r.woke && !ctx.gating.has(r.runId))
   if (ready.length === 0) return
   for (const run of ready) await patch($, run.runId, { woke: true })
-  const now = await $.clock.now()
   if (ctx.handsFree) {
     try {
       await $.prompt.submit({ text: wakeMessage(ready, now) })
@@ -172,8 +172,16 @@ async function tick($: EngineInterface): Promise<void> {
       if (status === 'running' && !run.runningSince) change.runningSince = now
       if (snap.threadId && !run.threadId) change.threadId = String(snap.threadId)
       if (TERMINAL.has(status)) change.endedAt = now
+      if (status === 'background') {
+        change.background = liveJobs(snap.backgroundTasks)
+        if (!run.backgroundSince) change.backgroundSince = now
+      }
       await patch($, run.runId, change)
-      if (TERMINAL.has(status)) void scheduleWake($, { ...run, ...change })
+      const next = { ...run, ...change }
+      if (TERMINAL.has(status) || (turnOver(next, now) && !run.woke && !run.endedAt)) {
+        if (!TERMINAL.has(status)) await patch($, run.runId, { endedAt: now })
+        void scheduleWake($, { ...next, endedAt: next.endedAt ?? now })
+      }
     }
     for (const run of await allRuns($)) {
       if (isActive(run) || run.verdict) continue

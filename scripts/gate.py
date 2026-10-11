@@ -24,6 +24,7 @@ the contract names, and writes only its own record and logs.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import json
 import os
@@ -34,10 +35,15 @@ import tempfile
 import time
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterator, Mapping
 
 DEFAULT_MAX_ROUNDS = 4
 DEFAULT_VERIFY_TIMEOUT = 900
+# VERIFY runs queue machine-wide: parallel workers' test suites (browsers,
+# builds) slow each other down and turn flaky when they run at once.
+QUEUE_WAIT_SECONDS = 900
+QUEUE_STALE_SECONDS = 2 * 3600
+QUEUE_POLL_SECONDS = 2.0
 LINE_CLIP = 160
 FAIL_LINES = 6
 TEST_PATH_RE = re.compile(
@@ -295,6 +301,46 @@ def check_verify(
     return out
 
 
+@contextlib.contextmanager
+def verify_queue(
+    lock: Path, wait: float, *,
+    sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic,
+) -> Iterator[dict[str, Any]]:
+    """Hold the machine-wide VERIFY lock; yields ``{"waited": s, "held": bool}``.
+
+    Waits at most ``wait`` seconds, then runs without the lock rather than block
+    a review forever; a lock older than QUEUE_STALE_SECONDS (a gate that died) is
+    taken over. ``wait <= 0`` skips the queue.
+    """
+    start, held = clock(), False
+    if wait > 0:
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        while True:
+            try:
+                fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError:
+                try:
+                    if time.time() - lock.stat().st_mtime > QUEUE_STALE_SECONDS:
+                        lock.unlink()
+                        continue
+                except OSError:
+                    continue  # released between the two calls: try again
+                if clock() - start >= wait:
+                    break
+                sleep(QUEUE_POLL_SECONDS)
+                continue
+            os.write(fd, f"{os.getpid()} {int(time.time())}".encode())
+            os.close(fd)
+            held = True
+            break
+    try:
+        yield {"waited": round(clock() - start, 1), "held": held}
+    finally:
+        if held:
+            with contextlib.suppress(OSError):
+                lock.unlink()
+
+
 def draft_correction(checks: list[dict[str, Any]], rnd: int, budget: int) -> str:
     lines = [f"REVIEW RESULT: FAIL (correction round {rnd} of {budget})"]
     for item in checks:
@@ -309,6 +355,7 @@ def draft_correction(checks: list[dict[str, Any]], rnd: int, budget: int) -> str
 def build_report(
     data: dict[str, Any], *, cwd: str, env: Mapping[str, str], verify: bool, self_check: bool,
     timeout: int, run: Runner = subprocess.run, log_dir: Path | None = None,
+    queue_wait: float = QUEUE_WAIT_SECONDS,
 ) -> dict[str, Any]:
     contract = data.get("contract") or {}
     work_dir = data.get("cwd") or cwd
@@ -319,9 +366,13 @@ def build_report(
     checks = [check_scope(files, contract.get("scope") or []), check_do_not(files, contract.get("do_not") or []),
               check_tests(work_dir, base, files, run)]
     tag = (data.get("runIds") or ["run"])[-1]
+    queue: dict[str, Any] = {"waited": 0.0, "held": False}
     if verify:
-        checks.extend(check_verify(contract.get("verify") or [], work_dir, log_dir or (Path(tempfile.gettempdir()) / "zcrew-gate"),
-                                   tag, timeout, run))
+        commands = contract.get("verify") or []
+        lock = _compat().state_dir(env) / "verify.lock"
+        with verify_queue(lock, queue_wait if commands else 0) as queue:
+            checks.extend(check_verify(commands, work_dir, log_dir or (Path(tempfile.gettempdir()) / "zcrew-gate"),
+                                       tag, timeout, run))
     else:
         checks.append(check("verify", "SKIP", "--no-verify"))
     failed = [c for c in checks if c["status"] == "FAIL"]
@@ -335,6 +386,7 @@ def build_report(
         "round": rnd, "budget": budget, "changed": files, "dirty_excluded": len(data.get("dirty") or []),
         "checks": checks, "judgment": judgment, "mechanical": "FAIL" if failed else "PASS",
         "contract_missing": contract.get("missing") or [], "self": self_check,
+        "queue": {"waited": queue["waited"], "held": queue["held"]},
     }
     if failed and not self_check:
         if rnd >= budget:
@@ -356,6 +408,10 @@ def render(report: dict[str, Any]) -> str:
         out.extend(f"         {ln}" for ln in item["lines"])
     if report["dirty_excluded"]:
         out.append(f"note: {report['dirty_excluded']} file(s) were already modified before the worker started and are left out")
+    queue = report.get("queue") or {}
+    if queue.get("waited", 0) >= 1:
+        how = "then ran" if queue.get("held") else "then ran without the queue"
+        out.append(f"note: waited {queue['waited']:.0f}s for another gate's VERIFY, {how}")
     if report["contract_missing"]:
         out.append("note: the contract has no " + ", ".join(report["contract_missing"]) + "; those parts are not checked")
     if report["judgment"] and not report["self"]:
@@ -392,6 +448,7 @@ def run(args: Any, *, env: Mapping[str, str] | None = None, out: Any = None, run
         report = build_report(
             data, cwd=cwd, env=env, verify=not args.no_verify, self_check=args.self_check,
             timeout=args.verify_timeout, run=runner,
+            queue_wait=0 if getattr(args, "no_queue", False) else QUEUE_WAIT_SECONDS,
         )
         if args.accept is not None or args.reject is not None:
             verdict = "accept" if args.accept is not None else "reject"

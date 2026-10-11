@@ -40,6 +40,7 @@ Before the first `agent-start` in a session, read the effective config: the proj
 ```
 
 - Pass `model` and `thoughtLevel` on every `agent-start` that opens a new thread.
+- Pick the thought level per task: `high` for mechanical work that follows an existing pattern (renames, a test like its neighbours, docs, config, a small fix whose cause you already named); the configured level (usually `max`) for design, debugging an unknown cause, or anything cross-cutting. Every worker step waits on a slow endpoint, and `max` thinks longer per step. When unsure, keep the configured level: a wrong `high` costs a correction round.
 - The user may override per task in chat ("use Flash for this" → `GLM-5.3-Flash`). Apply it to that task only.
 - If the user asks to change the default ("switch default to GLM-6"), edit the user config file (or the project file if they say "for this project"), then run `zcrew doctor` (or `python ~/.zcode-commander/doctor.py`) to confirm the model exists and the plan is entitled.
 

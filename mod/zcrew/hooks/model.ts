@@ -12,6 +12,11 @@ export const DEFAULT_BOX_MS = 1200 * 1000
 export const NEAR_BOX = 0.85 // share of the time box after which a run is flagged
 export const LINGER_MS = 2 * 60 * 1000 // how long finished news stays on the band
 export const HANDS_FREE_LIMIT = 2 // quick wait answers per run before letting waits block again
+// A run whose turn ended but whose background jobs live on stays `background`
+// (not terminal) until they stop or the run times out; after this long Claude
+// is told, so a forgotten dev server does not hold the task open.
+export const BACKGROUND_GRACE_MS = 90 * 1000
+const LIVE_JOB = new Set(['pending', 'queued', 'starting', 'running', 'waiting', 'blocked'])
 
 const WORDS = {
   th: {
@@ -22,6 +27,7 @@ const WORDS = {
     read: 'กำลังอ่านไฟล์', edit: 'กำลังแก้ไฟล์', run: 'กำลังรันคำสั่ง', search: 'กำลังค้นหา',
     think: 'กำลังคิด', queued: 'รอคิว', stopping: 'กำลังหยุดและเขียนรายงาน', web: 'กำลังค้นเว็บ',
     finished: 'เสร็จ', today: 'รวม', workers: 'ช่าง',
+    lingering: 'งานเสร็จแต่มีโปรเซสค้าง',
   },
   en: {
     running: 'working', review: 'to review', accepted: 'accepted', rejected: 'sent back', failed: 'failed',
@@ -31,6 +37,7 @@ const WORDS = {
     read: 'reading files', edit: 'editing files', run: 'running a command', search: 'searching',
     think: 'thinking', queued: 'queued', stopping: 'stopping to report', web: 'searching the web',
     finished: 'done', today: 'total', workers: 'workers',
+    lingering: 'done, but background jobs still run',
   },
 } as const
 
@@ -80,10 +87,29 @@ export const minutes = (ms: number) => Math.max(0, Math.round(ms / 60000))
 
 export const isActive = (run: RunView) => !TERMINAL.has(run.status)
 
+/** Live background jobs from a snapshot's `backgroundTasks`. */
+export function liveJobs(value: unknown): { taskId: string; description: string }[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .filter(j => j && typeof j === 'object' && LIVE_JOB.has(String((j as Record<string, unknown>).status ?? '').toLowerCase()))
+    .map(j => {
+      const job = j as Record<string, unknown>
+      return { taskId: String(job.taskId ?? ''), description: String(job.description ?? job.toolName ?? '').slice(0, 80) }
+    })
+    .filter(j => j.taskId)
+}
+
+/** The worker's turn is over: terminal, or only background jobs keep the run open past the grace. */
+export function turnOver(run: RunView, now: number): boolean {
+  if (!isActive(run)) return true
+  return run.status === 'background' && run.backgroundSince !== undefined && now - run.backgroundSince >= BACKGROUND_GRACE_MS
+}
+
 /** Where a run stands, for ordering and icons: attention first. */
 export function stageOf(run: RunView, now: number, boxMs: number): 'attention' | 'near' | 'running' | 'review' | 'accepted' | 'rejected' {
   if (run.verdict === 'accept' || run.verdict === 'closed') return 'accepted'
   if (run.verdict === 'reject') return 'rejected'
+  if (run.status === 'background') return 'attention'
   if (isActive(run)) {
     const since = run.runningSince ?? run.startedAt
     return now - since >= boxMs * NEAR_BOX ? 'near' : 'running'
@@ -110,6 +136,7 @@ export function detailOf(run: RunView, now: number, boxMs: number, lang: Lang): 
     return `${stage === 'near' ? w.nearBox + ' ' : ''}${left} · ${activityOf(run, lang)}`
   }
   if (stage === 'attention') {
+    if (run.status === 'background') return `${w.lingering} ${run.background?.length ?? ''}`.trim()
     if (run.status !== 'completed') return `${w.failed} (${run.status})`
     return `${w.gateFail}: ${run.gate?.summary ?? ''}`.trim()
   }
@@ -185,6 +212,10 @@ export function wakeMessage(finished: RunView[], now: number): string {
       ? `gate MECHANICAL ${run.gate.mechanical}${run.gate.summary ? ` (${run.gate.summary})` : ''}`
       : 'gate not run (run it yourself)'
     lines.push(`- ${run.runId} "${run.title}": ${run.status} after ${took} min; ${gate}.`)
+    if (run.status === 'background' && run.background?.length) {
+      const jobs = run.background.map(j => `${j.taskId}${j.description ? ` (${j.description})` : ''}`).join(', ')
+      lines.push(`  Its turn ended but background job(s) still run and keep the run open: ${jobs}. Unless you need them, stop each with agent-control {"runId": "${run.runId}", "action": "cancel-background", "taskId": "<id>"}.`)
+    }
   }
   lines.push(
     'Review each with `zcrew gate <runId>` (its VERIFY results count as evidence), fetch the worker result with agent-wait (resultChars > 0) if you need its REPORT, then accept with `zcrew gate <runId> --accept "..."` or send a correction to the same thread.',

@@ -14,6 +14,9 @@ export type RunView = {
   gate?: { mechanical: string; summary: string }
   verdict?: string
   woke?: boolean
+  /** Background jobs still alive after the worker's turn ended (status `background`). */
+  background?: { taskId: string; description: string }[]
+  backgroundSince?: number
 }
 
 declare module 'claude-code' {

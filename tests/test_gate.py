@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -187,6 +188,26 @@ class BuildReportTests(RepoFixture):
         self.assertTrue(list((self.root / "logs").glob("run_1-verify1.log")))
         self.assertIn("FAIL Hero renders", (self.root / "logs" / "run_1-verify1.log").read_text(encoding="utf-8"))
 
+    def test_verify_runs_inside_the_queue(self) -> None:
+        lock = compat.state_dir(self.env) / "verify.lock"
+        seen: list[bool] = []
+
+        def runner(*args: object, **kwargs: object) -> object:
+            if kwargs.get("shell"):
+                seen.append(lock.exists())
+                return subprocess.CompletedProcess(args, 0, "ok", "")
+            return subprocess.run(*args, **kwargs)  # type: ignore[call-overload]
+
+        report = self.report(self.record(["echo ok"]), run=runner)
+        self.assertEqual(seen, [True])
+        self.assertFalse(lock.exists())
+        self.assertTrue(report["queue"]["held"])
+
+    def test_queue_wait_note_in_render(self) -> None:
+        report = self.report(self.record([]))
+        report["queue"] = {"waited": 42.0, "held": True}
+        self.assertIn("note: waited 42s for another gate's VERIFY, then ran", gate.render(report))
+
     def test_verify_timeout_is_a_failure(self) -> None:
         report = self.report(self.record([f"{PY} -c \"import time; time.sleep(30)\""]), timeout=1)
         verify = self.by_name(report, "verify")[0]
@@ -262,6 +283,44 @@ class BuildReportTests(RepoFixture):
         self.assertIn("draft correction", text)
 
 
+class VerifyQueueTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.lock = Path(self._tmp.name) / "q" / "verify.lock"
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_takes_and_releases_the_lock(self) -> None:
+        with gate.verify_queue(self.lock, 60) as q:
+            self.assertTrue(self.lock.exists())
+            self.assertEqual(q, {"waited": 0.0, "held": True})
+        self.assertFalse(self.lock.exists())
+
+    def test_waits_for_a_holder_then_gives_up_and_runs(self) -> None:
+        self.lock.parent.mkdir(parents=True)
+        self.lock.write_text("123 0", encoding="utf-8")
+        now = [0.0]
+        with gate.verify_queue(self.lock, 5, sleep=lambda s: now.__setitem__(0, now[0] + s),
+                               clock=lambda: now[0]) as q:
+            self.assertEqual(q["held"], False)
+            self.assertGreaterEqual(q["waited"], 5)
+        self.assertTrue(self.lock.exists())  # someone else's lock is left alone
+
+    def test_stale_lock_is_taken_over(self) -> None:
+        self.lock.parent.mkdir(parents=True)
+        self.lock.write_text("123 0", encoding="utf-8")
+        old = time.time() - gate.QUEUE_STALE_SECONDS - 60
+        os.utime(self.lock, (old, old))
+        with gate.verify_queue(self.lock, 5) as q:
+            self.assertTrue(q["held"])
+
+    def test_zero_wait_skips_the_queue(self) -> None:
+        with gate.verify_queue(self.lock, 0) as q:
+            self.assertEqual(q["held"], False)
+        self.assertFalse(self.lock.exists())
+
+
 class ResolveRecordTests(RepoFixture):
     def test_by_run_thread_prefix_and_cwd(self) -> None:
         self.record([], run_id="run_a", thread="sess_aaaa1111")
@@ -287,8 +346,8 @@ class ResolveRecordTests(RepoFixture):
 
 class RunCommandTests(RepoFixture):
     def args(self, **over: object) -> SimpleNamespace:
-        base = dict(ident="run_1", self_check=False, no_verify=True, verify_timeout=60, accept=None, reject=None,
-                    override=None, json=False)
+        base = dict(ident="run_1", self_check=False, no_verify=True, no_queue=False, verify_timeout=60,
+                    accept=None, reject=None, override=None, json=False)
         base.update(over)
         return SimpleNamespace(**base)
 
@@ -358,6 +417,7 @@ class WiringTests(unittest.TestCase):
         args = parser.parse_args(["gate", "sess_ab", "--self", "--no-verify", "--accept", "fine"])
         self.assertEqual((args.command, args.ident, args.self_check, args.no_verify, args.accept),
                          ("gate", "sess_ab", True, True, "fine"))
+        self.assertTrue(parser.parse_args(["gate", "--no-queue"]).no_queue)
         bare = parser.parse_args(["gate", "--reject"])
         self.assertEqual((bare.ident, bare.reject, bare.accept), (None, "", None))
         self.assertEqual(zcrew._load_sibling("gate").__name__ != "", True)

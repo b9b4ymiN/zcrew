@@ -2,8 +2,8 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import type { RunView } from '../types'
 import {
-  activityOf, bandLines, bandVisible, boxFromConfig, gateSummary, parseSnapshot, stageOf, statusText,
-  titleOf, wakeMessage,
+  BACKGROUND_GRACE_MS, activityOf, bandLines, bandVisible, boxFromConfig, detailOf, gateSummary, liveJobs,
+  parseSnapshot, stageOf, statusText, titleOf, turnOver, wakeMessage,
 } from '../hooks/model'
 
 const BOX = 20 * 60_000
@@ -87,5 +87,33 @@ describe('model', () => {
     expect(boxFromConfig([undefined, '{"wrapUpSeconds": 900}'])).toBe(900_000)
     expect(boxFromConfig(['{"wrapUpSeconds": 0}'])).toBe(1_200_000)
     expect(boxFromConfig([])).toBe(1_200_000)
+  })
+})
+
+describe('background jobs', () => {
+  test('only live jobs count', () => {
+    expect(liveJobs([
+      { taskId: 'a', status: 'running', description: 'npm run dev' },
+      { taskId: 'b', status: 'completed', description: 'npm test' },
+      { status: 'running' },
+    ])).toEqual([{ taskId: 'a', description: 'npm run dev' }])
+    expect(liveJobs(undefined)).toEqual([])
+  })
+
+  test('a run held open by background jobs is flagged, then counts as over', () => {
+    const held = run({ status: 'background', background: [{ taskId: 'a', description: 'npm run dev' }], backgroundSince: NOW - 10_000 })
+    expect(stageOf(held, NOW, BOX)).toBe('attention')
+    expect(detailOf(held, NOW, BOX, 'en')).toBe('done, but background jobs still run 1')
+    expect(turnOver(held, NOW)).toBe(false)
+    expect(turnOver(held, NOW - 10_000 + BACKGROUND_GRACE_MS)).toBe(true)
+    expect(turnOver(run({}), NOW)).toBe(false)
+    expect(turnOver(run({ status: 'completed' }), NOW)).toBe(true)
+  })
+
+  test('the wake message says how to stop them', () => {
+    const held = run({ status: 'background', endedAt: NOW, background: [{ taskId: 'a', description: 'npm run dev' }] })
+    const text = wakeMessage([held], NOW)
+    expect(text).toContain('background job(s) still run and keep the run open: a (npm run dev)')
+    expect(text).toContain('"action": "cancel-background", "taskId": "<id>"')
   })
 })
