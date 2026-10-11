@@ -307,6 +307,29 @@ STATS_HEADER = ("ID", "STATUS", "STARTED", "ELAPSED", "ZCODE", "BETWEEN", "TURNS
 FINISHED_STATUSES = ("completed", "failed")
 
 
+def concurrency(tasks: list[Any]) -> tuple[float, int] | None:
+    """(average, peak) number of tasks open at once, averaged over the time at
+    least one was open. A task is open from its first turn start to its last turn end."""
+    edges: list[tuple[int, int]] = []
+    for t in tasks:
+        if t.ended_ms > t.started_ms:
+            edges += [(t.started_ms, 1), (t.ended_ms, -1)]
+    if not edges:
+        return None
+    edges.sort()
+    open_now = peak = 0
+    busy_ms = weighted = 0
+    last = edges[0][0]
+    for at, step in edges:
+        if open_now > 0:
+            busy_ms += at - last
+            weighted += open_now * (at - last)
+        open_now += step
+        peak = max(peak, open_now)
+        last = at
+    return (weighted / busy_ms, peak) if busy_ms else None
+
+
 def summarize_tasks(tasks: list[Any]) -> dict[str, Any]:
     """Totals over finished tasks only; a running task's numbers are still moving."""
     done = [t for t in tasks if t.status in FINISHED_STATUSES]
@@ -322,10 +345,15 @@ def summarize_tasks(tasks: list[Any]) -> dict[str, Any]:
         "elapsed_median_ms": None,
         "work_median_ms": None,
         "zcode_share": None,
+        "busy_avg": None,
+        "busy_peak": None,
         "tool_calls": sum(t.tool_calls for t in done),
         "errors": sum(t.errors for t in done),
         "failed_turns": sum(t.failed_turns for t in done),
     }
+    busy = concurrency(tasks)
+    if busy:
+        summary.update(busy_avg=round(busy[0], 3), busy_peak=busy[1])
     if done:
         corrections = [t.turns - 1 for t in done]
         elapsed = sum(t.elapsed_ms for t in done)
@@ -357,6 +385,8 @@ def _summary_lines(s: dict[str, Any]) -> list[str]:
     if s["zcode_share"] is not None:
         lines.append(f"ZCode share      {round(100 * s['zcode_share'])}% of elapsed time"
                      " (the rest is between turns: commander review and corrections)")
+    if s["busy_avg"] is not None:
+        lines.append(f"workers busy     avg {s['busy_avg']:.1f} at a time (peak {s['busy_peak']})")
     lines.append(f"tool errors      {s['errors']} in {s['tool_calls']} tool calls"
                  f"; failed turns {s['failed_turns']}")
     return lines

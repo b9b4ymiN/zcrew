@@ -10,6 +10,7 @@
     zcrew runs   [DIR] [--limit N] [--all] [--json]
     zcrew show   SESSION [--json]
     zcrew stats  [DIR] [--days N] [--limit N] [--all] [--json]
+    zcrew gate   [RUN|THREAD] [--self] [--no-verify] [--accept NOTE | --reject NOTE] [--override REASON] [--json]
     zcrew watch  [DIR] [--all] [--interval SECONDS] [--since MINUTES]
     zcrew dashboard [DIR] [--all] [--port N] [--no-open]
     zcrew update  [--commander auto|claude|codex|both]
@@ -481,6 +482,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--limit", type=int, default=15, metavar="N", help="tasks to list in the table (default 15)")
     p.add_argument("--all", action="store_true", help="every directory, not just DIR (default: current dir)")
     p.add_argument("--json", action="store_true", help="machine-readable output")
+    p = sub.add_parser("gate", help="mechanical review gate for a worker run: scope, DO NOT, tests, VERIFY")
+    p.add_argument("ident", nargs="?", default=None, metavar="RUN|THREAD",
+                   help="run id or thread id (prefix ok); default: newest run recorded for this folder")
+    p.add_argument("--self", dest="self_check", action="store_true",
+                   help="worker self-check before reporting: same checks, records nothing")
+    p.add_argument("--no-verify", action="store_true", help="skip running the VERIFY commands")
+    p.add_argument("--verify-timeout", type=int, default=900, metavar="SECONDS",
+                   help="limit per VERIFY command (default 900)")
+    p.add_argument("--accept", nargs="?", const="", default=None, metavar="NOTE", help="record: you accepted this run")
+    p.add_argument("--reject", nargs="?", const="", default=None, metavar="NOTE", help="record: you rejected this run")
+    p.add_argument("--override", default=None, metavar="REASON", help="accept although the mechanical check failed")
+    p.add_argument("--json", action="store_true", help="machine-readable output")
     p = sub.add_parser("watch", help="follow live worker activity (read-only; Ctrl+C to stop)")
     p.add_argument("dir", nargs="?", default=None, metavar="DIR")
     p.add_argument("--all", action="store_true", help="every directory, not just DIR (default: current dir)")
@@ -539,6 +552,8 @@ def main(
         return int(_load_sibling("dashboard").run(args, env=env))
     if args.command in ("runs", "show", "stats", "watch"):
         return int(_load_sibling("activity_cli").run(args, env=env))
+    if args.command == "gate":
+        return int(_load_sibling("gate").run(args, env=env))
     if args.command == "update":
         return cmd_update(paths, run, args.commander)
     if args.command == "uninstall":

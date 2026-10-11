@@ -34,12 +34,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "maxWorkers": 5,
     "maxCorrectionRounds": 4,
     "timeoutSeconds": 1800,
+    "wrapUpSeconds": 1200,
+    "gateMode": "warn",
 }
+GATE_MODES = ("off", "warn")
 THOUGHT_LEVELS = ("high", "max")
 INT_LIMITS = {
     "maxWorkers": (1, 5),
     "maxCorrectionRounds": (1, 10),
     "timeoutSeconds": (60, 86400),
+    "wrapUpSeconds": (0, 86400),
 }
 
 BEGIN_MARKER = "<!-- zcode-commander:begin -->"
@@ -150,6 +154,9 @@ def validate_config(cfg: Mapping[str, Any], table: dict | None, v2_dir: Path | N
     level = cfg.get("thoughtLevel")
     if level not in THOUGHT_LEVELS:
         problems.append(f"thoughtLevel is {level!r}; set it to \"high\" or \"max\"")
+
+    if cfg.get("gateMode") not in GATE_MODES:
+        problems.append(f"gateMode is {cfg.get('gateMode')!r}; set it to \"warn\" or \"off\"")
 
     for key, (low, high) in INT_LIMITS.items():
         value = cfg.get(key)

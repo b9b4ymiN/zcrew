@@ -3,5 +3,7 @@
   "thoughtLevel": "max",
   "maxWorkers": 5,
   "maxCorrectionRounds": 4,
-  "timeoutSeconds": 1800
+  "timeoutSeconds": 1800,
+  "wrapUpSeconds": 1200,
+  "gateMode": "warn"
 }

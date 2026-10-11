@@ -9,7 +9,8 @@ zcrew turns Claude Code or Codex into a commander that plans, delegates to ZCode
 - `scripts/zcrew.py` — CLI entry; dispatches to sibling modules loaded by path (`importlib`), not as a package.
 - `scripts/commander.py` — `enable/disable/status/config`; writes the CLAUDE.md import block and the sha256-marked policy copy in `AGENTS.override.md`.
 - `scripts/zcode_activity.py` — read-only reader over ZCode's SQLite db (`~/.zcode/cli/db/db.sqlite`, `mode=ro`) → `SessionSummary` / `Activity`.
-- `scripts/activity_cli.py` — terminal views (`runs/show/watch`); owns `ICONS`, `LABELS`, time formatting reused by the dashboard.
+- `scripts/activity_cli.py` — terminal views (`runs/show/stats/watch`); owns `ICONS`, `LABELS`, time formatting reused by the dashboard.
+- `scripts/gate.py` — `zcrew gate`: mechanical review gate (scope / DO NOT / tests / VERIFY) over the contract record that `bridge_compat.patch_run_hooks` writes to `~/.zcode-commander/gate/` at `agent-start`. Config keys `gateMode` (`warn`|`off`) and `wrapUpSeconds` (time box; 0 = off).
 - `scripts/dashboard.py` + `scripts/dashboard.html` — `http.server` on 127.0.0.1:8765, GET-only: `/`, `/api/sessions?limit=N`, `/api/sessions/<id>/activity?after=<cursor>`. Single self-contained HTML page, inline CSS/JS, polling.
 - `scripts/bridge_compat.py`, `zcode_bridge_launcher.py` — shim/launcher for the upstream coder-mcp-bridge (pinned ref in `manifest.json`).
 - `scripts/doctor.py`, `context_report.py` — readiness checks, context-budget report.

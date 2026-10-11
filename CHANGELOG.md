@@ -4,6 +4,14 @@ All notable changes to the Claude Commander × ZCode Executor Kit are recorded h
 
 ## Unreleased
 
+### Added
+
+- **Time box.** A worker run that is still going after `wrapUpSeconds` (new config key, default 1200; 0 turns it off; always at least 120 s before the run's own timeout) gets one `interrupt` asking it to stop experimenting and write its REPORT, instead of being cancelled with nothing to show. The first prompt of a thread also gets a short time-box notice (open-ended tasks: at most 3 approaches, then report). A `TIMEBOX: 40m` line in a contract overrides the default. Implemented in the bridge shim (`bridge_compat.patch_run_hooks`), so it works for Claude Code and Codex alike.
+- **`zcrew gate [RUN|THREAD]`** (review gate, warn mode). At `agent-start` the shim records the worker contract (SCOPE, DO NOT, VERIFY, ACCEPTANCE CRITERIA), the git base commit and the files already modified, in `~/.zcode-commander/gate/`. `zcrew gate` then checks what a program can check: changed files against the `backticked` SCOPE and DO NOT patterns, removed tests / skip markers / deleted test files (warning), and every `backticked` VERIFY command (full output to a log file, only the failing lines printed). Acceptance criteria written as plain text are listed for the reviewer's judgment, and a failing check comes with a draft correction ("round N of `maxCorrectionRounds`"). `--accept` / `--reject` record the reviewer's verdict (accepting a failed check needs `--override "reason"`); `--self` is the same check for a worker, recording nothing.
+  - `agent-start` results carry a `gate` hint (and warn when the contract lacks sections); `agent-close` warns while no verdict exists. Nothing is blocked. `gateMode: "off"` or `ZCODE_COMMANDER_RUN_HOOKS=off` disables the hooks.
+- `zcrew stats` shows `workers busy` (average and peak number of tasks open at once).
+- New config keys `wrapUpSeconds` and `gateMode` (validated by `zcrew config`).
+
 ### Fixed
 
 - `zcrew stats` no longer counts a task that failed on its only turn as a first pass, and adds a `failed tasks` line (count and ZCode time spent on them; `failed` / `failed_work_ms` in `--json`).

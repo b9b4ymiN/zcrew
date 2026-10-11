@@ -63,7 +63,7 @@ class ApplyPatchesTests(unittest.TestCase):
         import control_plane
         import zcode_protocol
 
-        self.assertEqual(applied, ["runtime-model-disabled", "account-provider", "compact-output"])
+        self.assertEqual(applied, ["runtime-model-disabled", "account-provider", "run-hooks", "compact-output"])
         import backend_manager
 
         manager = backend_manager.BackendManager()
@@ -79,6 +79,7 @@ class ApplyPatchesTests(unittest.TestCase):
                 "ZCODE_COMMANDER_RUNTIME_MODEL": "on",
                 "ZCODE_COMMANDER_ACCOUNT_PROVIDER": "off",
                 "ZCODE_COMMANDER_COMPACT": "off",
+                "ZCODE_COMMANDER_RUN_HOOKS": "off",
             },
         )
         import control_plane
@@ -695,6 +696,281 @@ class PatchBackendManagerTests(unittest.TestCase):
         compat.patch_backend_manager(Failing)
         with self.assertRaises(LookupError):
             Failing().wait("r")
+
+
+CONTRACT = """OBJECTIVE
+Add the hero section.
+
+SCOPE
+- `src/hero/**`
+- tests for Hero when needed
+
+DO NOT
+- touch `package.json` or `migrations/`
+
+ACCEPTANCE CRITERIA
+1. The title shows.
+
+VERIFY
+- `npm test -- Hero`
+"""
+
+
+class _HookManager:
+    """Stands in for BackendManager: start() hands out run snapshots, wait() replays states."""
+
+    def __init__(self) -> None:
+        self.started: list[dict] = []
+        self.states: list[str] = ["running"]
+        self.controls: list[tuple] = []
+        self.thread = None
+
+    def start(self, args):
+        self.started.append(dict(args))
+        return {"runId": "run_1", "status": "queued", "revision": 1, "threadId": self.thread}
+
+    def wait(self, run_id, **kwargs):
+        status = self.states.pop(0) if len(self.states) > 1 else self.states[0]
+        return {"runId": run_id, "status": status, "revision": 2}
+
+    def control(self, run_id, action, **kwargs):
+        self.controls.append((run_id, action, kwargs))
+        return {"runId": run_id, "status": "stopping", "revision": 3}
+
+    def close_run(self, run_id=None, *, thread_id=None):
+        return {"runId": run_id or "run_1", "status": "closed", "revision": 4}
+
+
+class ContractParseTests(unittest.TestCase):
+    def test_sections_and_machine_readable_parts(self) -> None:
+        c = compat.parse_contract(CONTRACT)
+        self.assertEqual(c["missing"], [])
+        self.assertEqual(c["scope"], ["src/hero/**"])
+        self.assertEqual(c["do_not"], ["package.json", "migrations/"])
+        self.assertEqual(c["verify"], ["npm test -- Hero"])
+        self.assertEqual(c["sections"]["SCOPE"], ["`src/hero/**`", "tests for Hero when needed"])
+        self.assertEqual(c["sections"]["ACCEPTANCE CRITERIA"], ["The title shows."])
+
+    def test_missing_sections_are_named(self) -> None:
+        c = compat.parse_contract("OBJECTIVE\nDo it.\n\nSCOPE\n- src/\n")
+        self.assertEqual(c["missing"], ["DO NOT", "ACCEPTANCE CRITERIA", "VERIFY"])
+        self.assertEqual(c["scope"], [])  # no backticks: left to the reviewer
+
+    def test_markdown_headings_and_bold(self) -> None:
+        c = compat.parse_contract("## OBJECTIVE\nx\n**SCOPE:**\n- `a/b.py`\n### VERIFY\n- `pytest`\n")
+        self.assertEqual((c["scope"], c["verify"]), (["a/b.py"], ["pytest"]))
+
+    def test_non_path_backticks_are_not_scope(self) -> None:
+        c = compat.parse_contract("SCOPE\n- the `Hero` component\n")
+        self.assertEqual(c["scope"], [])
+
+    def test_timebox(self) -> None:
+        self.assertEqual(compat.parse_timebox("a\nTIMEBOX: 40m\nb"), 2400)
+        self.assertEqual(compat.parse_timebox("TIMEBOX: 90s"), 90)
+        self.assertEqual(compat.parse_timebox("TIMEBOX: 1h"), 3600)
+        self.assertIsNone(compat.parse_timebox("no limit here"))
+
+
+class RunHookFixture(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.env = {"ZCODE_COMMANDER_STATE": str(self.root / "state"), "HOME": str(self.root), "USERPROFILE": str(self.root)}
+        self._saved = dict(os.environ)
+        os.environ.update(self.env)
+        self.work = self.root / "repo"
+        self.work.mkdir()
+
+    def tearDown(self) -> None:
+        os.environ.clear()
+        os.environ.update(self._saved)
+        self._tmp.cleanup()
+
+    def config(self, **values: object) -> None:
+        path = self.work / ".claude"
+        path.mkdir(exist_ok=True)
+        (path / "zcode-commander.json").write_text(json.dumps(values), encoding="utf-8")
+
+    def patched(self) -> _HookManager:
+        cls = type("Manager", (_HookManager,), {})
+        compat.patch_run_hooks(cls, self.env)
+        return cls()
+
+
+class WrapUpDelayTests(RunHookFixture):
+    def test_default_and_caps(self) -> None:
+        self.assertEqual(compat.wrap_up_delay({"cwd": str(self.work), "timeout": 1800}, self.env), 1200)
+        self.assertEqual(compat.wrap_up_delay({"cwd": str(self.work), "timeout": 900}, self.env), 780)  # timeout - 120
+        self.assertIsNone(compat.wrap_up_delay({"cwd": str(self.work), "timeout": 150}, self.env))  # too short
+
+    def test_bridge_default_timeout_when_none_given(self) -> None:
+        env = {**self.env, "AGENT_MCP_TIMEOUT": "600"}
+        self.assertEqual(compat.wrap_up_delay({"cwd": str(self.work)}, env), 480)
+
+    def test_config_zero_turns_off_and_timebox_overrides(self) -> None:
+        self.config(wrapUpSeconds=0)
+        self.assertIsNone(compat.wrap_up_delay({"cwd": str(self.work), "timeout": 1800}, self.env))
+        args = {"cwd": str(self.work), "timeout": 1800, "prompt": "TIMEBOX: 10m"}
+        self.assertEqual(compat.wrap_up_delay(args, self.env), 600)
+
+    def test_bad_config_value_falls_back(self) -> None:
+        self.config(wrapUpSeconds="soon", gateMode="loud")
+        self.assertEqual(compat.effective_setting(str(self.work), "wrapUpSeconds", self.env), 1200)
+        self.assertEqual(compat.effective_setting(str(self.work), "gateMode", self.env), "warn")
+
+
+class WatchForWrapUpTests(unittest.TestCase):
+    def run_watch(self, states: list[str], delay: int = 100) -> tuple[bool, _HookManager, list[float]]:
+        manager = _HookManager()
+        manager.states = states
+        now = [0.0]
+        slept: list[float] = []
+
+        def sleep(seconds: float) -> None:
+            slept.append(seconds)
+            now[0] += seconds
+
+        sent = compat.watch_for_wrap_up(manager, "run_1", delay, sleep=sleep, clock=lambda: now[0])
+        return sent, manager, slept
+
+    def test_interrupts_once_after_delay_of_running_time(self) -> None:
+        sent, manager, slept = self.run_watch(["queued", "queued", "running"], delay=100)
+        self.assertTrue(sent)
+        self.assertEqual(len(manager.controls), 1)
+        run_id, action, kwargs = manager.controls[0]
+        self.assertEqual((run_id, action, kwargs["if_status"]), ("run_1", "interrupt", "running"))
+        self.assertTrue(kwargs["prompt"].startswith(compat.WRAP_UP_MARK))
+        self.assertGreaterEqual(sum(slept), 100)  # counted from when it started running, not from queueing
+
+    def test_finished_run_is_left_alone(self) -> None:
+        sent, manager, _ = self.run_watch(["running", "running", "completed"], delay=10_000)
+        self.assertFalse(sent)
+        self.assertEqual(manager.controls, [])
+
+    def test_turn_that_ended_idle_is_left_alone(self) -> None:
+        sent, manager, _ = self.run_watch(["running", "idle"], delay=10_000)
+        self.assertFalse(sent)
+        self.assertEqual(manager.controls, [])
+
+    def test_gives_up_after_a_day(self) -> None:
+        sent, manager, slept = self.run_watch(["queued"], delay=100)
+        self.assertFalse(sent)
+        self.assertEqual(manager.controls, [])
+        self.assertGreaterEqual(sum(slept), 86400)
+
+    def test_failed_interrupt_is_swallowed(self) -> None:
+        manager = _HookManager()
+
+        def refuse(*_a: object, **_k: object) -> None:
+            raise RuntimeError("stale")
+
+        manager.control = refuse  # type: ignore[method-assign]
+        logs: list[str] = []
+        now = [0.0]
+        sent = compat.watch_for_wrap_up(manager, "r", 5, sleep=lambda s: now.__setitem__(0, now[0] + s),
+                                        clock=lambda: now[0], log=logs.append)
+        self.assertFalse(sent)
+        self.assertIn("wrap-up interrupt failed", logs[0])
+
+
+class PatchRunHooksTests(RunHookFixture):
+    def start_args(self, **over: object) -> dict:
+        return {"prompt": CONTRACT, "cwd": str(self.work), "timeout": 1800, **over}
+
+    def run_start(self, manager: _HookManager, args: dict) -> dict:
+        real = threading.Thread
+        threading.Thread = lambda **kw: type("T", (), {"start": lambda self: None})()  # type: ignore[assignment,misc]
+        try:
+            return manager.start(args)
+        finally:
+            threading.Thread = real  # type: ignore[misc]
+
+    def test_idempotent_and_skips_incomplete_managers(self) -> None:
+        cls = type("Manager", (_HookManager,), {})
+        compat.patch_run_hooks(cls, self.env)
+        first = cls.start
+        compat.patch_run_hooks(cls, self.env)
+        self.assertIs(cls.start, first)
+        compat.patch_run_hooks(type("Bare", (), {}), self.env)  # no start/close_run: no error
+
+    def test_first_start_records_contract_and_adds_timebox_and_hint(self) -> None:
+        manager = self.patched()
+        result = self.run_start(manager, self.start_args())
+        self.assertIn("[zcrew] Time box: about 20 minutes", manager.started[0]["prompt"])
+        self.assertTrue(manager.started[0]["prompt"].startswith(CONTRACT))
+        self.assertEqual(result["gate"]["verify"], "before accepting, run: zcrew gate run_1")
+        self.assertNotIn("warnings", result["gate"])
+        [record_path] = list((self.root / "state" / "gate").glob("*.json"))
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        self.assertEqual(record["runIds"], ["run_1"])
+        self.assertEqual(record["contract"]["verify"], ["npm test -- Hero"])
+        self.assertEqual(record["rounds"], 1)
+        self.assertEqual(record["verdicts"], [])
+
+    def test_incomplete_contract_warns(self) -> None:
+        manager = self.patched()
+        result = self.run_start(manager, self.start_args(prompt="Just fix the bug please"))
+        self.assertIn("OBJECTIVE", result["gate"]["warnings"][0])
+        self.assertIn("VERIFY", result["gate"]["warnings"][0])
+
+    def test_correction_bumps_round_and_adds_no_notice(self) -> None:
+        manager = self.patched()
+        manager.thread = "sess_abc"
+        self.run_start(manager, self.start_args())
+        compat.note_snapshot({"runId": "run_1", "status": "running", "revision": 2, "threadId": "sess_abc"}, self.env)
+        manager.started.clear()
+        result = self.run_start(manager, self.start_args(prompt="REVIEW RESULT: FAIL", threadId="sess_abc"))
+        self.assertEqual(manager.started[0]["prompt"], "REVIEW RESULT: FAIL")
+        self.assertNotIn("warnings", result.get("gate", {}))
+        [record_path] = list((self.root / "state" / "gate").glob("*.json"))
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        self.assertEqual((record["rounds"], record["runIds"]), (2, ["run_1", "run_1"]))
+
+    def test_unknown_thread_creates_no_record(self) -> None:
+        manager = self.patched()
+        self.run_start(manager, self.start_args(prompt="continue", threadId="sess_old"))
+        self.assertFalse((self.root / "state" / "gate").exists())
+
+    def test_note_snapshot_learns_thread_id(self) -> None:
+        manager = self.patched()
+        self.run_start(manager, self.start_args())
+        compat.note_snapshot({"runId": "run_1", "status": "running", "revision": 2, "threadId": "sess_xyz"}, self.env)
+        found = compat.find_record(self.env, thread_id="sess_xyz")
+        self.assertIsNotNone(found)
+
+    def test_gate_mode_off_changes_nothing_but_the_timebox(self) -> None:
+        self.config(gateMode="off")
+        manager = self.patched()
+        result = self.run_start(manager, self.start_args())
+        self.assertNotIn("gate", result)
+        self.assertFalse((self.root / "state" / "gate").exists())
+        self.assertEqual(manager.close_run("run_1"), {"runId": "run_1", "status": "closed", "revision": 4})
+
+    def test_wrap_up_zero_leaves_prompt_untouched(self) -> None:
+        self.config(wrapUpSeconds=0)
+        manager = self.patched()
+        self.run_start(manager, self.start_args())
+        self.assertEqual(manager.started[0]["prompt"], CONTRACT)
+
+    def test_close_warns_until_a_verdict_exists(self) -> None:
+        manager = self.patched()
+        self.run_start(manager, self.start_args())
+        warned = manager.close_run("run_1")
+        self.assertIn("zcrew gate run_1", warned["gate"]["warnings"][0])
+        path, record = compat.find_record(self.env, run_id="run_1")  # type: ignore[misc]
+        record["verdicts"].append({"verdict": "accept"})
+        compat.save_record(path, record)
+        self.assertNotIn("gate", manager.close_run("run_1"))
+
+    def test_hook_failures_never_break_start(self) -> None:
+        manager = self.patched()
+        original = compat.git_snapshot
+        compat.git_snapshot = lambda cwd: (_ for _ in ()).throw(RuntimeError("boom"))  # type: ignore[assignment]
+        try:
+            result = self.run_start(manager, self.start_args())
+        finally:
+            compat.git_snapshot = original
+        self.assertEqual(result["runId"], "run_1")
 
 
 if __name__ == "__main__":

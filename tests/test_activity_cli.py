@@ -532,6 +532,7 @@ class StatsCliTest(unittest.TestCase):
         self.assertIn("median 1m00s elapsed, 1m00s ZCode working", out)
         self.assertIn("failed tasks     1 of 3, 30.0s of ZCode time", out)
         self.assertIn("ZCode share      64% of elapsed time", out)
+        self.assertIn("workers busy     avg 1.0 at a time (peak 2)", out)
         row = next(line for line in lines if line.startswith("sess_three"))
         self.assertEqual(row.split()[3:7], ["4m00s", "2m00s", "2m00s", "3"])
 
@@ -546,6 +547,7 @@ class StatsCliTest(unittest.TestCase):
         self.assertEqual(data["summary"]["first_pass"], 1)
         self.assertEqual((data["summary"]["failed"], data["summary"]["failed_work_ms"]), (1, 30_000))
         self.assertEqual(data["summary"]["zcode_share"], 0.636)
+        self.assertEqual((data["summary"]["busy_avg"], data["summary"]["busy_peak"]), (1.047, 2))
         self.assertEqual(data["summary"]["elapsed_median_ms"], 60_000)
 
     def test_limit_notes_older_tasks(self) -> None:
@@ -561,7 +563,8 @@ class StatsCliTest(unittest.TestCase):
 
     def test_only_unfinished(self) -> None:
         summary = cli.summarize_tasks([SimpleNamespace(status="running", turns=1, tool_calls=2, errors=0,
-                                                       failed_turns=0, elapsed_ms=5, work_ms=5)])
+                                                       failed_turns=0, elapsed_ms=5, work_ms=5,
+                                                       started_ms=0, ended_ms=5)])
         self.assertEqual((summary["finished"], summary["unfinished"]), (0, 1))
         self.assertIsNone(summary["zcode_share"])
         self.assertEqual(cli._summary_lines(summary), ["finished tasks   0  (unfinished 1)"])

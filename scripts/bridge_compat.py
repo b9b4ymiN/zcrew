@@ -23,6 +23,18 @@ Run snapshots returned by agent-start/wait/observe/control/close/recover are
 compacted (timestamps, resource paths, permission policy and empty sections
 dropped) to save commander context; set ZCODE_COMMANDER_COMPACT=off to restore
 upstream output exactly.
+
+Run hooks (``patch_run_hooks``) add two things around agent-start/agent-close:
+
+- Time box: a run that is still working after ``wrapUpSeconds`` (config; 0 turns
+  it off; capped below the run's own timeout) gets one ``interrupt`` asking the
+  worker to stop and write its REPORT, instead of being cancelled with nothing
+  to show. A ``TIMEBOX: 40m`` line in the prompt overrides the default.
+- Gate (mode ``gateMode``: ``warn`` or ``off``): the first agent-start of a thread
+  records its worker contract (SCOPE, DO NOT, VERIFY, ...) and the git state to
+  ~/.zcode-commander/gate/ for ``zcrew gate``; the result carries ``gate`` hints,
+  and agent-close warns while no gate verdict exists. Nothing is blocked.
+Set ZCODE_COMMANDER_RUN_HOOKS=off to disable both.
 """
 
 from __future__ import annotations
@@ -32,6 +44,7 @@ import json
 import os
 import re
 import runpy
+import subprocess
 import sys
 import threading
 import time
@@ -519,6 +532,11 @@ def patch_backend_manager(cls: Any) -> None:
         def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
             result = original(self, *args, **kwargs)
             try:
+                if tool_name != "agent-close":
+                    note_snapshot(result, os.environ)
+            except Exception:  # noqa: BLE001 - bookkeeping must never lose a result
+                pass
+            try:
                 return compact_snapshot(tool_name, result)
             except Exception:  # noqa: BLE001 - compaction must never lose a result
                 return result
@@ -532,6 +550,305 @@ def patch_backend_manager(cls: Any) -> None:
         if callable(original):
             setattr(cls, method_name, compacting(tool_name, original))
     cls._commander_compact_patched = True
+
+
+# --- run hooks: time box and gate records --------------------------------------
+#
+# State lives in plain JSON files, one per thread (or run, until its thread id
+# is known), so ``zcrew gate`` (a separate process) can read what the bridge saw.
+
+TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "timed_out", "closed"})
+RUN_HOOKS_DEFAULTS = {"wrapUpSeconds": 1200, "gateMode": "warn"}
+GATE_MODES = ("off", "warn")
+WRAP_UP_MARK = "[zcrew:wrap-up]"
+WRAP_UP_MIN_SECONDS = 60
+WRAP_UP_GRACE_SECONDS = 120  # the report needs time before the hard timeout
+WRAP_UP_POLL_SECONDS = 10.0
+BRIDGE_TIMEOUT_ENVS = ("AGENT_MCP_TIMEOUT", "ZCODE_MCP_TIMEOUT")
+BRIDGE_TIMEOUT_DEFAULT = 900
+SECTION_NAMES = ("OBJECTIVE", "CONTEXT", "SCOPE", "DO NOT", "ACCEPTANCE CRITERIA", "VERIFY", "REPORT")
+REQUIRED_SECTIONS = ("OBJECTIVE", "SCOPE", "DO NOT", "ACCEPTANCE CRITERIA", "VERIFY")
+_SECTION_RE = re.compile(r"^\s*(?:#{1,6}\s*)?\**(%s)\**\s*:?\s*\**\s*$" % "|".join(SECTION_NAMES))
+_BULLET_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+(.*\S)\s*$")
+_BACKTICK_RE = re.compile(r"`([^`\n]+)`")
+_TIMEBOX_RE = re.compile(r"^\s*TIMEBOX\s*:\s*(\d+)\s*(s|sec|m|min|h)?\s*$", re.IGNORECASE | re.MULTILINE)
+WRAP_UP_PROMPT = (
+    WRAP_UP_MARK + " Time is almost up. Stop experimenting now and write your REPORT: what you changed, "
+    "what you measured or verified (real command results), what is unfinished, and what you recommend "
+    "next. Do not start new work."
+)
+TIMEBOX_NOTICE = (
+    "\n\n[zcrew] Time box: about %d minutes. If this task is open-ended (tuning, measuring, "
+    "investigating), try at most 3 approaches, then stop and write the REPORT with your numbers. "
+    "If you are told to wrap up, stop and report immediately."
+)
+
+
+def run_hooks_enabled(env: Mapping[str, str]) -> bool:
+    return env.get("ZCODE_COMMANDER_RUN_HOOKS", "on").strip().lower() not in {"0", "off", "false", "no"}
+
+
+def state_dir(env: Mapping[str, str]) -> Path:
+    explicit = (env.get("ZCODE_COMMANDER_STATE") or "").strip()
+    base = Path(explicit) if explicit else Path.home() / ".zcode-commander"
+    return base / "gate"
+
+
+def _read_json(path: Path) -> dict | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def effective_setting(cwd: str | None, key: str, env: Mapping[str, str]) -> Any:
+    """Project ``.claude/zcode-commander.json`` over user ``~/.zcode-commander/config.json``
+    over the default; a wrong type falls back to the default."""
+    default = RUN_HOOKS_DEFAULTS[key]
+    home = Path(env.get("USERPROFILE") or env.get("HOME") or Path.home())
+    paths = [Path(cwd) / ".claude" / "zcode-commander.json"] if cwd else []
+    paths.append(home / ".zcode-commander" / "config.json")
+    for path in paths:
+        value = (_read_json(path) or {}).get(key)
+        if isinstance(default, int) and isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            return value
+        if isinstance(default, str) and value in GATE_MODES:
+            return value
+    return default
+
+
+def parse_timebox(prompt: str) -> int | None:
+    """Seconds from a ``TIMEBOX: 40m`` line, else None."""
+    match = _TIMEBOX_RE.search(prompt or "")
+    if not match:
+        return None
+    unit = (match.group(2) or "m").lower()
+    return int(match.group(1)) * {"s": 1, "sec": 1, "m": 60, "min": 60, "h": 3600}[unit]
+
+
+def parse_contract(prompt: str) -> dict:
+    """Split a worker contract into its sections.
+
+    Returns ``sections`` (name -> bullet list; free text counts as one item),
+    ``missing`` (required sections absent or empty), ``scope`` / ``do_not``
+    (backticked path patterns) and ``verify`` (backticked commands). Items
+    without backticks stay in ``sections`` for the reviewer's judgment.
+    """
+    sections: dict[str, list[str]] = {}
+    current: str | None = None
+    for line in (prompt or "").splitlines():
+        head = _SECTION_RE.match(line)
+        if head:
+            current = head.group(1)
+            sections.setdefault(current, [])
+            continue
+        if current is None or not line.strip():
+            continue
+        bullet = _BULLET_RE.match(line)
+        sections[current].append(bullet.group(1) if bullet else line.strip())
+    def ticked(name: str) -> list[str]:
+        return [t.strip() for item in sections.get(name, []) for t in _BACKTICK_RE.findall(item) if t.strip()]
+
+    def pathlike(tokens: list[str]) -> list[str]:
+        return [t for t in tokens if re.search(r"[/\\*.]", t) and " " not in t]
+
+    return {
+        "sections": sections,
+        "missing": [n for n in REQUIRED_SECTIONS if not sections.get(n)],
+        "scope": pathlike(ticked("SCOPE")),
+        "do_not": pathlike(ticked("DO NOT")),
+        "verify": ticked("VERIFY"),
+    }
+
+
+def _git(cwd: str, *args: str) -> str | None:
+    try:
+        done = subprocess.run(
+            ["git", "-C", cwd, *args], capture_output=True, text=True, timeout=10, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return done.stdout if done.returncode == 0 else None
+
+
+def git_snapshot(cwd: str | None) -> dict:
+    """Base commit and the files already dirty before the worker starts."""
+    if not cwd:
+        return {"base": None, "dirty": []}
+    head = _git(cwd, "rev-parse", "HEAD")
+    status = _git(cwd, "status", "--porcelain", "-uall")
+    dirty = []
+    for line in (status or "").splitlines():
+        path = line[3:].strip().strip('"')
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1]
+        if path:
+            dirty.append(path)
+    return {"base": head.strip() if head else None, "dirty": dirty}
+
+
+def record_files(env: Mapping[str, str]) -> list[Path]:
+    folder = state_dir(env)
+    try:
+        return sorted(folder.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        return []
+
+
+def find_record(env: Mapping[str, str], *, thread_id: str | None = None,
+                run_id: str | None = None) -> tuple[Path, dict] | None:
+    for path in record_files(env):
+        data = _read_json(path)
+        if not data:
+            continue
+        if thread_id and data.get("threadId") == thread_id:
+            return path, data
+        if run_id and run_id in (data.get("runIds") or []):
+            return path, data
+    return None
+
+
+def save_record(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def note_snapshot(result: Any, env: Mapping[str, str]) -> None:
+    """Remember a run's thread id as soon as any snapshot shows it."""
+    if not is_run_snapshot(result) or not result.get("threadId"):
+        return
+    found = find_record(env, run_id=result["runId"])
+    if found and found[1].get("threadId") != result["threadId"]:
+        path, data = found
+        data["threadId"] = result["threadId"]
+        save_record(path, data)
+
+
+def record_start(args: Mapping[str, Any], result: Any, env: Mapping[str, str], warnings: list[str]) -> None:
+    if not is_run_snapshot(result):
+        return
+    run_id, thread_id = result["runId"], args.get("threadId")
+    if thread_id:  # a correction: same record, next round; unknown threads predate gate records
+        existing = find_record(env, thread_id=thread_id)
+        if existing:
+            path, data = existing
+            data["rounds"] = int(data.get("rounds", 1)) + 1
+            data.setdefault("runIds", []).append(run_id)
+            save_record(path, data)
+        return
+    cwd = args.get("cwd")
+    contract = parse_contract(str(args.get("prompt") or ""))
+    snap = git_snapshot(cwd)
+    save_record(state_dir(env) / ("%s.json" % run_id), {
+        "runIds": [run_id], "threadId": result.get("threadId"), "cwd": cwd,
+        "startedAt": int(time.time() * 1000), "rounds": 1, "base": snap["base"], "dirty": snap["dirty"],
+        "contract": contract, "verdicts": [], "mode": "warn",
+    })
+    if contract["missing"]:
+        warnings.append("contract is missing: %s (zcrew gate cannot check what it cannot read)"
+                        % ", ".join(contract["missing"]))
+
+
+def wrap_up_delay(args: Mapping[str, Any], env: Mapping[str, str]) -> int | None:
+    """Seconds into the run when the wrap-up interrupt fires, or None for no time box."""
+    timeout = args.get("timeout")
+    if not isinstance(timeout, int) or isinstance(timeout, bool) or timeout <= 0:
+        timeout = next((int(env[k]) for k in BRIDGE_TIMEOUT_ENVS if str(env.get(k, "")).isdigit()),
+                       BRIDGE_TIMEOUT_DEFAULT)
+    explicit = parse_timebox(str(args.get("prompt") or ""))
+    wanted = explicit if explicit else effective_setting(args.get("cwd"), "wrapUpSeconds", env)
+    delay = min(int(wanted), timeout - WRAP_UP_GRACE_SECONDS)
+    return delay if wanted and delay >= WRAP_UP_MIN_SECONDS else None
+
+
+def watch_for_wrap_up(
+    manager: Any, run_id: str, delay: int, *,
+    sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic,
+    log: Callable[[str], None] | None = None,
+) -> bool:
+    """Interrupt the run once, ``delay`` seconds after it starts running. True when sent."""
+    running_since: float | None = None
+    give_up = clock() + 86400  # never poll forever for a run that stays in a non-terminal state
+    while clock() < give_up:
+        try:
+            snap = manager.wait(run_id, after_revision=10**9, timeout_ms=0, result_chars=0)
+        except Exception:  # noqa: BLE001 - a gone run ends the watch
+            return False
+        status = snap.get("status") if isinstance(snap, dict) else None
+        if status in TERMINAL_STATUSES or (status in ("idle", "paused") and running_since is not None):
+            return False  # finished, or the turn being timed has ended
+        if status == "running" and running_since is None:
+            running_since = clock()
+        if running_since is not None and clock() - running_since >= delay:
+            try:
+                manager.control(run_id, "interrupt", prompt=WRAP_UP_PROMPT, if_status="running")
+            except Exception as exc:  # noqa: BLE001 - the hard timeout stays as the safety net
+                if log:
+                    log("run-hooks: wrap-up interrupt failed for %s: %s" % (run_id, exc))
+                return False
+            return True
+        sleep(WRAP_UP_POLL_SECONDS)
+    return False
+
+
+def patch_run_hooks(cls: Any, env: Mapping[str, str]) -> None:
+    """Wrap BackendManager.start / close_run (see the module docstring). Idempotent;
+    every hook is best effort and never changes what the run itself does, apart
+    from the time-box sentence appended to the prompt."""
+    if getattr(cls, "_commander_run_hooks_patched", False):
+        return
+    original_start, original_close = getattr(cls, "start", None), getattr(cls, "close_run", None)
+    if not (callable(original_start) and callable(original_close)):
+        return
+
+    def start(self: Any, args: Any) -> Any:
+        args = dict(args or {})
+        cwd = args.get("cwd")
+        mode = effective_setting(cwd, "gateMode", env)
+        delay = None
+        try:
+            delay = wrap_up_delay(args, env) if isinstance(args.get("prompt"), str) else None
+            if delay and not args.get("threadId"):
+                args["prompt"] += TIMEBOX_NOTICE % max(1, delay // 60)
+        except Exception:  # noqa: BLE001
+            delay = None
+        result = original_start(self, args)
+        warnings: list[str] = []
+        try:
+            if mode != "off":
+                record_start(args, result, env, warnings)
+        except Exception:  # noqa: BLE001
+            pass
+        if is_run_snapshot(result):
+            if delay:
+                threading.Thread(
+                    target=watch_for_wrap_up, args=(self, result["runId"], delay), daemon=True,
+                ).start()
+            if mode != "off" and isinstance(result, dict):
+                hint = {"verify": "before accepting, run: zcrew gate %s" % result["runId"]}
+                if warnings:
+                    hint["warnings"] = warnings
+                result = {**result, "gate": hint}
+        return result
+
+    def close_run(self: Any, run_id: Any = None, *, thread_id: Any = None) -> Any:
+        result = original_close(self, run_id, thread_id=thread_id)
+        try:
+            found = find_record(env, thread_id=thread_id, run_id=run_id)
+            if found and effective_setting(found[1].get("cwd"), "gateMode", env) != "off" \
+                    and not found[1].get("verdicts") and isinstance(result, dict):
+                result = {**result, "gate": {"warnings": [
+                    "no gate verdict recorded for this run; run: zcrew gate %s, then --accept or --reject"
+                    % (run_id or thread_id)]}}
+        except Exception:  # noqa: BLE001
+            pass
+        return result
+
+    cls.start, cls.close_run = start, close_run
+    cls._commander_run_hooks_patched = True
 
 
 def apply_patches(bridge_root: Path, env: Mapping[str, str]) -> list[str]:
@@ -549,6 +866,11 @@ def apply_patches(bridge_root: Path, env: Mapping[str, str]) -> list[str]:
 
         patch_protocol_client(zcode_protocol.ZCodeProtocolClient, env)
         applied.append("account-provider")
+    if run_hooks_enabled(env):
+        import backend_manager
+
+        patch_run_hooks(backend_manager.BackendManager, env)
+        applied.append("run-hooks")
     if compact_output_enabled(env):
         import backend_manager
 
