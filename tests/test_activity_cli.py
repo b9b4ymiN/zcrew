@@ -510,6 +510,9 @@ class StatsCliTest(unittest.TestCase):
         fx.turn("sess_three", "t1", "completed", NOW - 250_000, NOW - 190_000)
         fx.turn("sess_three", "t2", "completed", NOW - 150_000, NOW - 120_000)
         fx.turn("sess_three", "t3", "completed", NOW - 40_000, NOW - 10_000)
+        # failed on its only turn: 30 s of work, not a first pass
+        fx.session("sess_bad", SANDBOX, "Timed out", NOW - 400_000, NOW - 370_000)
+        fx.turn("sess_bad", "t1", "error", NOW - 400_000, NOW - 370_000)
         # still running: a part newer than its only turn
         fx.session("sess_live", SANDBOX, "In flight", NOW - 20_000, NOW - 1_000)
         fx.turn("sess_live", "t1", "completed", NOW - 20_000, NOW - 15_000)
@@ -523,11 +526,12 @@ class StatsCliTest(unittest.TestCase):
         lines = out.splitlines()
         header = next(line for line in lines if line.startswith("ID"))
         self.assertIn("TURNS", header)
-        self.assertIn("finished tasks   2  (unfinished 1)", out)
-        self.assertIn("first pass       1 of 2 (50%)", out)
-        self.assertIn("corrections      avg 1.0 per task, max 2", out)
-        self.assertIn("median 2m30s elapsed, 1m30s ZCode working", out)
-        self.assertIn("ZCode share      60% of elapsed time", out)
+        self.assertIn("finished tasks   3  (unfinished 1)", out)
+        self.assertIn("first pass       1 of 3 (33%)", out)
+        self.assertIn("corrections      avg 0.7 per task, max 2", out)
+        self.assertIn("median 1m00s elapsed, 1m00s ZCode working", out)
+        self.assertIn("failed tasks     1 of 3, 30.0s of ZCode time", out)
+        self.assertIn("ZCode share      64% of elapsed time", out)
         row = next(line for line in lines if line.startswith("sess_three"))
         self.assertEqual(row.split()[3:7], ["4m00s", "2m00s", "2m00s", "3"])
 
@@ -538,16 +542,17 @@ class StatsCliTest(unittest.TestCase):
         data = json.loads(out)
         self.assertEqual(data["scope"], SANDBOX)
         self.assertEqual(data["since_ms"], NOW - 7 * 86_400_000)
-        self.assertEqual([t["id"] for t in data["tasks"]], ["sess_live", "sess_three", "sess_one"])
+        self.assertEqual([t["id"] for t in data["tasks"]], ["sess_live", "sess_three", "sess_one", "sess_bad"])
         self.assertEqual(data["summary"]["first_pass"], 1)
-        self.assertEqual(data["summary"]["zcode_share"], 0.6)
-        self.assertEqual(data["summary"]["elapsed_median_ms"], 150_000)
+        self.assertEqual((data["summary"]["failed"], data["summary"]["failed_work_ms"]), (1, 30_000))
+        self.assertEqual(data["summary"]["zcode_share"], 0.636)
+        self.assertEqual(data["summary"]["elapsed_median_ms"], 60_000)
 
     def test_limit_notes_older_tasks(self) -> None:
         self.seed()
         _, out, _ = self.run_cli(stats_args(limit=1))
-        self.assertIn("... 2 older (--limit to show more)", out)
-        self.assertIn("finished tasks   2", out)  # totals still cover every task
+        self.assertIn("... 3 older (--limit to show more)", out)
+        self.assertIn("finished tasks   3", out)  # totals still cover every task
 
     def test_empty(self) -> None:
         code, out, _ = self.run_cli(stats_args())

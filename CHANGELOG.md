@@ -2,6 +2,12 @@
 
 All notable changes to the Claude Commander × ZCode Executor Kit are recorded here.
 
+## Unreleased
+
+### Fixed
+
+- `zcrew stats` no longer counts a task that failed on its only turn as a first pass, and adds a `failed tasks` line (count and ZCode time spent on them; `failed` / `failed_work_ms` in `--json`).
+
 ## 0.9.0 — 2026-10-11
 
 See where the time of each worker task goes.

@@ -313,7 +313,10 @@ def summarize_tasks(tasks: list[Any]) -> dict[str, Any]:
     summary: dict[str, Any] = {
         "finished": len(done),
         "unfinished": len(tasks) - len(done),
-        "first_pass": sum(1 for t in done if t.turns == 1),
+        # a task that failed on its only turn was never accepted
+        "first_pass": sum(1 for t in done if t.turns == 1 and t.status == "completed"),
+        "failed": sum(1 for t in done if t.status == "failed"),
+        "failed_work_ms": sum(t.work_ms for t in done if t.status == "failed"),
         "corrections_avg": None,
         "corrections_max": None,
         "elapsed_median_ms": None,
@@ -342,11 +345,15 @@ def _summary_lines(s: dict[str, Any]) -> list[str]:
     pct = round(100 * s["first_pass"] / s["finished"])
     lines = [
         f"finished tasks   {s['finished']}  (unfinished {s['unfinished']})",
-        f"first pass       {s['first_pass']} of {s['finished']} ({pct}%)  estimate: one turn, no correction sent",
+        f"first pass       {s['first_pass']} of {s['finished']} ({pct}%)"
+        "  estimate: completed in one turn, no correction sent",
         f"corrections      avg {s['corrections_avg']:.1f} per task, max {s['corrections_max']}",
         f"time per task    median {_fmt_duration(s['elapsed_median_ms'])} elapsed,"
         f" {_fmt_duration(s['work_median_ms'])} ZCode working",
     ]
+    if s["failed"]:
+        lines.append(f"failed tasks     {s['failed']} of {s['finished']},"
+                     f" {_fmt_duration(s['failed_work_ms'])} of ZCode time")
     if s["zcode_share"] is not None:
         lines.append(f"ZCode share      {round(100 * s['zcode_share'])}% of elapsed time"
                      " (the rest is between turns: commander review and corrections)")
