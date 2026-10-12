@@ -627,6 +627,29 @@ class TaskStatsTest(unittest.TestCase):
         self.assertEqual(task.elapsed_ms, 90_000)
         self.assertEqual((task.started_ms, task.ended_ms), (NOW - 100_000, NOW - 10_000))
         self.assertEqual(task.status, "completed")
+        self.assertEqual((task.corrections, task.idle_ms), (1, 0))  # t3 came 10 s after t2: ZCode's own
+
+    def test_auto_turns_and_idle_gaps(self) -> None:
+        fx = self.fx
+        hour = 3_600_000
+        fx.session("sess_auto", SANDBOX, "Long task", NOW - 3 * hour, NOW - 10_000)
+        fx.turn("sess_auto", "t1", "error", NOW - 3 * hour, NOW - 3 * hour + 60_000)
+        # ZCode retried at once, then the time box interrupted with its wrap-up prompt
+        fx.turn("sess_auto", "t2", "error", NOW - 3 * hour + 61_000, NOW - 3 * hour + 120_000)
+        fx.turn("sess_auto", "t3", "completed", NOW - 3 * hour + 120_300, NOW - 3 * hour + 180_000)
+        # the commander came back two hours later with one correction
+        fx.turn("sess_auto", "t4", "completed", NOW - hour + 180_000, NOW - 10_000)
+        [task] = za.task_stats(self.db, cwd=SANDBOX, since_ms=0, now_ms=NOW)
+        self.assertEqual((task.turns, task.corrections), (4, 1))
+        self.assertEqual(task.idle_ms, 2 * hour)
+
+    def test_turn_gaps(self) -> None:
+        self.assertEqual(za.turn_gaps([]), (0, 0))
+        self.assertEqual(za.turn_gaps([(0, 100)]), (0, 0))
+        self.assertEqual(za.turn_gaps([(0, 100), (100 + za.AUTO_TURN_MS - 1, 200_000)]), (0, 0))
+        self.assertEqual(za.turn_gaps([(0, 100), (100 + za.AUTO_TURN_MS, 200_000)]), (1, 0))
+        # an overlapping turn is measured from the latest end seen so far
+        self.assertEqual(za.turn_gaps([(0, 100_000), (10, 50), (100_500, 200_000)]), (0, 0))
 
     def test_tokens_and_context(self) -> None:
         fx = self.fx

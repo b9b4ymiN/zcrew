@@ -537,6 +537,31 @@ class StatsCliTest(unittest.TestCase):
         row = next(line for line in lines if line.startswith("sess_three"))
         self.assertEqual(row.split()[3:7], ["4m00s", "2m00s", "2m00s", "3"])
 
+    def test_auto_turns_and_idle_gaps(self) -> None:
+        fx = self.fx
+        # ZCode retried a failed turn at once (not a correction), then the commander
+        # came back after a 2 h break with one correction
+        fx.session("sess_auto", SANDBOX, "Retried", NOW - 9_000_000, NOW - 1_770_000)
+        fx.turn("sess_auto", "t1", "error", NOW - 9_000_000, NOW - 8_990_000)
+        fx.turn("sess_auto", "t2", "completed", NOW - 8_989_000, NOW - 8_980_000)
+        fx.turn("sess_auto", "t3", "completed", NOW - 1_780_000, NOW - 1_770_000)
+        # one turn of ZCode's own after the first: still a first pass
+        fx.session("sess_wrap", SANDBOX, "Wrapped up", NOW - 100_000, NOW - 20_000)
+        fx.turn("sess_wrap", "t1", "error", NOW - 100_000, NOW - 60_000)
+        fx.turn("sess_wrap", "t2", "completed", NOW - 59_500, NOW - 20_000)
+        code, out, _ = self.run_cli(stats_args())
+        self.assertEqual(code, 0)
+        row = next(line for line in out.splitlines() if line.startswith("sess_auto"))
+        self.assertEqual(row.split()[6:8], ["3", "1"])  # TURNS, FIX
+        self.assertIn("first pass       1 of 2 (50%)", out)
+        self.assertIn("corrections      avg 0.5 per task, max 1  (+2 turns ZCode started itself", out)
+        self.assertIn("idle gaps        2h00m in gaps over 30m", out)
+        # (29 s + 79.5 s) of work over (30 s + 80 s) elapsed once the 2 h gap is left out
+        _, out, _ = self.run_cli(stats_args(json=True))
+        summary = json.loads(out)["summary"]
+        self.assertEqual((summary["auto_turns"], summary["idle_ms"]), (2, 7_200_000))
+        self.assertEqual(summary["zcode_share"], 0.986)
+
     def test_json(self) -> None:
         self.seed()
         code, out, _ = self.run_cli(stats_args(json=True))

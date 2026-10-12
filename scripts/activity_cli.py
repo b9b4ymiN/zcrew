@@ -303,7 +303,7 @@ def run_show(
 # --- stats ------------------------------------------------------------------------------
 
 
-STATS_HEADER = ("ID", "STATUS", "STARTED", "ELAPSED", "ZCODE", "BETWEEN", "TURNS", "ERR", "TITLE")
+STATS_HEADER = ("ID", "STATUS", "STARTED", "ELAPSED", "ZCODE", "BETWEEN", "TURNS", "FIX", "ERR", "TITLE")
 FINISHED_STATUSES = ("completed", "failed")
 
 
@@ -330,18 +330,26 @@ def concurrency(tasks: list[Any]) -> tuple[float, int] | None:
     return (weighted / busy_ms, peak) if busy_ms else None
 
 
+def _corrections(t: Any) -> int:
+    """Turns the commander started after the first; older records count every extra turn."""
+    return int(getattr(t, "corrections", t.turns - 1))
+
+
 def summarize_tasks(tasks: list[Any]) -> dict[str, Any]:
     """Totals over finished tasks only; a running task's numbers are still moving."""
     done = [t for t in tasks if t.status in FINISHED_STATUSES]
     summary: dict[str, Any] = {
         "finished": len(done),
         "unfinished": len(tasks) - len(done),
-        # a task that failed on its only turn was never accepted
-        "first_pass": sum(1 for t in done if t.turns == 1 and t.status == "completed"),
+        # a failed task was never accepted, whatever its turn count
+        "first_pass": sum(1 for t in done if _corrections(t) == 0 and t.status == "completed"),
         "failed": sum(1 for t in done if t.status == "failed"),
         "failed_work_ms": sum(t.work_ms for t in done if t.status == "failed"),
         "corrections_avg": None,
         "corrections_max": None,
+        # turns ZCode started by itself: retries after a failed turn, time-box wrap-ups
+        "auto_turns": sum(max(0, t.turns - 1 - _corrections(t)) for t in done),
+        "idle_ms": sum(int(getattr(t, "idle_ms", 0)) for t in done),
         "elapsed_median_ms": None,
         "work_median_ms": None,
         "zcode_share": None,
@@ -363,8 +371,9 @@ def summarize_tasks(tasks: list[Any]) -> dict[str, Any]:
     if busy:
         summary.update(busy_avg=round(busy[0], 3), busy_peak=busy[1])
     if done:
-        corrections = [t.turns - 1 for t in done]
-        elapsed = sum(t.elapsed_ms for t in done)
+        corrections = [_corrections(t) for t in done]
+        # gaps where nobody was reviewing (overnight, a stalled commander) are not elapsed work time
+        elapsed = sum(t.elapsed_ms for t in done) - summary["idle_ms"]
         summary.update(
             corrections_avg=round(sum(corrections) / len(done), 2),
             corrections_max=max(corrections),
@@ -389,13 +398,18 @@ def _summary_lines(s: dict[str, Any]) -> list[str]:
         f"finished tasks   {s['finished']}  (unfinished {s['unfinished']})",
         f"first pass       {s['first_pass']} of {s['finished']} ({pct}%)"
         "  estimate: completed in one turn, no correction sent",
-        f"corrections      avg {s['corrections_avg']:.1f} per task, max {s['corrections_max']}",
+        f"corrections      avg {s['corrections_avg']:.1f} per task, max {s['corrections_max']}"
+        + (f"  (+{s['auto_turns']} turns ZCode started itself: retries, time-box wrap-ups)"
+           if s.get("auto_turns") else ""),
         f"time per task    median {_fmt_duration(s['elapsed_median_ms'])} elapsed,"
         f" {_fmt_duration(s['work_median_ms'])} ZCode working",
     ]
     if s["failed"]:
         lines.append(f"failed tasks     {s['failed']} of {s['finished']},"
                      f" {_fmt_duration(s['failed_work_ms'])} of ZCode time")
+    if s.get("idle_ms"):
+        lines.append(f"idle gaps        {_fmt_duration(s['idle_ms'])} in gaps over 30m between turns"
+                     " (nobody reviewing; left out of the share below)")
     if s["zcode_share"] is not None:
         lines.append(f"ZCode share      {round(100 * s['zcode_share'])}% of elapsed time"
                      " (the rest is between turns: commander review and corrections)")
@@ -451,6 +465,7 @@ def run_stats(
             _fmt_duration(t.work_ms),
             _fmt_duration(t.elapsed_ms - t.work_ms),
             str(t.turns),
+            str(_corrections(t)),
             str(t.errors),
             t.title or "(no title)",
         ])

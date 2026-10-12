@@ -9,6 +9,11 @@ All notable changes to the Claude Commander × ZCode Executor Kit are recorded h
 - zcrew mod: a run whose turn ended but whose background jobs (a dev server, a watcher) keep it open is flagged on the band, and after 90 s Claude is woken with the job ids and the `agent-control cancel-background` call to stop them. Until now such a run looked busy until its whole-run timeout.
 - `zcrew gate` queues VERIFY machine-wide: one gate runs its VERIFY commands at a time, so parallel workers' test suites (browsers, builds) do not slow each other down or turn flaky. It waits at most 15 min, then runs anyway; a lock older than 2 h is taken over; `--no-queue` skips it.
 
+### Fixed
+
+- `zcrew stats` counted every turn after the first as a commander correction, so ZCode's own turns (a retry right after a failed turn, the time-box wrap-up interrupt) showed up as corrections and pushed first pass toward 0%. A turn that starts within 15 s of the previous one is now counted as ZCode's own: the new `FIX` column and the `corrections` / `first pass` lines count only the rest, and the corrections line notes how many turns ZCode started itself (`auto_turns` in `--json`).
+- Gaps of more than 30 min between turns (an overnight break, a stalled commander) are reported on an `idle gaps` line and left out of `ZCode share` (`idle_ms` in `--json`, per task and in the summary).
+
 ### Changed
 
 - `policy/COMMANDER.md`: pick the thought level per task (`high` for mechanical work that follows an existing pattern, the configured level otherwise; when unsure, keep the configured level).
