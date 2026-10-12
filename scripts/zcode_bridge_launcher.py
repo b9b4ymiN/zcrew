@@ -17,7 +17,7 @@ from typing import Mapping
 
 HOME = Path.home()
 DEFAULT_BRIDGE = HOME / ".zcode-commander" / "coder-mcp-bridge"
-DEFAULT_MAX_CONCURRENCY = "5"
+DEFAULT_MAX_CONCURRENCY = "10"  # per bridge; the machine-wide cap is the worker slots in bridge_compat
 
 
 def _existing(*paths: Path) -> Path | None:

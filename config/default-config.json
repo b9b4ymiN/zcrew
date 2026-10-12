@@ -5,5 +5,7 @@
   "maxCorrectionRounds": 4,
   "timeoutSeconds": 1800,
   "wrapUpSeconds": 1200,
-  "gateMode": "warn"
+  "gateMode": "warn",
+  "concurrencyLimit": 0,
+  "concurrencyTarget": 80
 }

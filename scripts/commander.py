@@ -36,14 +36,19 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "timeoutSeconds": 1800,
     "wrapUpSeconds": 1200,
     "gateMode": "warn",
+    # account-wide (read from the user file by the bridge): see `zcrew capacity`
+    "concurrencyLimit": 0,
+    "concurrencyTarget": 80,
 }
 GATE_MODES = ("off", "warn")
 THOUGHT_LEVELS = ("high", "max")
 INT_LIMITS = {
-    "maxWorkers": (1, 5),
+    "maxWorkers": (1, 10),
     "maxCorrectionRounds": (1, 10),
     "timeoutSeconds": (60, 86400),
     "wrapUpSeconds": (0, 86400),
+    "concurrencyLimit": (0, 50),
+    "concurrencyTarget": (50, 100),
 }
 
 BEGIN_MARKER = "<!-- zcode-commander:begin -->"

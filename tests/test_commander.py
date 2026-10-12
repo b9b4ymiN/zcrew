@@ -138,9 +138,18 @@ class ValidationTests(TempDir):
         self.assertOneProblem('"high" or "max"', thoughtLevel="low")
 
     def test_max_workers(self) -> None:
-        for bad in (0, 6, "5", 2.0, True):
+        for bad in (0, 11, "5", 2.0, True):
             self.assertOneProblem("maxWorkers", maxWorkers=bad)
         self.assertEqual(self.problems(maxWorkers=1), [])
+        self.assertEqual(self.problems(maxWorkers=10), [])
+
+    def test_concurrency_keys(self) -> None:
+        self.assertEqual(self.problems(concurrencyLimit=0, concurrencyTarget=80), [])
+        self.assertEqual(self.problems(concurrencyLimit=50, concurrencyTarget=100), [])
+        for bad in (-1, 51, "3"):
+            self.assertOneProblem("concurrencyLimit", concurrencyLimit=bad)
+        for bad in (49, 101, 0.8):
+            self.assertOneProblem("concurrencyTarget", concurrencyTarget=bad)
 
     def test_max_correction_rounds(self) -> None:
         for bad in (0, 11, None):
@@ -543,11 +552,11 @@ class CliTests(TempDir):
         self.assertIn('"GLM-5.3"', out)
 
     def test_config_project_override_and_failure(self) -> None:
-        self.write_json(self.proj / commander.PROJECT_CONFIG_REL, {"maxWorkers": 9})
+        self.write_json(self.proj / commander.PROJECT_CONFIG_REL, {"maxWorkers": 11})
         code, out = self.run_cli("config", "--project", str(self.proj))
         self.assertEqual(code, 1)
         self.assertIn("validation: FAIL", out)
-        self.assertIn("maxWorkers is 9", out)
+        self.assertIn("maxWorkers is 11", out)
         self.assertIn("project ", out)
 
     def test_config_bad_json_reported(self) -> None:

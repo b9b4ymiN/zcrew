@@ -35,6 +35,12 @@ Run hooks (``patch_run_hooks``) add two things around agent-start/agent-close:
   ~/.zcode-commander/gate/ for ``zcrew gate``; the result carries ``gate`` hints,
   and agent-close warns while no gate verdict exists. Nothing is blocked.
 Set ZCODE_COMMANDER_RUN_HOOKS=off to disable both.
+
+Worker slots (``patch_worker_slots``) cap running workers machine-wide, across
+every commander's bridge: ``concurrencyTarget`` percent of the account's
+measured ``concurrencyLimit`` (``zcrew capacity``), never above ``maxWorkers``,
+one lower for 10 min after a 1302 concurrency error. Runs over the cap stay
+queued. Set ZCODE_COMMANDER_WORKER_SLOTS=off to disable.
 """
 
 from __future__ import annotations
@@ -737,14 +743,16 @@ def record_start(args: Mapping[str, Any], result: Any, env: Mapping[str, str], w
             path, data = existing
             data["rounds"] = int(data.get("rounds", 1)) + 1
             data.setdefault("runIds", []).append(run_id)
+            data["roundStartedAt"] = int(time.time() * 1000)
             save_record(path, data)
         return
     cwd = args.get("cwd")
     contract = parse_contract(str(args.get("prompt") or ""))
     snap = git_snapshot(cwd)
+    now = int(time.time() * 1000)
     save_record(state_dir(env) / ("%s.json" % run_id), {
         "runIds": [run_id], "threadId": result.get("threadId"), "cwd": cwd,
-        "startedAt": int(time.time() * 1000), "rounds": 1, "base": snap["base"], "dirty": snap["dirty"],
+        "startedAt": now, "roundStartedAt": now, "rounds": 1, "base": snap["base"], "dirty": snap["dirty"],
         "contract": contract, "verdicts": [], "mode": "warn",
     })
     if contract["missing"]:
@@ -851,6 +859,161 @@ def patch_run_hooks(cls: Any, env: Mapping[str, str]) -> None:
     cls._commander_run_hooks_patched = True
 
 
+# --- worker slots: one machine-wide cap on running workers ----------------------
+#
+# Every worker draws on the same Coding Plan account. Z.ai does not publish its
+# concurrency limit and moves it with load; past it requests fail with 1302
+# "Rate limit reached for requests" / "High concurrency usage of this API".
+# Each commander process runs its own bridge, so the cap lives in the bridge's
+# cross-process lease db: a run needs one of ``cap`` exclusive slot leases next to
+# its own resources and stays queued (``resource.waiting``) until one is free. A
+# crashed bridge's slots are reclaimed with its other leases.
+
+SLOT_PREFIX = "zcrew:worker-slot:"
+# key: (default, lowest, highest); read from the user config only, because the
+# limit belongs to the account, not to a project
+CONCURRENCY_SETTINGS = {
+    "maxWorkers": (5, 1, 10),
+    "concurrencyLimit": (0, 0, 50),  # 0 = not measured yet
+    "concurrencyTarget": (80, 50, 100),  # percent of concurrencyLimit to use
+}
+BACKOFF_WINDOW_MS = 10 * 60 * 1000
+CAP_CACHE_SECONDS = 5.0
+LIMIT_ERROR_ROWS = 500
+_USAGE_LIMIT_RE = re.compile(r"\b13(?:0[89]|1\d|2[01])\b|usage limit reached", re.IGNORECASE)
+_CONCURRENCY_RE = re.compile(r"\b1302\b|concurren|rate limit reached for requests", re.IGNORECASE)
+_OVERLOAD_RE = re.compile(r"\b1305\b|overloaded", re.IGNORECASE)
+
+
+def worker_slots_enabled(env: Mapping[str, str]) -> bool:
+    return env.get("ZCODE_COMMANDER_WORKER_SLOTS", "on").strip().lower() not in {"0", "off", "false", "no"}
+
+
+def classify_limit_error(error_type: Any, message: Any) -> str | None:
+    """``usage`` (5-hour/weekly quota, 1308-1321), ``concurrency`` (1302),
+    ``overload`` (1305), ``rate_limited`` (unrecognised 429) or None."""
+    text = str(message or "")
+    if _USAGE_LIMIT_RE.search(text):
+        return "usage"
+    if _CONCURRENCY_RE.search(text):
+        return "concurrency"
+    if _OVERLOAD_RE.search(text):
+        return "overload"
+    return "rate_limited" if str(error_type or "") == "rate_limited" else None
+
+
+def _home(env: Mapping[str, str]) -> Path:
+    return Path(env.get("USERPROFILE") or env.get("HOME") or Path.home())
+
+
+def concurrency_settings(env: Mapping[str, str]) -> dict[str, int]:
+    """maxWorkers / concurrencyLimit / concurrencyTarget from ~/.zcode-commander/config.json;
+    a missing or out-of-range value falls back to its default."""
+    data = _read_json(_home(env) / ".zcode-commander" / "config.json") or {}
+    out = {}
+    for key, (default, low, high) in CONCURRENCY_SETTINGS.items():
+        value = data.get(key)
+        ok = isinstance(value, int) and not isinstance(value, bool) and low <= value <= high
+        out[key] = value if ok else default
+    return out
+
+
+def configured_cap(settings: Mapping[str, int]) -> int:
+    """``concurrencyTarget`` percent of a measured ``concurrencyLimit`` (at least 1),
+    never above ``maxWorkers``; ``maxWorkers`` alone while the limit is unknown."""
+    cap = settings["maxWorkers"]
+    if settings["concurrencyLimit"]:
+        cap = min(cap, max(1, settings["concurrencyLimit"] * settings["concurrencyTarget"] // 100))
+    return cap
+
+
+def zcode_db_path(env: Mapping[str, str]) -> Path:
+    override = (env.get("ZCREW_ZCODE_DB") or "").strip()
+    return Path(override) if override else _home(env) / ".zcode" / "cli" / "db" / "db.sqlite"
+
+
+def recent_limit_errors(db_path: Path, since_ms: int) -> dict[str, int]:
+    """Count of model requests per limit class since ``since_ms`` (read-only; {} when unreadable)."""
+    import sqlite3
+    from urllib.parse import quote
+
+    counts: dict[str, int] = {}
+    try:
+        uri = "file:" + quote(Path(db_path).resolve().as_posix(), safe="/:") + "?mode=ro"
+        conn = sqlite3.connect(uri, uri=True, timeout=2.0)
+    except (OSError, sqlite3.Error):
+        return counts
+    try:
+        rows = conn.execute(
+            "SELECT error_type, error_message FROM model_usage WHERE started_at >= ?"
+            " AND (COALESCE(error_type, '') != '' OR COALESCE(error_message, '') != '')"
+            " ORDER BY started_at DESC LIMIT %d" % LIMIT_ERROR_ROWS, (int(since_ms),),
+        ).fetchall()
+    except sqlite3.Error:
+        rows = []
+    finally:
+        conn.close()
+    for error_type, message in rows:
+        kind = classify_limit_error(error_type, message)
+        if kind:
+            counts[kind] = counts.get(kind, 0) + 1
+    return counts
+
+
+def worker_cap(env: Mapping[str, str], now_ms: int | None = None) -> dict[str, Any]:
+    """The cap in force now: the configured cap, one lower (never below 1) while
+    the account answered 1302 in the last ``BACKOFF_WINDOW_MS``."""
+    now = int(time.time() * 1000) if now_ms is None else int(now_ms)
+    settings = concurrency_settings(env)
+    configured = configured_cap(settings)
+    errors = recent_limit_errors(zcode_db_path(env), now - BACKOFF_WINDOW_MS)
+    backoff = bool(errors.get("concurrency")) and configured > 1
+    return {"cap": configured - 1 if backoff else configured, "configured": configured,
+            "backoff": backoff, "settings": settings}
+
+
+def patch_worker_slots(cls: Any, env: Mapping[str, str], *,
+                       cap_fn: Callable[[Mapping[str, str]], Mapping[str, Any]] | None = None,
+                       clock: Callable[[], float] = time.monotonic) -> None:
+    """Wrap ResourceLeaseStore.try_acquire so every run also takes one free worker
+    slot. Idempotent. The cap is re-read every ``CAP_CACHE_SECONDS``, so a config
+    change applies to queued runs without restarting the bridge; a lowered cap
+    never stops a running worker, it only holds new ones back."""
+    if getattr(cls, "_zcrew_slots_patched", False):
+        return
+    original = getattr(cls, "try_acquire", None)
+    if not callable(original):
+        return
+    cache: dict[str, Any] = {"at": None, "cap": None}
+
+    def current_cap() -> int:
+        now = clock()
+        if cache["at"] is None or now - cache["at"] >= CAP_CACHE_SECONDS:
+            try:
+                cache["cap"] = max(1, int((cap_fn or worker_cap)(env)["cap"]))
+            except Exception:  # noqa: BLE001 - a broken config must not stop every run
+                cache["cap"] = CONCURRENCY_SETTINGS["maxWorkers"][0]
+            cache["at"] = now
+        return int(cache["cap"])
+
+    def try_acquire(self: Any, run_id: Any, resource_modes: Any) -> Any:
+        modes = {k: v for k, v in dict(resource_modes or {}).items() if not str(k).startswith(SLOT_PREFIX)}
+        blockers: list[Any] = []
+        for index in range(current_cap()):
+            result = original(self, run_id, {**modes, SLOT_PREFIX + str(index): "exclusive"})
+            if not isinstance(result, dict) or result.get("acquired"):
+                return result
+            blockers = list(result.get("blockers") or [])
+            # a run holding this cwd blocks every slot alike: report only that
+            held = [b for b in blockers if isinstance(b, dict) and not str(b.get("key", "")).startswith(SLOT_PREFIX)]
+            if held:
+                return {**result, "blockers": held}
+        return {"acquired": False, "blockers": blockers[:12]}
+
+    cls.try_acquire = try_acquire
+    cls._zcrew_slots_patched = True
+
+
 def apply_patches(bridge_root: Path, env: Mapping[str, str]) -> list[str]:
     root = str(bridge_root)
     if root not in sys.path:
@@ -876,6 +1039,11 @@ def apply_patches(bridge_root: Path, env: Mapping[str, str]) -> list[str]:
 
         patch_backend_manager(backend_manager.BackendManager)
         applied.append("compact-output")
+    if worker_slots_enabled(env):
+        import resource_leases
+
+        patch_worker_slots(resource_leases.ResourceLeaseStore, env)
+        applied.append("worker-slots")
     return applied
 
 

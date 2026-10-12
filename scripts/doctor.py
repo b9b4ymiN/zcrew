@@ -367,6 +367,16 @@ def registrations_ready(statuses: Iterable[Status]) -> tuple[bool, Status | None
     return False, Status("FAIL", "commander", detail)
 
 
+def worker_cap_detail(cap: dict[str, Any]) -> str:
+    """One line on the machine-wide worker cap the bridge enforces."""
+    settings = cap["settings"]
+    limit = settings["concurrencyLimit"]
+    basis = (f"{settings['concurrencyTarget']}% of measured limit {limit}" if limit
+             else "limit not measured: run zcrew capacity")
+    detail = f"{cap['cap']} at once ({basis}, maxWorkers {settings['maxWorkers']})"
+    return detail + ("; one lower after a recent 1302" if cap["backoff"] else "")
+
+
 def main() -> int:
     # Tool output (e.g. Claude's check mark) may not fit a non-UTF-8 pipe; never
     # let printing a detail turn a passing check into a failure.
@@ -444,6 +454,12 @@ def main() -> int:
         ))
     except Exception as exc:
         ok &= check("commander config", False, f"{type(exc).__name__}: {exc}")
+
+    try:
+        compat = _load_module("bridge_compat", HERE / "bridge_compat.py")
+        info("worker cap", worker_cap_detail(compat.worker_cap(os.environ)))
+    except Exception as exc:  # informational only
+        info("worker cap", f"unknown ({type(exc).__name__}: {exc})")
 
     print("\nResult:", "READY" if ok else "NEEDS ATTENTION")
     return 0 if ok else 1

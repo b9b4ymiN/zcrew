@@ -6,6 +6,15 @@ All notable changes to the Claude Commander × ZCode Executor Kit are recorded h
 
 ### Added
 
+- **Worker cap from the plan's concurrency limit.** Z.ai publishes no concurrency number for the Coding Plan, and it moves with load; past it requests fail with `1302`. `zcrew capacity [--days N] [--json]` matches each 1302 in ZCode's `model_usage` with the number of workers that were busy at that moment, estimates the limit, and shows 1302/1305/1308 counts, busy average and peak, and how often the cap was reached. `--apply` (or `--apply --limit N [--target PCT]`) writes it to `~/.zcode-commander/config.json`.
+  - The bridge shim enforces the cap machine-wide, across every commander process. Each run takes one of N exclusive `zcrew:worker-slot:*` leases in the upstream bridge's cross-process lease db. N = `concurrencyTarget`% (default 80) of `concurrencyLimit`, never above `maxWorkers`, and one lower for 10 min after a fresh 1302. Runs over the cap stay queued (`resource.waiting`) and start by themselves. A crashed bridge's slots are reclaimed. `ZCODE_COMMANDER_WORKER_SLOTS=off` disables it.
+  - New config keys `concurrencyLimit` (0–50, 0 = not measured) and `concurrencyTarget` (50–100). `maxWorkers` now goes up to 10, and the per-bridge `AGENT_MCP_MAX_CONCURRENCY` default is 10. `zcrew doctor` prints the cap in force.
+- **Codex Stop hook** (`zcrew codex-hook`; installed into `.codex/hooks.json` by `zcrew enable --commander codex`, removed by `disable`). It gives a Codex commander the hands-free waiting the Claude Code mod gives Claude.
+  - When the commander's last message ends with `[zcrew:wait]`, the hook waits up to 45 min for the project's worker runs (worktrees included), then wakes it with what ended, including the `zcrew gate` result.
+  - A run that stalled (no activity for 30 min) is reported too. Each event is reported once.
+  - Any failure lets Codex stop normally. Codex asks the user to trust the hook once.
+- Gate records carry `roundStartedAt`, so a correction is not mistaken for finished before its turn starts.
+
 - zcrew mod: a run whose turn ended but whose background jobs (a dev server, a watcher) keep it open is flagged on the band, and after 90 s Claude is woken with the job ids and the `agent-control cancel-background` call to stop them. Until now such a run looked busy until its whole-run timeout.
 - `zcrew gate` queues VERIFY machine-wide: one gate runs its VERIFY commands at a time, so parallel workers' test suites (browsers, builds) do not slow each other down or turn flaky. It waits at most 15 min, then runs anyway; a lock older than 2 h is taken over; `--no-queue` skips it.
 
@@ -16,6 +25,11 @@ All notable changes to the Claude Commander × ZCode Executor Kit are recorded h
 
 ### Changed
 
+- `policy/COMMANDER.md`:
+  - The worker cap and `zcrew capacity`. Independent tasks start together and the bridge queues the rest. A `zcrew:worker-slot` blocker means wait, not cancel.
+  - With the Codex hook: no `agent-wait`; end the turn with `[zcrew:wait]`.
+  - Do not message a running worker (it cancels the turn). A run `idle` for 30 min is stuck: observe, cancel, restart.
+  - Size a task to the time box. Give steps in one contract or as separate tasks, not as correction rounds. Start a new thread past ~150k context or after 2 corrections.
 - `policy/COMMANDER.md`: pick the thought level per task (`high` for mechanical work that follows an existing pattern, the configured level otherwise; when unsure, keep the configured level).
 
 ## 0.9.1 — 2026-10-11

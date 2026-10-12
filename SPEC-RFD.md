@@ -1010,3 +1010,26 @@ The database was 2.1 GB, with 404k parts (1.2 GB of JSON) across about 1,900 ses
 | Dashboard security | Independent review: loopback bind; Host-header matrix (rebinding variants → 403); CSP/nosniff/no-referrer; no CORS; XSS payloads in titles and commands are inert (`textContent` only); cross-project ids → 404; a heavy session does not block other requests | ✅ |
 | Dashboard UI | Checked in a real browser at desktop (dark) and 375 px (light) widths: no horizontal scroll, and running sessions show elapsed time | ✅ |
 | Tests | 363 unit tests, all against synthetic databases (the real DB is only read in smoke checks) | ✅ |
+
+## 29. Unreleased: worker cap from the plan's concurrency limit, Codex Stop hook (2026-10-12)
+
+Field data (Codex commander, 9 tasks over 14 days, zcrew 0.9.1) showed that workers never ran in parallel (peak 1). Two tasks also had 8-9 h gaps between turns: a worker stalled, or a turn ended, and nothing woke the Codex commander. Separately, users asked how many workers the GLM Coding Plan carries at once.
+
+### 29.1 Decisions
+
+- **Measure the concurrency limit, don't assume it.** Z.ai publishes no concurrency number for the Coding Plan and adjusts it with load (search, 2026-10). One user report puts yearly Pro at about 3 sessions; an opencode issue mentions an undocumented limit of 1. The signal that is on record is error 1302 ("Rate limit reached for requests" / "High concurrency usage of this API"), stored by ZCode in `model_usage`. `zcrew capacity` sets each 1302 against the number of top-level worker turns open at that moment, and the estimate is the lowest such count minus one. Without any 1302 it reports only a floor. The unofficial ~3 is shown as a hint and is never applied silently.
+- **Enforce the cap in the bridge, machine-wide.** Each commander process runs its own bridge, so a per-process cap (`AGENT_MCP_MAX_CONCURRENCY`) cannot see the other processes. The upstream bridge already has a cross-process SQLite lease store that queued runs poll (`resource.waiting`). The shim wraps `try_acquire` so that every run also takes one of N exclusive `zcrew:worker-slot:i` keys. That needs no new process and no new file format. Crash recovery is the store's own stale-owner reclaim, and the cap applies to queued runs within 5 s of a config change.
+- **Cap = `concurrencyTarget`% of `concurrencyLimit`, ≤ `maxWorkers`, −1 for 10 min after a 1302.** 80% leaves headroom for requests outside the workers: the ZCode app, sub-agents, and other tools on the same key. The backoff is additive and short, so a transient off-peak dip does not pin the cap down. The limit belongs to the account, so the two keys are read from the user config only.
+- **Codex gets a Stop hook, not polling.** Current Codex has Claude-style lifecycle hooks: they are stable and on by default, configured in `<project>/.codex/hooks.json`, run only after the user trusts them, and the default timeout is 600 s, which can be raised. A Stop hook's `{"decision":"block","reason":...}` continues the turn with `reason`. The hook follows the gate records of the project and its worktrees.
+  - It waits only when the commander asked for it with `[zcrew:wait]`, so a turn that asks the user a question is never held.
+  - It reports ended or stalled (`idle`) runs once, with the `zcrew gate` summary.
+  - It fails open.
+
+### 29.2 Validation
+
+| Check | Evidence | Result |
+|---|---|---|
+| Slots across processes | Two lease-store instances sharing one table: the cap holds, a freed slot is reused, a folder blocker is reported as itself, the cap change applies after the cache period, and a broken config falls back to the default | ✅ unit |
+| Limit estimate | Synthetic `turn_usage` + `model_usage`: 1302 at 4 busy → estimate 3; sub-agent sessions are not counted; `--apply` keeps other config keys | ✅ unit |
+| Codex hook | State machine (queued / running / ended / stalled, correction rounds), wait only with the mark, report once, deadline note, install/uninstall that keeps the user's own hooks | ✅ unit |
+| On a real account | Not yet: needs a parallel run on Windows with ZCode 3.14 and a 1302 on record | ⏳ |

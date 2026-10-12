@@ -155,7 +155,13 @@ zcrew runs [DIR] [--all] [--limit N] [--json]          list worker runs, newest 
 zcrew show SESSION [--json]                            one run's activity (id or prefix, e.g. sess_83cb)
 zcrew stats [DIR] [--all] [--days N] [--json]          time, correction turns, errors and parallelism of recent tasks
 zcrew gate [RUN|THREAD] [--self] [--accept|--reject]   mechanical review gate: scope, DO NOT, tests, VERIFY
+zcrew capacity [--days N] [--apply [--limit N]] [--json]   how many workers the plan carries at once; set the cap
+zcrew codex-hook install|uninstall [DIR]               Codex Stop hook that wakes the commander (enable/disable do it)
 ```
+
+**Parallel workers and the plan's concurrency limit.** Z.ai does not publish how many requests a Coding Plan runs at once, and it moves the limit with load. Past the limit a request fails with `1302` ("Rate limit reached for requests" / "High concurrency usage of this API"). `zcrew capacity` measures the limit from your own history: it matches every 1302 in ZCode's database with the number of workers that were busy at that moment. `zcrew capacity --apply` stores the result as `concurrencyLimit`. The bridge then lets `concurrencyTarget` percent of it run at once (default 80%, never above `maxWorkers`), across every Claude Code and Codex session on the machine. Runs over the cap wait in the queue (`resource.waiting` on a `zcrew:worker-slot` key). After a fresh 1302 the cap drops by one for 10 minutes. Until a 1302 has happened, the limit is unknown and `maxWorkers` is the cap. GLM Coding Pro users report about 3 sessions at once; this is unofficial, so `zcrew capacity --apply --limit 3` is a starting point to replace with your own measurement.
+
+**Codex commanders** get the same hands-free waiting as the Claude Code mod through a Codex `Stop` hook. `zcrew enable --commander codex` adds it to `.codex/hooks.json`, and Codex asks you to trust it on the next start (or use `/hooks`). After starting workers, the commander ends its turn with `[zcrew:wait]`. The hook waits for up to 45 minutes and then wakes the commander with what ended or stalled, plus the `zcrew gate` result. The hook never blocks a turn that asks you a question.
 
 Claude Code users can add the zcrew mod: Claude stops polling workers (the mod watches them and wakes Claude when a run ends, with its gate result), and a band above the prompt shows what the workers are doing. See [mod/zcrew/README.md](mod/zcrew/README.md).
 
@@ -219,7 +225,9 @@ zcrew merges three layers, and the first one found wins: `<repo>/.claude/zcode-c
   "thoughtLevel": "max",
   "maxWorkers": 5,
   "maxCorrectionRounds": 4,
-  "timeoutSeconds": 1800
+  "timeoutSeconds": 1800,
+  "concurrencyLimit": 0,
+  "concurrencyTarget": 80
 }
 ```
 
@@ -228,7 +236,9 @@ zcrew merges three layers, and the first one found wins: `<repo>/.claude/zcode-c
 | `model.providerId` | ZCode account provider | An account provider your plan is entitled to |
 | `model.modelId` | Model name | A model offered by that provider, e.g. `GLM-5.3`, `GLM-5.3-Flash` |
 | `thoughtLevel` | Reasoning effort | `high`, `max` |
-| `maxWorkers` | Parallel ZCode workers | 1–5 |
+| `maxWorkers` | Most ZCode workers running at once, machine-wide | 1–10 |
+| `concurrencyLimit` | The plan's measured concurrency limit (`zcrew capacity --apply`); 0 = not measured. Read from the user file only | 0–50 |
+| `concurrencyTarget` | Percent of `concurrencyLimit` to use at once (read from the user file only) | 50–100 |
 | `maxCorrectionRounds` | Review/correct rounds per task before the commander escalates to you | 1–10 |
 | `timeoutSeconds` | Per-run timeout | 60–86400 |
 
@@ -296,6 +306,8 @@ scripts/context_report.py   zcrew context
 scripts/zcode_activity.py   read-only reader over ZCode's database (sessions + activity)
 scripts/activity_cli.py     zcrew runs / show / stats / watch
 scripts/gate.py             zcrew gate (reads the contract the bridge recorded at agent-start)
+scripts/capacity.py         zcrew capacity (concurrency limit from 1302 errors; the cap lives in bridge_compat)
+scripts/codex_hook.py       Codex Stop hook: wakes a Codex commander when workers end
 scripts/dashboard.py        zcrew dashboard server (+ dashboard.html)
 templates/                  CLAUDE.md + AGENTS.md starters for projects
 policy/COMMANDER.md         the commander policy (Claude Code and Codex)
