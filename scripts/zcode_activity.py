@@ -666,6 +666,11 @@ def session_summary(db: Db, session_id: str, *, now_ms: int | None = None) -> Se
 
 # Sessions read per stats call; a week of heavy use stays far below this.
 STATS_SESSION_LIMIT = 1000
+# A turn that starts this soon after the previous one ended was not written by a
+# reviewer: ZCode retrying a failed turn, or the time-box interrupt's wrap-up prompt.
+AUTO_TURN_MS = 15_000
+# A gap between turns longer than this is someone away, not review time.
+IDLE_GAP_MS = STALE_MS
 
 
 @dataclass(frozen=True)
@@ -673,10 +678,13 @@ class TaskStats:
     """One top-level worker session seen as a task, from its turn_usage rows.
 
     Every message sent on a thread starts a turn: agent-start is the first and
-    each correction adds one, so ``turns - 1`` is the correction count. ZCode
-    does not record the commander's verdict, so first-pass acceptance derived
-    from it is an estimate. ``elapsed_ms - work_ms`` is time between turns
-    (the commander reviewing and writing corrections).
+    each correction adds one. ZCode also starts turns by itself (a retry after a
+    failed turn, the time-box wrap-up interrupt); those follow the previous turn
+    within ``AUTO_TURN_MS`` and are not counted in ``corrections``. ZCode does not
+    record the commander's verdict, so first-pass acceptance derived from it is
+    an estimate. ``elapsed_ms - work_ms`` is time between turns (the commander
+    reviewing and writing corrections); ``idle_ms`` is the part of it spent in
+    gaps longer than ``IDLE_GAP_MS`` (nobody reviewing).
     """
 
     id: str
@@ -693,6 +701,29 @@ class TaskStats:
     errors: int
     tokens: int | None = None  # every turn's tokens (re-sent context included); None on builds without them
     context_tokens: int | None = None  # context size at the last step
+    corrections: int = 0  # turns started by the commander after the first
+    idle_ms: int = 0
+
+
+_TURN_GAPS_SQL = (
+    "SELECT session_id, started_at, COALESCE(completed_at, started_at + COALESCE(duration_ms, 0))"
+    " FROM turn_usage WHERE session_id IN ({ids}) ORDER BY session_id, started_at"
+)
+
+
+def turn_gaps(spans: list[tuple[int, int]]) -> tuple[int, int]:
+    """(corrections, idle_ms) from one session's turn (start, end) spans in start order."""
+    corrections = idle = 0
+    last_end: int | None = None
+    for start, end in spans:
+        if last_end is not None:
+            gap = start - last_end
+            if gap >= AUTO_TURN_MS:
+                corrections += 1
+            if gap > IDLE_GAP_MS:
+                idle += gap
+        last_end = end if last_end is None else max(last_end, end)
+    return corrections, idle
 
 
 _TASK_TURN_SQL = (
@@ -729,18 +760,22 @@ def task_stats(
         if not s.parent_id
     ]
     turns: dict[str, tuple[Any, ...]] = {}
+    spans: dict[str, list[tuple[int, int]]] = {}
     with _session(db) as conn:
         sql = _TASK_TURN_SQL.replace("{tokens}", _token_sql(conn))
         for chunk in _chunks([s.id for s in summaries], SCAN_CHUNK):
             ids = ",".join("?" * len(chunk))
             for sid, *rest in conn.execute(sql.replace("{ids}", ids), chunk):
                 turns[sid] = tuple(rest)
+            for sid, start, end in conn.execute(_TURN_GAPS_SQL.replace("{ids}", ids), chunk):
+                spans.setdefault(sid, []).append((int(start or 0), int(end or start or 0)))
     out: list[TaskStats] = []
     for s in summaries:
         if s.id not in turns:
             continue
         count, first, last, work, failed, tokens = turns[s.id]
         started, ended = int(first or 0), int(last or 0)
+        corrections, idle = turn_gaps(spans.get(s.id, []))
         out.append(TaskStats(
             id=s.id,
             directory=s.directory,
@@ -756,6 +791,8 @@ def task_stats(
             errors=s.errors,
             tokens=int(tokens) if tokens is not None else None,
             context_tokens=s.last_context_tokens,
+            corrections=corrections,
+            idle_ms=idle,
         ))
     return out
 

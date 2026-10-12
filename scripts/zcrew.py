@@ -287,7 +287,18 @@ def cmd_commander(args: argparse.Namespace) -> int:
         argv += ["--force"] if args.force else []
         argv += ["--with-project-config"] if args.with_project_config else []
         argv += ["--with-templates"] if args.with_templates else []
-    return int(_load_sibling("commander").main(argv))
+    code = int(_load_sibling("commander").main(argv))
+    # Codex has no zcrew mod: its Stop hook wakes the commander when workers end
+    project = Path(args.dir or os.getcwd()) if args.command in ("enable", "disable") else None
+    if code == 0 and project is not None:
+        hook = _load_sibling("codex_hook")
+        if args.command == "enable" and args.commander in ("codex", "both"):
+            print(hook.install(project)[1])
+        elif args.command == "disable" and args.commander in (None, "codex", "both"):
+            changed, message = hook.uninstall(project)
+            if changed:
+                print(message)
+    return code
 
 
 def cmd_setup(
@@ -482,6 +493,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--limit", type=int, default=15, metavar="N", help="tasks to list in the table (default 15)")
     p.add_argument("--all", action="store_true", help="every directory, not just DIR (default: current dir)")
     p.add_argument("--json", action="store_true", help="machine-readable output")
+    p = sub.add_parser(
+        "capacity", help="measure how many workers the Coding Plan carries at once, and set the cap (read-only by default)",
+        description=(
+            "Match ZCode's 1302 concurrency errors with the number of workers busy at the time to estimate the "
+            "account's concurrency limit, and show the worker cap the bridge enforces (concurrencyTarget percent "
+            "of concurrencyLimit, never above maxWorkers). --apply writes concurrencyLimit to "
+            "~/.zcode-commander/config.json."
+        ),
+    )
+    p.add_argument("--days", type=float, default=14, metavar="N", help="look back N days (default 14)")
+    p.add_argument("--apply", action="store_true", help="write the measured limit (or --limit N) to the user config")
+    p.add_argument("--limit", type=int, default=None, metavar="N", help="with --apply: use N instead of the estimate")
+    p.add_argument("--target", type=int, default=None, metavar="PCT",
+                   help="with --apply: also set concurrencyTarget (50-100, default 80)")
+    p.add_argument("--json", action="store_true", help="machine-readable output")
     p = sub.add_parser("gate", help="mechanical review gate for a worker run: scope, DO NOT, tests, VERIFY")
     p.add_argument("ident", nargs="?", default=None, metavar="RUN|THREAD",
                    help="run id or thread id (prefix ok); default: newest run recorded for this folder")
@@ -496,6 +522,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--reject", nargs="?", const="", default=None, metavar="NOTE", help="record: you rejected this run")
     p.add_argument("--override", default=None, metavar="REASON", help="accept although the mechanical check failed")
     p.add_argument("--json", action="store_true", help="machine-readable output")
+    p = sub.add_parser(
+        "codex-hook", help="Codex Stop hook that wakes the commander when ZCode workers end",
+        description=(
+            "stop: the hook itself (Codex runs it; JSON on stdin). install/uninstall: add or remove it in "
+            "DIR/.codex/hooks.json (zcrew enable/disable --commander codex do this for you)."
+        ),
+    )
+    p.add_argument("action", choices=("stop", "install", "uninstall"))
+    p.add_argument("dir", nargs="?", default=None, metavar="DIR")
     p = sub.add_parser("watch", help="follow live worker activity (read-only; Ctrl+C to stop)")
     p.add_argument("dir", nargs="?", default=None, metavar="DIR")
     p.add_argument("--all", action="store_true", help="every directory, not just DIR (default: current dir)")
@@ -556,6 +591,10 @@ def main(
         return int(_load_sibling("activity_cli").run(args, env=env))
     if args.command == "gate":
         return int(_load_sibling("gate").run(args, env=env))
+    if args.command == "capacity":
+        return int(_load_sibling("capacity").run(args, env=env))
+    if args.command == "codex-hook":
+        return int(_load_sibling("codex_hook").run(args, env=env))
     if args.command == "update":
         return cmd_update(paths, run, args.commander)
     if args.command == "uninstall":

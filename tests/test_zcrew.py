@@ -404,16 +404,21 @@ class EnableDisableIntegrationTests(TempDir):
 
 class CommanderSelectionTests(TempDir):
     def test_enable_disable_pass_commander_only_when_given(self) -> None:
-        fake = SimpleNamespace(main=mock.Mock(return_value=0))
+        fake = SimpleNamespace(main=mock.Mock(return_value=0), install=mock.Mock(return_value=(True, "hook added")),
+                               uninstall=mock.Mock(return_value=(True, "hook removed")))
         with mock.patch.object(zcrew, "_load_sibling", return_value=fake):
-            zcrew.main(["enable", "P", "--commander", "codex", "--with-templates"], env={}, run=FakeRun(),
-                       paths=self.make_layout())
+            _, out = _quiet(zcrew.main, ["enable", "P", "--commander", "codex", "--with-templates"], env={},
+                            run=FakeRun(), paths=self.make_layout())
             zcrew.main(["disable", "P", "--commander", "claude"], env={}, run=FakeRun(), paths=self.make_layout())
             zcrew.main(["disable", "P"], env={}, run=FakeRun(), paths=self.make_layout())
         calls = [c.args[0] for c in fake.main.call_args_list]
         self.assertEqual(calls[0], ["enable", "P", "--commander", "codex", "--with-templates"])
         self.assertEqual(calls[1], ["disable", "P", "--commander", "claude"])
         self.assertEqual(calls[2], ["disable", "P"])
+        # the Codex Stop hook follows the Codex activation only
+        self.assertIn("hook added", out)
+        self.assertEqual([c.args[0] for c in fake.install.call_args_list], [Path("P")])
+        self.assertEqual([c.args[0] for c in fake.uninstall.call_args_list], [Path("P")])
 
     def test_enable_rejects_auto(self) -> None:
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):

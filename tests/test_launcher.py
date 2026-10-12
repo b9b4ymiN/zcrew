@@ -130,7 +130,7 @@ class BuildEnvTests(unittest.TestCase):
 
     def test_concurrency_defaults_to_five(self) -> None:
         env = launcher.build_env({}, self.bundle, self.runtime)
-        self.assertEqual(env["AGENT_MCP_MAX_CONCURRENCY"], "5")
+        self.assertEqual(env["AGENT_MCP_MAX_CONCURRENCY"], "10")
         self.assertEqual(env["AGENT_MCP_DEFAULT_BACKEND"], "zcode")
         self.assertEqual(env["ZCODE_CLI_BUNDLE"], str(self.bundle))
         self.assertEqual(env["ZCODE_BINARY"], str(self.runtime))

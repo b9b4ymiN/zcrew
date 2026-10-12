@@ -38,6 +38,10 @@ FAKE_BACKEND_MANAGER = (
     "        return {'runId': run_id, 'status': 'running', 'revision': 1, 'createdAtMs': 5, 'backend': 'zcode'}\n"
     "    def configure(self, args):\n        return {'selectedBackend': 'zcode', 'createdAtMs': 5}\n"
 )
+FAKE_RESOURCE_LEASES = (
+    "class ResourceLeaseStore:\n"
+    "    def try_acquire(self, run_id, resource_modes):\n        return {'acquired': True, 'blockers': []}\n"
+)
 FAKE_KEY = "fake-key-not-a-secret"
 
 
@@ -48,12 +52,13 @@ class ApplyPatchesTests(unittest.TestCase):
         (self.root / "control_plane.py").write_text(FAKE_CONTROL_PLANE, encoding="utf-8")
         (self.root / "zcode_protocol.py").write_text(FAKE_PROTOCOL, encoding="utf-8")
         (self.root / "backend_manager.py").write_text(FAKE_BACKEND_MANAGER, encoding="utf-8")
+        (self.root / "resource_leases.py").write_text(FAKE_RESOURCE_LEASES, encoding="utf-8")
         self._saved_path = list(sys.path)
-        for name in ("control_plane", "zcode_protocol", "backend_manager"):
+        for name in ("control_plane", "zcode_protocol", "backend_manager", "resource_leases"):
             sys.modules.pop(name, None)
 
     def tearDown(self) -> None:
-        for name in ("control_plane", "zcode_protocol", "backend_manager"):
+        for name in ("control_plane", "zcode_protocol", "backend_manager", "resource_leases"):
             sys.modules.pop(name, None)
         sys.path[:] = self._saved_path
         self._tmp.cleanup()
@@ -63,7 +68,11 @@ class ApplyPatchesTests(unittest.TestCase):
         import control_plane
         import zcode_protocol
 
-        self.assertEqual(applied, ["runtime-model-disabled", "account-provider", "run-hooks", "compact-output"])
+        self.assertEqual(applied, ["runtime-model-disabled", "account-provider", "run-hooks", "compact-output",
+                                   "worker-slots"])
+        import resource_leases
+
+        self.assertTrue(resource_leases.ResourceLeaseStore._zcrew_slots_patched)
         import backend_manager
 
         manager = backend_manager.BackendManager()
@@ -80,6 +89,7 @@ class ApplyPatchesTests(unittest.TestCase):
                 "ZCODE_COMMANDER_ACCOUNT_PROVIDER": "off",
                 "ZCODE_COMMANDER_COMPACT": "off",
                 "ZCODE_COMMANDER_RUN_HOOKS": "off",
+                "ZCODE_COMMANDER_WORKER_SLOTS": "off",
             },
         )
         import control_plane

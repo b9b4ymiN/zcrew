@@ -380,5 +380,15 @@ class RegistrationTests(unittest.TestCase):
         self.assertEqual(out.getvalue().splitlines(), ["[OK]   n: d", "[FAIL] n: d", "[WARN] n: d", "[INFO] n: d"])
 
 
+class WorkerCapDetailTests(unittest.TestCase):
+    def test_detail(self) -> None:
+        settings = {"maxWorkers": 5, "concurrencyLimit": 0, "concurrencyTarget": 80}
+        self.assertEqual(doctor.worker_cap_detail({"cap": 5, "backoff": False, "settings": settings}),
+                         "5 at once (limit not measured: run zcrew capacity, maxWorkers 5)")
+        settings = {**settings, "concurrencyLimit": 3}
+        self.assertEqual(doctor.worker_cap_detail({"cap": 1, "backoff": True, "settings": settings}),
+                         "1 at once (80% of measured limit 3, maxWorkers 5); one lower after a recent 1302")
+
+
 if __name__ == "__main__":
     unittest.main()

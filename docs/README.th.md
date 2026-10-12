@@ -234,6 +234,7 @@ zcrew runs                  # รายการงานของ worker ล่
 zcrew show sess_83cb        # ดูรายละเอียดงานเดียว (ใส่ต้น id ก็พอ)
 zcrew stats                 # สรุป 7 วันล่าสุด: เวลาต่องาน, ส่งแก้กี่รอบ, ผ่านรอบแรกกี่ %, ทำพร้อมกันกี่คน
 zcrew gate                  # ตรวจรับแบบอัตโนมัติ: แก้นอก SCOPE? แตะไฟล์ DO NOT? เทสต์ถูกลบ? VERIFY ผ่านไหม
+zcrew capacity              # แพลนรับ worker พร้อมกันได้กี่ตัว (วัดจาก error 1302) และเพดานที่ใช้อยู่
 ```
 
 ผู้ใช้ Claude Code ติดตั้ง mod ได้: Claude ไม่ต้องคอยเช็กช่างทุกนาที (mod เฝ้าแทนและปลุก Claude เมื่องานจบ พร้อมผลตรวจ) และมีแถบเหนือช่องพิมพ์บอกว่าช่างทำอะไรอยู่ ถึงไหนแล้ว
@@ -241,6 +242,10 @@ zcrew gate                  # ตรวจรับแบบอัตโนม�
 ```text
 /plugin install zcrew --marketplace b9b4ymiN/zcrew
 ```
+
+ผู้ใช้ Codex ได้การรอแบบเดียวกันผ่าน `Stop` hook ของ Codex: `zcrew enable --commander codex` จะเพิ่ม hook ลงใน `.codex/hooks.json` ให้ และ Codex จะถามให้กดยืนยันว่าเชื่อถือ hook ตอนเปิดครั้งถัดไป (หรือสั่ง `/hooks`) เมื่อสั่ง worker แล้ว commander จะจบ turn ด้วย `[zcrew:wait]` จากนั้น hook จะรอให้ (นานสุด 45 นาที) และปลุกเมื่องานจบหรือค้าง พร้อมผล `zcrew gate`
+
+**ทำงานพร้อมกันกี่ตัวดี:** Z.ai ไม่ประกาศว่าแพลนรับ request พร้อมกันได้กี่ตัว และปรับตามโหลดของระบบ ถ้าเกินจะได้ error `1302` ("Rate limit reached for requests" / "High concurrency usage of this API") คำสั่ง `zcrew capacity` วัดค่านี้จากประวัติในเครื่องคุณเอง โดยดูว่าตอนเกิด 1302 มี worker ทำงานอยู่กี่ตัว ส่วน `zcrew capacity --apply` จะบันทึกค่าที่วัดได้เป็น `concurrencyLimit` จากนั้น bridge จะปล่อยให้ worker รันพร้อมกันได้ `concurrencyTarget`% ของค่านั้น (default 80% และไม่เกิน `maxWorkers`) โดยนับรวมทุก session ของ Claude Code และ Codex ในเครื่อง ตัวที่เกินจะรอคิวเอง และถ้าเพิ่งเกิด 1302 จะลดเพดานลง 1 เป็นเวลา 10 นาที ผู้ใช้ GLM Coding Pro เล่ากันว่าได้ประมาณ 3 ตัว (ไม่เป็นทางการ) จึงเริ่มจาก `zcrew capacity --apply --limit 3` (= 2 ตัวพร้อมกัน) ได้ แล้วค่อยเปลี่ยนเป็นค่าที่วัดได้จริงทีหลัง
 
 เพิ่ม `--all` ถ้าอยากดูทุก project พร้อมกัน ตัวอย่างที่เห็นใน `zcrew watch`:
 
@@ -269,7 +274,9 @@ worker แต่ละตัวได้ป้าย `w1`, `w2`, … ข้อ�
   "thoughtLevel": "max",
   "maxWorkers": 5,
   "maxCorrectionRounds": 4,
-  "timeoutSeconds": 1800
+  "timeoutSeconds": 1800,
+  "concurrencyLimit": 0,
+  "concurrencyTarget": 80
 }
 ```
 
@@ -278,7 +285,9 @@ worker แต่ละตัวได้ป้าย `w1`, `w2`, … ข้อ�
 | `model.providerId` | แพลนใน ZCode (รูปแบบ `account:...`) | ต้องเป็นแพลนที่คุณมีสิทธิ์ใช้ |
 | `model.modelId` | ชื่อ model | ต้องอยู่ในแพลนนั้น เช่น `GLM-5.3`, `GLM-5.3-Flash` |
 | `thoughtLevel` | ระดับการคิด | `high`, `max` |
-| `maxWorkers` | จำนวน ZCode ที่รันพร้อมกันได้ | 1-5 |
+| `maxWorkers` | จำนวน ZCode ที่รันพร้อมกันได้สูงสุด (นับทั้งเครื่อง) | 1-10 |
+| `concurrencyLimit` | จำนวน request พร้อมกันที่แพลนรับได้ (วัดด้วย `zcrew capacity`) โดย 0 = ยังไม่ได้วัด อ่านจากไฟล์ของ user เท่านั้น | 0-50 |
+| `concurrencyTarget` | ใช้กี่ % ของ `concurrencyLimit` อ่านจากไฟล์ของ user เท่านั้น | 50-100 |
 | `maxCorrectionRounds` | จำนวนรอบสั่งแก้ต่อ task ก่อนหยุดมาถามคุณ | 1-10 |
 | `timeoutSeconds` | เวลาสูงสุดต่อ run | 60-86400 |
 
