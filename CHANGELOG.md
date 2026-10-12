@@ -2,7 +2,9 @@
 
 All notable changes to the Claude Commander × ZCode Executor Kit are recorded here.
 
-## Unreleased
+## 0.10.0 — 2026-10-12
+
+A worker cap measured from your plan, and hands-free waiting for Codex.
 
 ### Added
 
