@@ -2,6 +2,20 @@
 
 All notable changes to the Claude Commander × ZCode Executor Kit are recorded here.
 
+## 0.11.0 — 2026-10-13
+
+The Claude Code mod (0.3.0) shows Claude's own usage, the worker cap and stuck runs.
+
+### Added
+
+- **Usage in the status line.** Context fill and the 5-hour / weekly rate-limit windows, with mini meters (`ctx ▰▰▱▱▱ 42% │ 5h ▰▱▱▱▱ 23% │ 7d ▰▰▰▱▱ 61%`), always shown, with the reset time once a window passes 80%. Read from `session.measure`, no polling. `showUsage` turns it off.
+- **Queue and cap on the band.** A queued run says whether it waits for a worker slot (cap full) or for a folder another commander holds. The band and status line show the machine-wide cap from `zcrew capacity --json` (`ช่าง ●●○○○ 2/5`), and one toast/notification fires when a 1302 backoff lowers it.
+- **Stalled runs.** A running run with no activity for 30 min is flagged and wakes Claude once with a STALLED note (check with `agent-observe`, cancel, restart), like the Codex Stop hook. If it moves again, its real end wakes Claude as usual.
+
+### Changed
+
+- The band is drawn in theme-colored segments; the pane gets a cap header, stage colors and a time bar colored by how much of the time box is used.
+
 ## 0.10.1 — 2026-10-13
 
 agent-start answers at once again on Windows.
