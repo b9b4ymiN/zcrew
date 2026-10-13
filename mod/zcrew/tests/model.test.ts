@@ -1,9 +1,11 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import type { RunView } from '../types'
+import type { Seg } from '../hooks/model'
 import {
-  BACKGROUND_GRACE_MS, activityOf, bandLines, bandVisible, boxFromConfig, detailOf, gateSummary, liveJobs,
-  parseSnapshot, stageOf, statusText, titleOf, turnOver, wakeMessage,
+  BACKGROUND_GRACE_MS, STALL_MS, activityOf, bandLines, bandRows, bandVisible, boxFromConfig, capText, chromeText, detailOf,
+  gateSummary, iconOf, isStalled, levelOf, liveJobs, meter, parseSnapshot, queueReason, slots, stageOf, statusText, titleOf, turnOver,
+  usageText, wakeMessage,
 } from '../hooks/model'
 
 const BOX = 20 * 60_000
@@ -115,5 +117,157 @@ describe('background jobs', () => {
     const text = wakeMessage([held], NOW)
     expect(text).toContain('background job(s) still run and keep the run open: a (npm run dev)')
     expect(text).toContain('"action": "cancel-background", "taskId": "<id>"')
+  })
+})
+
+describe('queue, stall and capacity', () => {
+  test('queue reason comes from the lease blockers', () => {
+    const snap = (lease: unknown) => ({ resourceLease: lease })
+    expect(queueReason(snap({ acquired: false, blockers: [{ key: 'zcrew:worker-slot:2' }, { key: 'other' }] }))).toBe('slot')
+    expect(queueReason(snap({ acquired: false, blockers: [{ key: 'C:/work/site' }] }))).toBe('folder')
+    expect(queueReason(snap({ acquired: true, blockers: [{ key: 'zcrew:worker-slot:2' }] }))).toBeUndefined()
+    expect(queueReason(snap({ acquired: false, blockers: [] }))).toBeUndefined()
+    expect(queueReason({})).toBeUndefined()
+    expect(queueReason(undefined)).toBeUndefined()
+  })
+
+  test('a run stalls after 30 min of silence while running', () => {
+    expect(isStalled(run({ lastChangeAt: NOW - STALL_MS }), NOW)).toBe(true)
+    expect(isStalled(run({ lastChangeAt: NOW - 29 * 60_000 }), NOW)).toBe(false)
+    expect(isStalled(run({ status: 'queued', lastChangeAt: NOW - 31 * 60_000 }), NOW)).toBe(false)
+    expect(isStalled(run({}), NOW)).toBe(false)
+  })
+
+  test('cap text in both languages, backoff flagged', () => {
+    expect(capText({ used: 2, cap: 5, configured: 5, backoff: false }, 'th')).toBe('ช่าง 2/5')
+    expect(capText({ used: 2, cap: 5, configured: 5, backoff: false }, 'en')).toBe('workers 2/5')
+    expect(capText({ used: 1, cap: 2, configured: 5, backoff: true }, 'th')).toBe('ช่าง 1/2 ⚠1302')
+    expect(capText({ used: 1, cap: 2, configured: 5, backoff: true }, 'en')).toBe('workers 1/2 ⚠1302')
+  })
+
+  test('band counts queued runs, lists them, and appends the cap with slot dots', () => {
+    const lines = bandLines(
+      [run({ runId: 'a', title: 'Hero' }), run({ runId: 'q', title: 'Nav', status: 'queued', queue: 'slot' })],
+      NOW, BOX, 'th', 3, { used: 2, cap: 5, configured: 5, backoff: false },
+    )
+    expect(lines[0]).toBe('zcrew  🔧 1 กำลังทำ · ⏳ 1 รอคิว   ช่าง ●●○○○ 2/5')
+    expect(lines[1]).toBe('  ⏳ Nav — รอคิว (เต็มเพดาน)')
+    expect(bandLines([run({ runId: 'q', title: 'Nav', status: 'queued', queue: 'folder' })], NOW, BOX, 'en', 3))
+      .toEqual(['zcrew  ⏳ 1 queued', '  ⏳ Nav — waiting for the folder'])
+    expect(bandLines([run({ runId: 'q', title: 'Nav', status: 'queued' })], NOW, BOX, 'en', 3))
+      .toEqual(['zcrew  ⏳ 1 queued', '  ⏳ Nav — queued'])
+  })
+
+  test('status line counts queued and carries the cap', () => {
+    const queued = run({ runId: 'q', status: 'queued', queue: 'slot' })
+    expect(statusText([run({ runId: 'a' }), queued], NOW, BOX, { used: 2, cap: 5, configured: 5, backoff: false }, 'en'))
+      .toBe('zcrew 🔧1 ⏳1 · workers 2/5')
+    expect(statusText([run({ runId: 'a' }), queued], NOW, BOX)).toBe('zcrew 🔧1 ⏳1')
+  })
+
+  test('a stalled run draws as attention and wakes with STALLED', () => {
+    const stalled = run({ stalled: true, lastChangeAt: NOW - 35 * 60_000, endedAt: NOW })
+    expect(stageOf(stalled, NOW, BOX)).toBe('attention')
+    expect(iconOf(stalled, NOW, BOX)).toBe('❌')
+    expect(detailOf(stalled, NOW, BOX, 'th')).toBe('เงียบ 35 นาที')
+    expect(detailOf(stalled, NOW, BOX, 'en')).toBe('silent 35 min')
+    expect(turnOver(stalled, NOW)).toBe(true)
+    expect(wakeMessage([stalled], NOW))
+      .toContain('run_1 "Hero section": STALLED, no worker activity for 35 min. Check it with agent-observe, then cancel it (agent-control) and start it again.')
+  })
+
+  test('band rows carry stage colors, dim details and the cap dots', () => {
+    const cap = { used: 2, cap: 5, configured: 5, backoff: false }
+    const runs = [
+      run({ runId: 'w', title: 'Work' }),
+      run({ runId: 'q', title: 'Nav', status: 'queued', queue: 'slot' }),
+      run({ runId: 's', title: 'Migrate', stalled: true, lastChangeAt: NOW - 35 * 60_000, endedAt: NOW }),
+    ]
+    const rows = bandRows(runs, NOW, BOX, 'en', 3, cap)
+    const head = rows[0]
+    expect(head.find(s => s.text.startsWith('🔧'))?.color).toBe('claude')
+    expect(head.find(s => s.text.startsWith('⏳'))?.color).toBe('subtle')
+    expect(head.find(s => s.text.startsWith('❌'))?.color).toBe('error')
+    expect(head.filter(s => /^[●○]+$/.test(s.text))).toEqual([
+      { text: '●●', color: 'success' }, { text: '○○○', color: 'subtle' },
+    ])
+    const byTitle = (word: string): Seg[] | undefined => rows.find(r => r.some(s => s.text === word))
+    expect(byTitle('Migrate')?.find(s => s.text === '❌ ')?.color).toBe('error')
+    expect(byTitle('Migrate')?.find(s => s.dim)?.text).toBe('silent 35 min')
+    expect(byTitle('Nav')?.find(s => s.text === '⏳ ')?.color).toBe('subtle')
+    expect(byTitle('Nav')?.find(s => s.dim)?.text).toBe('queued (worker cap full)')
+  })
+
+  test('a review row is a suggestion; backoff dots and the marker warn', () => {
+    const review = bandRows([run({ runId: 'r', status: 'completed', gate: { mechanical: 'PASS', summary: '' } })], NOW, BOX, 'en', 3)
+    expect(review[0].find(s => s.text.startsWith('👀'))?.color).toBe('suggestion')
+    expect(review[1].find(s => s.text === '👀 ')?.color).toBe('suggestion')
+    const backoff = bandRows([run({ runId: 'a' })], NOW, BOX, 'th', 3, { used: 1, cap: 2, configured: 5, backoff: true })
+    expect(backoff[0].filter(s => /^[●○]+$/.test(s.text))).toEqual([
+      { text: '●', color: 'warning' }, { text: '○', color: 'subtle' },
+    ])
+    expect(backoff[0].find(s => s.text === ' ⚠1302')).toEqual({ text: ' ⚠1302', color: 'warning' })
+  })
+})
+
+describe('meters, levels and slots', () => {
+  test('the usage meter fills by percent, clamped to the width', () => {
+    expect(meter(0)).toBe('▱▱▱▱▱')
+    expect(meter(42)).toBe('▰▰▱▱▱')
+    expect(meter(100)).toBe('▰▰▰▰▰')
+    expect(meter(150)).toBe('▰▰▰▰▰')
+  })
+
+  test('levels flip at 60 and 85', () => {
+    expect(levelOf(59)).toBe('success')
+    expect(levelOf(60)).toBe('warning')
+    expect(levelOf(84)).toBe('warning')
+    expect(levelOf(85)).toBe('error')
+  })
+
+  test('slot dots fill up to the cap, never past it', () => {
+    expect(slots(2, 5)).toBe('●●○○○')
+    expect(slots(0, 3)).toBe('○○○')
+    expect(slots(7, 5)).toBe('●●●●●')
+  })
+})
+
+describe('usage segment', () => {
+  const RESETS_AT = new Date(2026, 0, 2, 14, 30).toISOString() // 14:30 local
+
+  test('context and windows render with meters, unknown kinds ignored', () => {
+    expect(usageText({
+      context: { percent: 42 },
+      rateLimits: [
+        { kind: 'five_hour', percentUsed: 23 },
+        { kind: 'seven_day', percentUsed: 61 },
+        { kind: 'spend_limit', percentUsed: 90 },
+      ],
+    }, NOW, 'en')).toBe('ctx ▰▰▱▱▱ 42% │ 5h ▰▱▱▱▱ 23% │ 7d ▰▰▰▱▱ 61%')
+  })
+
+  test('missing pieces are omitted, nothing known is undefined', () => {
+    expect(usageText({ context: { percent: 7 }, rateLimits: [] }, NOW, 'en')).toBe('ctx ▱▱▱▱▱ 7%') // off-subscription
+    expect(usageText({ rateLimits: [{ kind: 'five_hour', percentUsed: 10 }] }, NOW, 'en')).toBe('5h ▰▱▱▱▱ 10%')
+    expect(usageText({ context: { window: 200000 } }, NOW, 'en')).toBeUndefined() // no fill yet
+    expect(usageText({}, NOW, 'en')).toBeUndefined()
+    expect(usageText(undefined, NOW, 'en')).toBeUndefined()
+  })
+
+  test('a window past 80% says when it resets', () => {
+    expect(usageText({ rateLimits: [{ kind: 'seven_day', percentUsed: 85, resetsAt: RESETS_AT }] }, NOW, 'en'))
+      .toBe('7d ▰▰▰▰▱ 85% (resets 14:30)')
+    expect(usageText({ rateLimits: [{ kind: 'five_hour', percentUsed: 92, resetsAt: RESETS_AT }] }, NOW, 'th'))
+      .toBe('5h ▰▰▰▰▰ 92% (รีเซ็ต 14:30)')
+    expect(usageText({ rateLimits: [{ kind: 'five_hour', percentUsed: 79, resetsAt: RESETS_AT }] }, NOW, 'en'))
+      .toBe('5h ▰▰▰▰▱ 79%') // below 80%: no reset time even with resetsAt
+    expect(usageText({ rateLimits: [{ kind: 'five_hour', percentUsed: 85 }] }, NOW, 'en')).toBe('5h ▰▰▰▰▱ 85%') // no resetsAt
+  })
+
+  test('chrome joins the parts that exist', () => {
+    expect(chromeText('ctx 42% · 5h 23%', 'zcrew 🔧1')).toBe('ctx 42% · 5h 23% │ zcrew 🔧1')
+    expect(chromeText('ctx 42%', undefined)).toBe('ctx 42%')
+    expect(chromeText(undefined, 'zcrew 🔧1')).toBe('zcrew 🔧1')
+    expect(chromeText(undefined, undefined)).toBeUndefined()
   })
 })

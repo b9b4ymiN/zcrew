@@ -1,6 +1,6 @@
 {
   "name": "zcrew",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "author": { "name": "b9b4ymiN" },
   "description": "Watches ZCode worker runs for Claude Code: waits so the model does not, shows progress beside the prompt, runs zcrew gate and wakes Claude when work is ready to review.",
   "types": "./types/index.d.ts",
@@ -16,6 +16,12 @@
       "type": "boolean",
       "title": "Hands-free waiting",
       "description": "Answer agent-wait at once and wake Claude when a run ends, instead of letting the model poll every minute.",
+      "default": true
+    },
+    "showUsage": {
+      "type": "boolean",
+      "title": "Show Claude usage",
+      "description": "Keep the status line showing context fill and the 5-hour / weekly rate-limit windows, even with no runs active.",
       "default": true
     },
     "python": {
