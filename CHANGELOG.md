@@ -2,6 +2,16 @@
 
 All notable changes to the Claude Commander × ZCode Executor Kit are recorded here.
 
+## 0.10.1 — 2026-10-13
+
+agent-start answers at once again on Windows.
+
+### Fixed
+
+- **agent-start hung for minutes on Windows** (since 0.10.0). The gate's `git_snapshot` ran `git` with the bridge's stdin inherited; on Windows that child cannot start while the bridge's serve loop is blocked reading the same pipe, so the response only went out when the commander's next MCP message arrived (6–8 min in practice). Claude Code also sends one tool call at a time to a server, so a second parallel `agent-start` waited behind the first and the worker cap was never really exercised. The shim now runs `git` with `stdin=DEVNULL` (agent-start: ~50 ms), and a test checks that every `subprocess` call in the shim sets `stdin`.
+- The gate read `OBJECTIVE: text` on one line as a missing section and warned "contract is missing". Inline section text now counts.
+- Run-hook tests stubbed `threading.Thread` globally, which broke `subprocess` on Windows; they now stub only the shim's watcher thread.
+
 ## 0.10.0 — 2026-10-12
 
 A worker cap measured from your plan, and hands-free waiting for Codex.
