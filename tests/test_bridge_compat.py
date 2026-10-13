@@ -9,7 +9,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 
@@ -770,6 +770,17 @@ class ContractParseTests(unittest.TestCase):
         c = compat.parse_contract("## OBJECTIVE\nx\n**SCOPE:**\n- `a/b.py`\n### VERIFY\n- `pytest`\n")
         self.assertEqual((c["scope"], c["verify"]), (["a/b.py"], ["pytest"]))
 
+    def test_inline_section_text(self) -> None:
+        c = compat.parse_contract(
+            "OBJECTIVE: Add a line.\nSCOPE: `scripts/doctor.py` only.\nDO NOT: touch other files.\n"
+            "ACCEPTANCE CRITERIA: line 1 is the comment.\n**VERIFY:** `python -m py_compile scripts/doctor.py`\n"
+            "CONTEXT shows how OBJECTIVE text reads.\n"
+        )
+        self.assertEqual(c["missing"], [])
+        self.assertEqual(c["scope"], ["scripts/doctor.py"])
+        self.assertEqual(c["verify"], ["python -m py_compile scripts/doctor.py"])
+        self.assertEqual(c["sections"]["OBJECTIVE"], ["Add a line."])
+
     def test_non_path_backticks_are_not_scope(self) -> None:
         c = compat.parse_contract("SCOPE\n- the `Hero` component\n")
         self.assertEqual(c["scope"], [])
@@ -888,12 +899,14 @@ class PatchRunHooksTests(RunHookFixture):
         return {"prompt": CONTRACT, "cwd": str(self.work), "timeout": 1800, **over}
 
     def run_start(self, manager: _HookManager, args: dict) -> dict:
-        real = threading.Thread
-        threading.Thread = lambda **kw: type("T", (), {"start": lambda self: None})()  # type: ignore[assignment,misc]
+        # stub only compat's Thread (the wrap-up watcher): subprocess on Windows needs real threads
+        real = compat.threading
+        compat.threading = SimpleNamespace(  # type: ignore[assignment]
+            Thread=lambda **kw: type("T", (), {"start": lambda self: None})())
         try:
             return manager.start(args)
         finally:
-            threading.Thread = real  # type: ignore[misc]
+            compat.threading = real  # type: ignore[assignment]
 
     def test_idempotent_and_skips_incomplete_managers(self) -> None:
         cls = type("Manager", (_HookManager,), {})
@@ -981,6 +994,25 @@ class PatchRunHooksTests(RunHookFixture):
         finally:
             compat.git_snapshot = original
         self.assertEqual(result["runId"], "run_1")
+
+
+class ChildStdinTests(unittest.TestCase):
+    """The bridge's serve loop blocks reading stdin; on Windows a child that inherits
+    that pipe cannot start until the next MCP message arrives (agent-start hung)."""
+
+    def test_every_subprocess_call_sets_stdin(self) -> None:
+        import ast
+
+        tree = ast.parse((SCRIPTS / "bridge_compat.py").read_text(encoding="utf-8"))
+        calls = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name) and node.func.value.id == "subprocess"
+            and node.func.attr in {"run", "Popen", "call", "check_call", "check_output"}
+        ]
+        self.assertTrue(calls)
+        for call in calls:
+            self.assertIn("stdin", {kw.arg for kw in call.keywords}, "line %d" % call.lineno)
 
 
 if __name__ == "__main__":

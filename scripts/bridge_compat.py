@@ -574,7 +574,8 @@ BRIDGE_TIMEOUT_ENVS = ("AGENT_MCP_TIMEOUT", "ZCODE_MCP_TIMEOUT")
 BRIDGE_TIMEOUT_DEFAULT = 900
 SECTION_NAMES = ("OBJECTIVE", "CONTEXT", "SCOPE", "DO NOT", "ACCEPTANCE CRITERIA", "VERIFY", "REPORT")
 REQUIRED_SECTIONS = ("OBJECTIVE", "SCOPE", "DO NOT", "ACCEPTANCE CRITERIA", "VERIFY")
-_SECTION_RE = re.compile(r"^\s*(?:#{1,6}\s*)?\**(%s)\**\s*:?\s*\**\s*$" % "|".join(SECTION_NAMES))
+# a heading on its own line, or ``NAME: text`` with the first item inline
+_SECTION_RE = re.compile(r"^\s*(?:#{1,6}\s*)?\**(%s)\**\s*(?::\s*\**\s*(.*?))?\s*$" % "|".join(SECTION_NAMES))
 _BULLET_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+(.*\S)\s*$")
 _BACKTICK_RE = re.compile(r"`([^`\n]+)`")
 _TIMEBOX_RE = re.compile(r"^\s*TIMEBOX\s*:\s*(\d+)\s*(s|sec|m|min|h)?\s*$", re.IGNORECASE | re.MULTILINE)
@@ -648,6 +649,8 @@ def parse_contract(prompt: str) -> dict:
         if head:
             current = head.group(1)
             sections.setdefault(current, [])
+            if head.group(2):
+                sections[current].append(head.group(2))
             continue
         if current is None or not line.strip():
             continue
@@ -669,9 +672,13 @@ def parse_contract(prompt: str) -> dict:
 
 
 def _git(cwd: str, *args: str) -> str | None:
+    # stdin=DEVNULL: on Windows a child that inherits the bridge's stdin pipe cannot
+    # start while the serve loop is blocked reading it, so agent-start hung until
+    # the commander's next MCP message arrived.
     try:
         done = subprocess.run(
-            ["git", "-C", cwd, *args], capture_output=True, text=True, timeout=10, check=False,
+            ["git", "-C", cwd, *args], stdin=subprocess.DEVNULL, capture_output=True,
+            text=True, timeout=10, check=False,
         )
     except (OSError, subprocess.SubprocessError):
         return None
