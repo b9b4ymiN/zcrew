@@ -60,7 +60,7 @@ Every run gets an explicit contract:
 - VERIFY — exact commands (tests/typecheck/lint/build).
 - REPORT — changed files, commands run with results, uncertainty. "Do not self-approve."
 
-Write SCOPE and DO NOT paths and VERIFY commands in `backticks` (`src/hero/**`, `npm test -- Hero`): `zcrew gate` checks exactly those, and lists plain-text items for your judgment. An open-ended task (tuning, measuring, investigating) gets a stop rule ("at most 3 approaches, then report"); `TIMEBOX: 40m` overrides the default time box for one task.
+Write SCOPE and DO NOT paths and VERIFY commands in `backticks` (`src/hero/**`, `npm test -- Hero`): `zcrew gate` checks exactly those, and lists plain-text items for your judgment. An open-ended task (tuning, measuring, investigating) gets a stop rule ("at most 3 approaches, then report"); `TIMEBOX: 40m` (uppercase, anywhere in the contract) overrides the default time box for one task; the `agent-start` result reports the time box in effect as `gate.timebox`.
 
 Size each task so one worker finishes it within the time box (`wrapUpSeconds`, default 20 min). A task with steps (write the test, implement, wire CI) is either one contract that lists every step, or separate tasks; never feed steps one at a time as "corrections" on one thread. Every message re-sends the thread's whole context, so a thread that grows past ~150k tokens is slow and costly. Past that size, or after 2 correction rounds, start a new thread with a complete contract that includes what you learned.
 

@@ -29,7 +29,8 @@ Run hooks (``patch_run_hooks``) add two things around agent-start/agent-close:
 - Time box: a run that is still working after ``wrapUpSeconds`` (config; 0 turns
   it off; capped below the run's own timeout) gets one ``interrupt`` asking the
   worker to stop and write its REPORT, instead of being cancelled with nothing
-  to show. A ``TIMEBOX: 40m`` line in the prompt overrides the default.
+  to show. A ``TIMEBOX: 40m`` anywhere in the prompt overrides the default;
+  the agent-start result reports the one in effect as ``gate.timebox``.
 - Gate (mode ``gateMode``: ``warn`` or ``off``): the first agent-start of a thread
   records its worker contract (SCOPE, DO NOT, VERIFY, ...) and the git state to
   ~/.zcode-commander/gate/ for ``zcrew gate``; the result carries ``gate`` hints,
@@ -55,7 +56,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, NamedTuple
 
 BUILTIN_PROVIDER_ENV = "ZCODE_BUILTIN_PROVIDER_CONFIG_FILE"
 UPDATE_ACCOUNT_METHOD = "provider/updateAccountConfig"
@@ -568,6 +569,7 @@ RUN_HOOKS_DEFAULTS = {"wrapUpSeconds": 1200, "gateMode": "warn"}
 GATE_MODES = ("off", "warn")
 WRAP_UP_MARK = "[zcrew:wrap-up]"
 WRAP_UP_MIN_SECONDS = 60
+TIMEBOX_UNITS = {"s": 1, "m": 60, "h": 3600}
 WRAP_UP_GRACE_SECONDS = 120  # the report needs time before the hard timeout
 WRAP_UP_POLL_SECONDS = 10.0
 BRIDGE_TIMEOUT_ENVS = ("AGENT_MCP_TIMEOUT", "ZCODE_MCP_TIMEOUT")
@@ -578,15 +580,20 @@ REQUIRED_SECTIONS = ("OBJECTIVE", "SCOPE", "DO NOT", "ACCEPTANCE CRITERIA", "VER
 _SECTION_RE = re.compile(r"^\s*(?:#{1,6}\s*)?\**(%s)\**\s*(?::\s*\**\s*(.*?))?\s*$" % "|".join(SECTION_NAMES))
 _BULLET_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+(.*\S)\s*$")
 _BACKTICK_RE = re.compile(r"`([^`\n]+)`")
-_TIMEBOX_RE = re.compile(r"^\s*TIMEBOX\s*:\s*(\d+)\s*(s|sec|m|min|h)?\s*$", re.IGNORECASE | re.MULTILINE)
+# Case-sensitive on purpose: prose such as "timebox: 5" must not set a time box. The unit may be
+# lower or upper case; no unit means minutes.
+_TIMEBOX_RE = re.compile(
+    r"(?<![\w-])TIMEBOX\s*:\s*(\d+)\s*(?i:(seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h))?(?!\w)")
+_TIMEBOX_WORD_RE = re.compile(r"\bTIMEBOX\b", re.IGNORECASE)
 WRAP_UP_PROMPT = (
     WRAP_UP_MARK + " Time is almost up. Stop experimenting now and write your REPORT: what you changed, "
     "what you measured or verified (real command results), what is unfinished, and what you recommend "
     "next. Do not start new work."
 )
 TIMEBOX_NOTICE = (
-    "\n\n[zcrew] Time box: about %d minutes. If this task is open-ended (tuning, measuring, "
-    "investigating), try at most 3 approaches, then stop and write the REPORT with your numbers. "
+    "\n\n[zcrew] Time box: about %d minutes (wrap-up near %s local time). Run the VERIFY commands "
+    "before then. If this task is open-ended (tuning, measuring, investigating), try at most 3 "
+    "approaches, then stop and write the REPORT with your numbers. "
     "If you are told to wrap up, stop and report immediately."
 )
 
@@ -625,13 +632,16 @@ def effective_setting(cwd: str | None, key: str, env: Mapping[str, str]) -> Any:
     return default
 
 
+def _timebox_values(prompt: str) -> list[int]:
+    """Every ``TIMEBOX: 40m`` in the prompt, in seconds, in order of appearance."""
+    return [int(m.group(1)) * TIMEBOX_UNITS[(m.group(2) or "m")[0].lower()]
+            for m in _TIMEBOX_RE.finditer(prompt or "")]
+
+
 def parse_timebox(prompt: str) -> int | None:
-    """Seconds from a ``TIMEBOX: 40m`` line, else None."""
-    match = _TIMEBOX_RE.search(prompt or "")
-    if not match:
-        return None
-    unit = (match.group(2) or "m").lower()
-    return int(match.group(1)) * {"s": 1, "sec": 1, "m": 60, "min": 60, "h": 3600}[unit]
+    """Seconds from the first ``TIMEBOX: 40m`` anywhere in the prompt, else None."""
+    values = _timebox_values(prompt)
+    return values[0] if values else None
 
 
 def parse_contract(prompt: str) -> dict:
@@ -740,7 +750,8 @@ def note_snapshot(result: Any, env: Mapping[str, str]) -> None:
         save_record(path, data)
 
 
-def record_start(args: Mapping[str, Any], result: Any, env: Mapping[str, str], warnings: list[str]) -> None:
+def record_start(args: Mapping[str, Any], result: Any, env: Mapping[str, str], warnings: list[str],
+                 timebox: Timebox | None = None) -> None:
     if not is_run_snapshot(result):
         return
     run_id, thread_id = result["runId"], args.get("threadId")
@@ -751,6 +762,8 @@ def record_start(args: Mapping[str, Any], result: Any, env: Mapping[str, str], w
             data["rounds"] = int(data.get("rounds", 1)) + 1
             data.setdefault("runIds", []).append(run_id)
             data["roundStartedAt"] = int(time.time() * 1000)
+            if timebox:
+                data["timebox"] = {"seconds": timebox.seconds, "source": timebox.source}
             save_record(path, data)
         return
     cwd = args.get("cwd")
@@ -761,22 +774,60 @@ def record_start(args: Mapping[str, Any], result: Any, env: Mapping[str, str], w
         "runIds": [run_id], "threadId": result.get("threadId"), "cwd": cwd,
         "startedAt": now, "roundStartedAt": now, "rounds": 1, "base": snap["base"], "dirty": snap["dirty"],
         "contract": contract, "verdicts": [], "mode": "warn",
+        "timebox": {"seconds": timebox.seconds, "source": timebox.source} if timebox else None,
     })
     if contract["missing"]:
         warnings.append("contract is missing: %s (zcrew gate cannot check what it cannot read)"
                         % ", ".join(contract["missing"]))
 
 
-def wrap_up_delay(args: Mapping[str, Any], env: Mapping[str, str]) -> int | None:
-    """Seconds into the run when the wrap-up interrupt fires, or None for no time box."""
+class Timebox(NamedTuple):
+    """The wrap-up time box a run gets: seconds (None = no time box), where it came from, and warnings."""
+    seconds: int | None
+    source: str  # "contract" (TIMEBOX: in the prompt) | "config" (wrapUpSeconds) | "off"
+    warnings: list[str]
+
+
+def _minutes(seconds: int) -> str:
+    return "%gm" % (seconds / 60)
+
+
+def resolve_timebox(args: Mapping[str, Any], env: Mapping[str, str]) -> Timebox:
     timeout = args.get("timeout")
     if not isinstance(timeout, int) or isinstance(timeout, bool) or timeout <= 0:
         timeout = next((int(env[k]) for k in BRIDGE_TIMEOUT_ENVS if str(env.get(k, "")).isdigit()),
                        BRIDGE_TIMEOUT_DEFAULT)
-    explicit = parse_timebox(str(args.get("prompt") or ""))
-    wanted = explicit if explicit else effective_setting(args.get("cwd"), "wrapUpSeconds", env)
-    delay = min(int(wanted), timeout - WRAP_UP_GRACE_SECONDS)
-    return delay if wanted and delay >= WRAP_UP_MIN_SECONDS else None
+    prompt = str(args.get("prompt") or "")
+    values = _timebox_values(prompt)
+    warnings: list[str] = []
+    if len(set(values)) > 1:
+        warnings.append("several TIMEBOX values; using the first (%s)" % _minutes(values[0]))
+    if values and values[0]:
+        wanted, source = values[0], "contract"
+    else:
+        wanted, source = int(effective_setting(args.get("cwd"), "wrapUpSeconds", env)), "config"
+        if not values and _TIMEBOX_WORD_RE.search(prompt):
+            warnings.append("TIMEBOX found but not understood (write e.g. TIMEBOX: 60m); using wrapUpSeconds=%d"
+                            % wanted)
+    delay = min(wanted, timeout - WRAP_UP_GRACE_SECONDS)
+    if wanted and delay >= WRAP_UP_MIN_SECONDS:
+        if source == "contract" and delay < wanted:
+            warnings.append("TIMEBOX %s is longer than the run timeout %s; wrap-up at %s instead (raise timeout)"
+                            % (_minutes(wanted), _minutes(timeout), _minutes(delay)))
+        return Timebox(delay, source, warnings)
+    if source == "contract":
+        warnings.append("TIMEBOX too short for this run's timeout; no time box applied")
+    return Timebox(None, "off", warnings)
+
+
+def wrap_up_delay(args: Mapping[str, Any], env: Mapping[str, str]) -> int | None:
+    """Seconds into the run when the wrap-up interrupt fires, or None for no time box."""
+    return resolve_timebox(args, env).seconds
+
+
+def timebox_notice(delay: int, now: float | None = None) -> str:
+    wrap_up_at = time.localtime((time.time() if now is None else now) + delay)
+    return TIMEBOX_NOTICE % (max(1, delay // 60), time.strftime("%H:%M", wrap_up_at))
 
 
 def watch_for_wrap_up(
@@ -823,18 +874,21 @@ def patch_run_hooks(cls: Any, env: Mapping[str, str]) -> None:
         args = dict(args or {})
         cwd = args.get("cwd")
         mode = effective_setting(cwd, "gateMode", env)
+        timebox: Timebox | None = None
         delay = None
         try:
-            delay = wrap_up_delay(args, env) if isinstance(args.get("prompt"), str) else None
-            if delay and not args.get("threadId"):
-                args["prompt"] += TIMEBOX_NOTICE % max(1, delay // 60)
+            if isinstance(args.get("prompt"), str):
+                timebox = resolve_timebox(args, env)
+                delay = timebox.seconds
+                if delay and not args.get("threadId"):
+                    args["prompt"] += timebox_notice(delay)
         except Exception:  # noqa: BLE001
-            delay = None
+            timebox, delay = None, None
         result = original_start(self, args)
         warnings: list[str] = []
         try:
             if mode != "off":
-                record_start(args, result, env, warnings)
+                record_start(args, result, env, warnings, timebox)
         except Exception:  # noqa: BLE001
             pass
         if is_run_snapshot(result):
@@ -842,10 +896,15 @@ def patch_run_hooks(cls: Any, env: Mapping[str, str]) -> None:
                 threading.Thread(
                     target=watch_for_wrap_up, args=(self, result["runId"], delay), daemon=True,
                 ).start()
-            if mode != "off" and isinstance(result, dict):
-                hint = {"verify": "before accepting, run: zcrew gate %s" % result["runId"]}
+            if isinstance(result, dict) and (mode != "off" or timebox):
+                hint: dict[str, Any] = {}
+                if mode != "off":
+                    hint["verify"] = "before accepting, run: zcrew gate %s" % result["runId"]
+                warnings += timebox.warnings if timebox else []
                 if warnings:
                     hint["warnings"] = warnings
+                if timebox:
+                    hint["timebox"] = {"seconds": timebox.seconds, "source": timebox.source}
                 result = {**result, "gate": hint}
         return result
 
