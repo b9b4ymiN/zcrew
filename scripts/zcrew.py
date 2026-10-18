@@ -607,6 +607,11 @@ def main(
 if __name__ == "__main__":
     # Line-buffer so our messages stay in order with child process output
     # when stdout is a pipe (get.ps1 pipes it through Out-Host).
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(line_buffering=True)
+    # UTF-8 because contracts carry any text (">=" as a symbol): a console code page such
+    # as cp1252 made printing them raise UnicodeEncodeError. Claude Code and Codex read UTF-8.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace", line_buffering=stream is sys.stdout)
+        except (AttributeError, ValueError, OSError):
+            pass
     raise SystemExit(main())

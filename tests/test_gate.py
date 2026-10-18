@@ -425,3 +425,19 @@ class WiringTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ConsoleEncodingTests(RepoFixture):
+    def test_judgment_with_non_ascii_text_survives_a_narrow_console_code_page(self) -> None:
+        # issue #2: printing "≥" to a cp1252 pipe raised UnicodeEncodeError and the gate never answered
+        data = self.record([])
+        data["contract"]["sections"]["ACCEPTANCE CRITERIA"] = ["Coverage ≥ 80%"]
+        compat.save_record(compat.state_dir(self.env) / "run_1.json", data)
+        env = {**os.environ, **self.env, "PYTHONIOENCODING": "cp1252"}
+        done = subprocess.run(
+            [sys.executable, str(SCRIPTS / "zcrew.py"), "gate", "run_1", "--no-verify"],
+            cwd=self.repo, env=env, capture_output=True, check=False,
+        )
+        self.assertNotIn(b"UnicodeEncodeError", done.stderr)
+        self.assertIn(done.returncode, (0, 1))
+        self.assertIn("Coverage ≥ 80%", done.stdout.decode("utf-8"))
