@@ -782,6 +782,31 @@ class ContractParseTests(unittest.TestCase):
         self.assertEqual(c["verify"], ["python -m py_compile scripts/doctor.py"])
         self.assertEqual(c["sections"]["OBJECTIVE"], ["Add a line."])
 
+    def test_heading_with_a_note_in_parentheses(self) -> None:
+        # issue #2: "SCOPE (may change)" was not recognised
+        c = compat.parse_contract("SCOPE (may change)\n- `src/a.py`\n- docs\n")
+        self.assertEqual(c["sections"]["SCOPE"], ["`src/a.py`", "docs"])
+        self.assertEqual(c["scope"], ["src/a.py"])
+        self.assertNotIn("SCOPE", c["missing"])
+        for text in (
+            "SCOPE (may change):\n- `src/a.py`\n",
+            "**SCOPE (files):** `src/a.py`\n",
+            "**SCOPE (files)**:\n- `src/a.py`\n",
+            "## SCOPE (files)\n- `src/a.py`\n",
+            "SCOPE(files): `src/a.py`\n",
+        ):
+            self.assertEqual(compat.parse_contract(text)["scope"], ["src/a.py"], text)
+
+    def test_near_miss_headings_are_reported_only_for_missing_sections(self) -> None:
+        c = compat.parse_contract("OBJECTIVE\nx\nSCOPE - files\n- `a/b.py`\n")
+        self.assertIn("SCOPE", c["missing"])
+        self.assertEqual(c["near_misses"], {"SCOPE": "SCOPE - files"})
+        # the section exists, so a prose line starting with its name is not a near miss
+        c = compat.parse_contract(CONTRACT + "\nDO NOT touch the lockfile either\n")
+        self.assertEqual((c["missing"], c["near_misses"]), ([], {}))
+        # optional sections never produce near misses
+        self.assertEqual(compat.parse_contract("CONTEXT shows how it reads\n")["near_misses"], {})
+
     def test_non_path_backticks_are_not_scope(self) -> None:
         c = compat.parse_contract("SCOPE\n- the `Hero` component\n")
         self.assertEqual(c["scope"], [])
@@ -1003,6 +1028,14 @@ class PatchRunHooksTests(RunHookFixture):
         [record_path] = list((self.root / "state" / "gate").glob("*.json"))
         self.assertEqual(json.loads(record_path.read_text(encoding="utf-8"))["timebox"],
                          {"seconds": 1500, "source": "contract"})
+
+    def test_unrecognised_heading_is_named_in_the_warning(self) -> None:
+        manager = self.patched()
+        prompt = CONTRACT.replace("SCOPE\n", "SCOPE - what may change\n", 1)
+        result = self.run_start(manager, self.start_args(prompt=prompt))
+        warning = result["gate"]["warnings"][0]
+        self.assertIn("contract is missing: SCOPE", warning)
+        self.assertIn('heading not recognised: "SCOPE - what may change" - write "SCOPE:" or "SCOPE (note):"', warning)
 
     def test_timebox_warnings_join_the_gate_warnings(self) -> None:
         manager = self.patched()

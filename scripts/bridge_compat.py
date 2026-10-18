@@ -576,8 +576,12 @@ BRIDGE_TIMEOUT_ENVS = ("AGENT_MCP_TIMEOUT", "ZCODE_MCP_TIMEOUT")
 BRIDGE_TIMEOUT_DEFAULT = 900
 SECTION_NAMES = ("OBJECTIVE", "CONTEXT", "SCOPE", "DO NOT", "ACCEPTANCE CRITERIA", "VERIFY", "REPORT")
 REQUIRED_SECTIONS = ("OBJECTIVE", "SCOPE", "DO NOT", "ACCEPTANCE CRITERIA", "VERIFY")
-# a heading on its own line, or ``NAME: text`` with the first item inline
-_SECTION_RE = re.compile(r"^\s*(?:#{1,6}\s*)?\**(%s)\**\s*(?::\s*\**\s*(.*?))?\s*$" % "|".join(SECTION_NAMES))
+# a heading on its own line, or ``NAME: text`` with the first item inline; a note in
+# parentheses after the name ("SCOPE (may change)") is allowed and dropped
+_SECTION_RE = re.compile(
+    r"^\s*(?:#{1,6}\s*)?\**(%s)\**(?:\s*\([^)\n]*\))?\**\s*(?::\s*\**\s*(.*?))?\s*$" % "|".join(SECTION_NAMES))
+# a line that starts like a heading but is not one: reported when its section ends up missing
+_NEAR_MISS_RE = re.compile(r"^\s*(?:#{1,6}\s*)?\**(%s)\b" % "|".join(SECTION_NAMES))
 _BULLET_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+(.*\S)\s*$")
 _BACKTICK_RE = re.compile(r"`([^`\n]+)`")
 # Case-sensitive on purpose: prose such as "timebox: 5" must not set a time box. The unit may be
@@ -648,14 +652,20 @@ def parse_contract(prompt: str) -> dict:
     """Split a worker contract into its sections.
 
     Returns ``sections`` (name -> bullet list; free text counts as one item),
-    ``missing`` (required sections absent or empty), ``scope`` / ``do_not``
+    ``missing`` (required sections absent or empty), ``near_misses`` (for a missing
+    section, the first line that looked like its heading), ``scope`` / ``do_not``
     (backticked path patterns) and ``verify`` (backticked commands). Items
     without backticks stay in ``sections`` for the reviewer's judgment.
     """
     sections: dict[str, list[str]] = {}
+    near: dict[str, str] = {}
     current: str | None = None
     for line in (prompt or "").splitlines():
         head = _SECTION_RE.match(line)
+        if not head:
+            miss = _NEAR_MISS_RE.match(line)
+            if miss:
+                near.setdefault(miss.group(1), line.strip())
         if head:
             current = head.group(1)
             sections.setdefault(current, [])
@@ -672,9 +682,11 @@ def parse_contract(prompt: str) -> dict:
     def pathlike(tokens: list[str]) -> list[str]:
         return [t for t in tokens if re.search(r"[/\\*.]", t) and " " not in t]
 
+    missing = [n for n in REQUIRED_SECTIONS if not sections.get(n)]
     return {
         "sections": sections,
-        "missing": [n for n in REQUIRED_SECTIONS if not sections.get(n)],
+        "missing": missing,
+        "near_misses": {n: near[n] for n in missing if n in near},
         "scope": pathlike(ticked("SCOPE")),
         "do_not": pathlike(ticked("DO NOT")),
         "verify": ticked("VERIFY"),
@@ -777,8 +789,11 @@ def record_start(args: Mapping[str, Any], result: Any, env: Mapping[str, str], w
         "timebox": {"seconds": timebox.seconds, "source": timebox.source} if timebox else None,
     })
     if contract["missing"]:
-        warnings.append("contract is missing: %s (zcrew gate cannot check what it cannot read)"
-                        % ", ".join(contract["missing"]))
+        text = "contract is missing: %s (zcrew gate cannot check what it cannot read)" % ", ".join(contract["missing"])
+        for name, line in contract["near_misses"].items():
+            shown = line if len(line) <= 60 else line[:59] + "..."
+            text += '; heading not recognised: "%s" - write "%s:" or "%s (note):"' % (shown, name, name)
+        warnings.append(text)
 
 
 class Timebox(NamedTuple):
