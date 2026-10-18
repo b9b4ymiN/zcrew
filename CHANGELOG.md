@@ -2,6 +2,26 @@
 
 All notable changes to the Claude Commander × ZCode Executor Kit are recorded here.
 
+## 0.11.1 — 2026-10-18
+
+Time boxes follow the contract, and the gate stops blaming workers for the commander's commits.
+
+### Fixed
+
+- **`TIMEBOX: 60m` was ignored unless it stood alone on its line** (issue #2). Runs then got the wrap-up interrupt at the 20-minute default. `TIMEBOX: <n><unit>` (uppercase, unit `s`/`m`/`h` or a word such as `min`, default minutes) now works anywhere in the prompt. The `agent-start` result reports the time box in effect as `gate.timebox` (`seconds`, `source`: `contract`, `config` or `off`), also when `gateMode` is `off`, and `gate.warnings` says when a TIMEBOX was not understood, repeated with different values, longer than the run timeout, or too short. The notice added to the worker prompt names the clock time of the wrap-up.
+- **`zcrew gate` crashed with `UnicodeEncodeError`** when a contract held a character outside the console code page, such as the greater-or-equal sign. `zcrew` now writes UTF-8 to stdout and stderr.
+- **A contract heading with a note in parentheses, such as `SCOPE (may change)`, counted as a missing section.** The note is dropped. A line that looks like the heading of a missing section is now named in the warning with the accepted forms.
+- **`zcrew gate` reported `scope FAIL` for files the worker never touched** after the commander merged or fast-forwarded other work into the worker's folder. When HEAD has moved since `agent-start`, the gate diffs against HEAD (workers never commit), lists the moved commits' files in a `history` warning and keeps the recorded base if it is no longer an ancestor of HEAD. `zcrew gate --base REV` forces a base.
+
+### Changed
+
+- **Longer default time box.** `timeoutSeconds` is now 3600 and `wrapUpSeconds` 3000 (was 1800 and 1200): 20 minutes is too short for ZCode workers. `TIMEBOX:` still overrides it per task.
+- The mod keeps the time box each run was given, so a run with `TIMEBOX: 60m` shows `21/60 min` instead of `21/20 min` and is flagged near its limit at the right time.
+
+### Upgrade note
+
+- The installer seeds `~/.zcode-commander/config.json` once and never overwrites it, so an existing install keeps `timeoutSeconds` 1800 and `wrapUpSeconds` 1200. Set `timeoutSeconds` to 3600 and `wrapUpSeconds` to 3000 there to get the new defaults; `zcrew config` prints a note while the old pair is in effect. Run `zcrew update` to receive the new `bridge_compat.py`.
+
 ## 0.11.0 — 2026-10-13
 
 The Claude Code mod (0.3.0) shows Claude's own usage, the worker cap and stuck runs.
