@@ -3,7 +3,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import type { RunView } from '../types'
 import type { Seg } from '../hooks/model'
 import {
-  BACKGROUND_GRACE_MS, STALL_MS, activityOf, bandLines, bandRows, bandVisible, boxFromConfig, capText, chromeText, detailOf,
+  BACKGROUND_GRACE_MS, STALL_MS, activityOf, bandLines, bandRows, bandVisible, boxFromConfig, boxFromStart, boxOf, capText, chromeText, detailOf,
   gateSummary, iconOf, isStalled, levelOf, liveJobs, meter, parseSnapshot, queueReason, slots, stageOf, statusText, titleOf, turnOver,
   usageText, wakeMessage,
 } from '../hooks/model'
@@ -87,8 +87,27 @@ describe('model', () => {
   test('time box from config, project first', () => {
     expect(boxFromConfig(['{"wrapUpSeconds": 600}', '{"wrapUpSeconds": 900}'])).toBe(600_000)
     expect(boxFromConfig([undefined, '{"wrapUpSeconds": 900}'])).toBe(900_000)
-    expect(boxFromConfig(['{"wrapUpSeconds": 0}'])).toBe(1_200_000)
-    expect(boxFromConfig([])).toBe(1_200_000)
+    expect(boxFromConfig(['{"wrapUpSeconds": 0}'])).toBe(3_000_000)
+    expect(boxFromConfig([])).toBe(3_000_000)
+  })
+
+  test('a run keeps the time box the bridge gave it', () => {
+    expect(boxFromStart({ gate: { timebox: { seconds: 3600, source: 'contract' } } })).toBe(3_600_000)
+    expect(boxFromStart({ gate: { timebox: { seconds: null, source: 'off' } } })).toBeUndefined()
+    expect(boxFromStart({ gate: { verify: 'x' } })).toBeUndefined()
+    expect(boxFromStart({ gate: 'nope' })).toBeUndefined()
+    expect(boxFromStart(undefined)).toBeUndefined()
+    expect(boxOf(run({ boxMs: 60 * 60_000 }), BOX)).toBe(60 * 60_000)
+    expect(boxOf(run({}), BOX)).toBe(BOX)
+  })
+
+  test('a run with a longer time box is not "near" at 21 minutes (issue #2)', () => {
+    const long = run({ runningSince: NOW - 21 * 60_000, boxMs: 60 * 60_000 })
+    expect(stageOf(long, NOW, BOX)).toBe('running')
+    expect(detailOf(long, NOW, BOX, 'en')).toContain('21/60 min')
+    const plain = run({ runningSince: NOW - 21 * 60_000 })
+    expect(stageOf(plain, NOW, BOX)).toBe('near')
+    expect(detailOf(plain, NOW, BOX, 'en')).toContain('21/20 min')
   })
 })
 

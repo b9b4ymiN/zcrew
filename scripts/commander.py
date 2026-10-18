@@ -33,13 +33,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "thoughtLevel": "max",
     "maxWorkers": 5,
     "maxCorrectionRounds": 4,
-    "timeoutSeconds": 1800,
-    "wrapUpSeconds": 1200,
+    "timeoutSeconds": 3600,
+    "wrapUpSeconds": 3000,
     "gateMode": "warn",
     # account-wide (read from the user file by the bridge): see `zcrew capacity`
     "concurrencyLimit": 0,
     "concurrencyTarget": 80,
 }
+# defaults before 0.11.1: user configs seeded then still hold them
+OLD_TIME_DEFAULTS = (1200, 1800)
 GATE_MODES = ("off", "warn")
 THOUGHT_LEVELS = ("high", "max")
 INT_LIMITS = {
@@ -754,6 +756,9 @@ def _print_config(cfg: dict[str, Any] | None, sources: list[str], problems: list
             print(f"  - {problem}")
     else:
         print("validation: OK")
+    if cfg is not None and (cfg.get("wrapUpSeconds"), cfg.get("timeoutSeconds")) == OLD_TIME_DEFAULTS:
+        print("note: wrapUpSeconds/timeoutSeconds are the pre-0.11.1 defaults (20/30 min); "
+              f"the new defaults are {DEFAULT_CONFIG['wrapUpSeconds']}/{DEFAULT_CONFIG['timeoutSeconds']}")
 
 
 def main(

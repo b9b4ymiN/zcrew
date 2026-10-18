@@ -71,7 +71,7 @@ class DefaultsFileTests(unittest.TestCase):
         self.assertEqual(data, commander.DEFAULT_CONFIG)
         self.assertEqual(data["model"], {"providerId": "account:zai-individual-coding-plan", "modelId": "GLM-5.3"})
         self.assertEqual((data["thoughtLevel"], data["maxWorkers"], data["maxCorrectionRounds"], data["timeoutSeconds"]),
-                         ("max", 5, 4, 1800))
+                         ("max", 5, 4, 3600))
 
 
 class MergeTests(TempDir):
@@ -86,7 +86,7 @@ class MergeTests(TempDir):
         cfg = commander.load_effective_config(user, project, commander.DEFAULT_CONFIG)
         self.assertEqual(cfg["maxWorkers"], 2)
         self.assertEqual(cfg["thoughtLevel"], "high")
-        self.assertEqual(cfg["timeoutSeconds"], 1800)
+        self.assertEqual(cfg["timeoutSeconds"], 3600)
 
     def test_model_replaced_as_whole(self) -> None:
         user = self.write_json(self.base / "user.json", {"model": {"providerId": "account:zai-start-plan", "modelId": "GLM-5.2"}})
@@ -550,6 +550,17 @@ class CliTests(TempDir):
         self.assertEqual(code, 0, out)
         self.assertIn("validation: OK", out)
         self.assertIn('"GLM-5.3"', out)
+
+    def test_config_notes_the_pre_0_11_1_time_defaults(self) -> None:
+        path = self.home / ".zcode-commander" / "config.json"
+        self.write_json(path, {"wrapUpSeconds": 1200, "timeoutSeconds": 1800})
+        code, out = self.run_cli("config")
+        self.assertEqual(code, 0, out)
+        self.assertIn("note: wrapUpSeconds/timeoutSeconds are the pre-0.11.1 defaults (20/30 min); "
+                      "the new defaults are 3000/3600", out)
+        self.write_json(path, {"wrapUpSeconds": 1200, "timeoutSeconds": 3600})
+        self.assertNotIn("note:", self.run_cli("config")[1])
+        self.assertNotIn("note:", self.run_cli("config", "--project", str(self.proj))[1])  # defaults: no note
 
     def test_config_project_override_and_failure(self) -> None:
         self.write_json(self.proj / commander.PROJECT_CONFIG_REL, {"maxWorkers": 11})

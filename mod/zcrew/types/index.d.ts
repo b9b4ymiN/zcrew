@@ -9,6 +9,8 @@ export type RunView = {
   tools: string[]
   startedAt: number
   runningSince?: number
+  /** Time box the bridge gave this run (agent-start `gate.timebox`), in milliseconds. */
+  boxMs?: number
   endedAt?: number
   round: number
   gate?: { mechanical: string; summary: string }

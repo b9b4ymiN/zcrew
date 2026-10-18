@@ -8,7 +8,7 @@ export const TOOL_START = `mcp__${SERVER}__agent-start`
 export const TOOL_WAIT = `mcp__${SERVER}__agent-wait`
 export const TOOL_CLOSE = `mcp__${SERVER}__agent-close`
 export const TERMINAL = new Set(['completed', 'failed', 'cancelled', 'timed_out', 'closed'])
-export const DEFAULT_BOX_MS = 1200 * 1000
+export const DEFAULT_BOX_MS = 3000 * 1000
 export const NEAR_BOX = 0.85 // share of the time box after which a run is flagged
 export const LINGER_MS = 2 * 60 * 1000 // how long finished news stays on the band
 export const HANDS_FREE_LIMIT = 2 // quick wait answers per run before letting waits block again
@@ -151,6 +151,15 @@ export function turnOver(run: RunView, now: number): boolean {
   return run.status === 'background' && run.backgroundSince !== undefined && now - run.backgroundSince >= BACKGROUND_GRACE_MS
 }
 
+/** The time box a run was given at agent-start (`gate.timebox` in the result), in milliseconds. */
+export function boxFromStart(snap: Record<string, unknown> | undefined): number | undefined {
+  const seconds = (snap?.gate as { timebox?: { seconds?: unknown } } | undefined)?.timebox?.seconds
+  return typeof seconds === 'number' && seconds > 0 ? seconds * 1000 : undefined
+}
+
+/** A run's own time box, else the one from the config files. */
+export const boxOf = (run: Pick<RunView, 'boxMs'>, fallback: number): number => run.boxMs && run.boxMs > 0 ? run.boxMs : fallback
+
 /** Where a run stands, for ordering and icons: attention first. */
 export function stageOf(run: RunView, now: number, boxMs: number): 'attention' | 'near' | 'queued' | 'running' | 'review' | 'accepted' | 'rejected' {
   if (run.verdict === 'accept' || run.verdict === 'closed') return 'accepted'
@@ -160,7 +169,7 @@ export function stageOf(run: RunView, now: number, boxMs: number): 'attention' |
   if (run.status === 'queued') return 'queued'
   if (isActive(run)) {
     const since = run.runningSince ?? run.startedAt
-    return now - since >= boxMs * NEAR_BOX ? 'near' : 'running'
+    return now - since >= boxOf(run, boxMs) * NEAR_BOX ? 'near' : 'running'
   }
   if (run.status !== 'completed' || run.gate?.mechanical === 'FAIL') return 'attention'
   return 'review'
@@ -185,7 +194,7 @@ export function detailOf(run: RunView, now: number, boxMs: number, lang: Lang): 
   }
   if (stage === 'running' || stage === 'near') {
     const since = run.runningSince ?? run.startedAt
-    const left = `${minutes(now - since)}/${minutes(boxMs)} ${lang === 'th' ? w.min : 'min'}`
+    const left = `${minutes(now - since)}/${minutes(boxOf(run, boxMs))} ${lang === 'th' ? w.min : 'min'}`
     return `${stage === 'near' ? w.nearBox + ' ' : ''}${left} · ${activityOf(run, lang)}`
   }
   if (stage === 'attention') {

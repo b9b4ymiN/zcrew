@@ -3,8 +3,8 @@
   "thoughtLevel": "max",
   "maxWorkers": 5,
   "maxCorrectionRounds": 4,
-  "timeoutSeconds": 1800,
-  "wrapUpSeconds": 1200,
+  "timeoutSeconds": 3600,
+  "wrapUpSeconds": 3000,
   "gateMode": "warn",
   "concurrencyLimit": 0,
   "concurrencyTarget": 80

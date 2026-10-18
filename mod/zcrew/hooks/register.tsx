@@ -19,7 +19,7 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { RunView } from '../types'
 import {
   HANDS_FREE_LIMIT, SERVER, TERMINAL,
-  bandRows, bandVisible, bar, boxFromConfig, capSegs, chromeText, detailOf, gateSummary, handsFreeNote, iconOf,
+  bandRows, bandVisible, bar, boxFromConfig, boxFromStart, boxOf, capSegs, chromeText, detailOf, gateSummary, handsFreeNote, iconOf,
   isActive, isStalled, levelOf, liveJobs, minutes, notifyText, parseSnapshot, queueReason, sorted, stageColor, stageOf,
   statusText, titleOf, turnOver, usageText, wakeMessage, words,
 } from './model'
@@ -270,6 +270,7 @@ async function rememberStart($: EngineInterface, args: Record<string, unknown>, 
       status: String(snap.status ?? 'queued'),
       tools: [],
       startedAt: now,
+      boxMs: boxFromStart(snap),
       round: earlier ? earlier.round + 1 : 0,
     }
     const rest = { ...current }
@@ -401,14 +402,15 @@ export const register: Register = (on, options) => {
         ) : null}
         {sorted(list, now, ctx.boxMs).map(run => {
           const since = run.runningSince ?? run.startedAt
-          const fill = Math.min(1, (now - since) / ctx.boxMs)
+          const box = boxOf(run, ctx.boxMs)
+          const fill = Math.min(1, (now - since) / box)
           return (
             <Box key={run.runId} flexDirection="column" marginBottom={1}>
               <Text bold wrap="truncate-end" color={stageColor(stageOf(run, now, ctx.boxMs))}>
                 {iconOf(run, now, ctx.boxMs)} {run.title}{run.round ? ` · ${w.round} ${run.round}` : ''}
               </Text>
               {isActive(run)
-                ? <Text color={levelOf(fill * 100)}>{'   '}{bar(fill, width)} {minutes(now - since)}/{minutes(ctx.boxMs)}</Text>
+                ? <Text color={levelOf(fill * 100)}>{'   '}{bar(fill, width)} {minutes(now - since)}/{minutes(box)}</Text>
                 : null}
               <Text dimColor wrap="wrap">{'   '}{detailOf(run, now, ctx.boxMs, ctx.lang)}</Text>
             </Box>

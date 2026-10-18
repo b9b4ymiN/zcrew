@@ -35,7 +35,8 @@ Before the first `agent-start` in a session, read the effective config: the proj
   "thoughtLevel": "max",
   "maxWorkers": 5,
   "maxCorrectionRounds": 4,
-  "timeoutSeconds": 1800,
+  "timeoutSeconds": 3600,
+  "wrapUpSeconds": 3000,
   "concurrencyLimit": 0,
   "concurrencyTarget": 80
 }
@@ -62,7 +63,7 @@ Every run gets an explicit contract:
 
 Write SCOPE and DO NOT paths and VERIFY commands in `backticks` (`src/hero/**`, `npm test -- Hero`): `zcrew gate` checks exactly those, and lists plain-text items for your judgment. An open-ended task (tuning, measuring, investigating) gets a stop rule ("at most 3 approaches, then report"); `TIMEBOX: 40m` (uppercase, anywhere in the contract) overrides the default time box for one task; the `agent-start` result reports the time box in effect as `gate.timebox`.
 
-Size each task so one worker finishes it within the time box (`wrapUpSeconds`, default 20 min). A task with steps (write the test, implement, wire CI) is either one contract that lists every step, or separate tasks; never feed steps one at a time as "corrections" on one thread. Every message re-sends the thread's whole context, so a thread that grows past ~150k tokens is slow and costly. Past that size, or after 2 correction rounds, start a new thread with a complete contract that includes what you learned.
+Size each task so one worker finishes it within the time box (`wrapUpSeconds`, default 50 min). A task with steps (write the test, implement, wire CI) is either one contract that lists every step, or separate tasks; never feed steps one at a time as "corrections" on one thread. Every message re-sends the thread's whole context, so a thread that grows past ~150k tokens is slow and costly. Past that size, or after 2 correction rounds, start a new thread with a complete contract that includes what you learned.
 
 ZCode automatically reads `AGENTS.md` from the working directory and its parents. If the project has one, it carries the standing worker rules and report format, so keep each contract task-specific. OBJECTIVE, SCOPE, DO NOT, ACCEPTANCE CRITERIA and VERIFY are still always required. Take VERIFY commands from the project's `CLAUDE.md` when it lists them. If you are Codex, read `CLAUDE.md` (project facts, VERIFY commands, boundaries) and `AGENTS.md` (the rules your ZCode workers follow) yourself at the start: your own instructions come from `AGENTS.override.md`, so Codex does not load `AGENTS.md` automatically. Those rules are addressed to the workers, not to you. Workers in a `git worktree` only see committed files, so make sure `AGENTS.md` is committed before starting parallel workers.
 

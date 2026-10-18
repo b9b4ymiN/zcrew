@@ -95,6 +95,30 @@ test('band and pane draw on every surface once a run starts', async ($, on) => {
   }
 })
 
+test('the pane shows the time box the run was given, else the default', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  on('tool.call', { tool: START }, () => ({
+    result: {},
+    text: '{"runId":"run_1","status":"running","revision":1,"gate":{"timebox":{"seconds":3600,"source":"contract"}}}',
+  }))
+  for (const op of ['ui.status', 'ui.open'] as const) on(op, () => ({ value: undefined }) as never)
+  await $.tool.call({ tool: START, prompt: CONTRACT } as never)
+  const pane = await $.ui.mount({ plugin: 'zcrew', surface: 'terminal', ...PANE } as never)
+  expect(await pane.find({ type: 'Text', text: /0\/60/ } as never)).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /0\/50/ } as never)).toBeUndefined()
+  await pane.unmount()
+})
+
+test('a run without a reported time box uses the default of 50 minutes', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  on('tool.call', { tool: START }, () => ({ result: {}, text: '{"runId":"run_1","status":"running","revision":1}' }))
+  for (const op of ['ui.status', 'ui.open'] as const) on(op, () => ({ value: undefined }) as never)
+  await $.tool.call({ tool: START, prompt: CONTRACT } as never)
+  const pane = await $.ui.mount({ plugin: 'zcrew', surface: 'terminal', ...PANE } as never)
+  expect(await pane.find({ type: 'Text', text: /0\/50/ } as never)).toBeDefined()
+  await pane.unmount()
+})
+
 test('band stays out of the way with no runs', async ($, on) => {
   mock.clock(on, { now: 1_000_000 })
   on('ui.render', { component: 'AbovePrompt' }, () => ({ type: 'engine', ref: 0 }) as never)

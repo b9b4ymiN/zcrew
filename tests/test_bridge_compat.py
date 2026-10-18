@@ -863,7 +863,8 @@ class RunHookFixture(unittest.TestCase):
 
 class WrapUpDelayTests(RunHookFixture):
     def test_default_and_caps(self) -> None:
-        self.assertEqual(compat.wrap_up_delay({"cwd": str(self.work), "timeout": 1800}, self.env), 1200)
+        self.assertEqual(compat.wrap_up_delay({"cwd": str(self.work), "timeout": 3600}, self.env), 3000)
+        self.assertEqual(compat.wrap_up_delay({"cwd": str(self.work), "timeout": 1800}, self.env), 1680)
         self.assertEqual(compat.wrap_up_delay({"cwd": str(self.work), "timeout": 900}, self.env), 780)  # timeout - 120
         self.assertIsNone(compat.wrap_up_delay({"cwd": str(self.work), "timeout": 150}, self.env))  # too short
 
@@ -879,7 +880,7 @@ class WrapUpDelayTests(RunHookFixture):
 
     def test_bad_config_value_falls_back(self) -> None:
         self.config(wrapUpSeconds="soon", gateMode="loud")
-        self.assertEqual(compat.effective_setting(str(self.work), "wrapUpSeconds", self.env), 1200)
+        self.assertEqual(compat.effective_setting(str(self.work), "wrapUpSeconds", self.env), 3000)
         self.assertEqual(compat.effective_setting(str(self.work), "gateMode", self.env), "warn")
 
 
@@ -939,7 +940,7 @@ class WatchForWrapUpTests(unittest.TestCase):
 
 class ResolveTimeboxTests(RunHookFixture):
     def resolve(self, prompt: str, **over: object) -> "compat.Timebox":
-        return compat.resolve_timebox({"prompt": prompt, "cwd": str(self.work), "timeout": 1800, **over}, self.env)
+        return compat.resolve_timebox({"prompt": prompt, "cwd": str(self.work), "timeout": 3600, **over}, self.env)
 
     def test_issue_2_inline_timebox_is_applied_and_reported(self) -> None:
         tb = self.resolve("TASK P2-T12 \u2014 Guard rules. TIMEBOX: 60m", timeout=5400)
@@ -948,17 +949,17 @@ class ResolveTimeboxTests(RunHookFixture):
 
     def test_without_timebox_the_config_applies(self) -> None:
         tb = self.resolve("OBJECTIVE\nx")
-        self.assertEqual((tb.seconds, tb.source, tb.warnings), (1200, "config", []))
+        self.assertEqual((tb.seconds, tb.source, tb.warnings), (3000, "config", []))
         self.config(wrapUpSeconds=0)
         self.assertEqual(self.resolve("OBJECTIVE\nx")[:2], (None, "off"))
 
     def test_unparsable_timebox_warns_and_falls_back_to_config(self) -> None:
         for text in ("timebox: 60m", "TIMEBOX: soon"):
             tb = self.resolve(text)
-            self.assertEqual((tb.seconds, tb.source), (1200, "config"), text)
+            self.assertEqual((tb.seconds, tb.source), (3000, "config"), text)
             self.assertEqual(len(tb.warnings), 1, text)
             self.assertIn("TIMEBOX found but not understood", tb.warnings[0])
-            self.assertIn("wrapUpSeconds=1200", tb.warnings[0])
+            self.assertIn("wrapUpSeconds=3000", tb.warnings[0])
 
     def test_several_different_values_warn(self) -> None:
         tb = self.resolve("TIMEBOX: 10m\nTIMEBOX: 20m")
@@ -986,7 +987,7 @@ class ResolveTimeboxTests(RunHookFixture):
 
 class PatchRunHooksTests(RunHookFixture):
     def start_args(self, **over: object) -> dict:
-        return {"prompt": CONTRACT, "cwd": str(self.work), "timeout": 1800, **over}
+        return {"prompt": CONTRACT, "cwd": str(self.work), "timeout": 3600, **over}
 
     def run_start(self, manager: _HookManager, args: dict) -> dict:
         # stub only compat's Thread (the wrap-up watcher): subprocess on Windows needs real threads
@@ -1009,7 +1010,7 @@ class PatchRunHooksTests(RunHookFixture):
     def test_first_start_records_contract_and_adds_timebox_and_hint(self) -> None:
         manager = self.patched()
         result = self.run_start(manager, self.start_args())
-        self.assertIn("[zcrew] Time box: about 20 minutes", manager.started[0]["prompt"])
+        self.assertIn("[zcrew] Time box: about 50 minutes", manager.started[0]["prompt"])
         self.assertTrue(manager.started[0]["prompt"].startswith(CONTRACT))
         self.assertEqual(result["gate"]["verify"], "before accepting, run: zcrew gate run_1")
         self.assertNotIn("warnings", result["gate"])
@@ -1093,7 +1094,7 @@ class PatchRunHooksTests(RunHookFixture):
         self.config(gateMode="off")
         manager = self.patched()
         result = self.run_start(manager, self.start_args())
-        self.assertEqual(result["gate"], {"timebox": {"seconds": 1200, "source": "config"}})  # no verify hint
+        self.assertEqual(result["gate"], {"timebox": {"seconds": 3000, "source": "config"}})  # no verify hint
         self.assertFalse((self.root / "state" / "gate").exists())
         self.assertEqual(manager.close_run("run_1"), {"runId": "run_1", "status": "closed", "revision": 4})
 

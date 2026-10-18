@@ -565,7 +565,7 @@ def patch_backend_manager(cls: Any) -> None:
 # is known), so ``zcrew gate`` (a separate process) can read what the bridge saw.
 
 TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "timed_out", "closed"})
-RUN_HOOKS_DEFAULTS = {"wrapUpSeconds": 1200, "gateMode": "warn"}
+RUN_HOOKS_DEFAULTS = {"wrapUpSeconds": 3000, "gateMode": "warn"}
 GATE_MODES = ("off", "warn")
 WRAP_UP_MARK = "[zcrew:wrap-up]"
 WRAP_UP_MIN_SECONDS = 60
