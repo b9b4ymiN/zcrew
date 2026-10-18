@@ -516,6 +516,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-verify", action="store_true", help="skip running the VERIFY commands")
     p.add_argument("--no-queue", action="store_true",
                    help="run VERIFY now instead of waiting for another gate's VERIFY to finish")
+    p.add_argument("--base", default=None, metavar="REV",
+                   help="diff against REV instead of the recorded base (use the recorded base when you committed "
+                        "the worker's changes before running the gate)")
     p.add_argument("--verify-timeout", type=int, default=900, metavar="SECONDS",
                    help="limit per VERIFY command (default 900)")
     p.add_argument("--accept", nargs="?", const="", default=None, metavar="NOTE", help="record: you accepted this run")

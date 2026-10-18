@@ -425,3 +425,77 @@ class WiringTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MovedHeadTests(RepoFixture):
+    """Issue #2: commits added to the worker's folder after agent-start (a merge, a fast-forward)
+    were counted as the worker's changes, so scope failed for files it never touched."""
+
+    def commit_other(self, rel: str = "docs/other.md") -> None:
+        self.write(rel, "from another branch\n")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "merged from elsewhere")
+
+    def test_files_from_commits_after_the_base_are_not_the_workers(self) -> None:
+        data = self.record([])
+        self.commit_other()
+        self.write("src/hero/Hero.ts", "export const hero = 2\n")
+        report = self.report(data)
+        self.assertEqual(report["changed"], ["src/hero/Hero.ts"])
+        self.assertEqual(self.by_name(report, "scope")[0]["status"], "PASS")
+        [history] = self.by_name(report, "history")
+        self.assertEqual(history["status"], "WARN")
+        self.assertIn("1 commits", history["detail"])
+        self.assertEqual(history["lines"], ["docs/other.md"])
+        self.assertEqual(report["mechanical"], "PASS")
+
+    def test_without_new_commits_nothing_changes(self) -> None:
+        data = self.record([])
+        self.write("src/hero/Hero.ts", "export const hero = 2\n")
+        report = self.report(data)
+        self.assertEqual(self.by_name(report, "history"), [])
+        self.assertEqual(report["changed"], ["src/hero/Hero.ts"])
+
+    def test_out_of_scope_edit_still_fails_after_the_head_moved(self) -> None:
+        data = self.record([])
+        self.commit_other()
+        self.write("package.json", '{"x": 1}\n')
+        report = self.report(data)
+        self.assertEqual(self.by_name(report, "do-not")[0]["status"], "FAIL")
+        self.assertEqual(report["mechanical"], "FAIL")
+        self.assertNotIn("history", report["draft"])  # the worker is not asked to fix the commander's commits
+
+    def test_forced_base_restores_the_old_behaviour(self) -> None:
+        data = self.record([])
+        self.commit_other()
+        report = self.report(data, base_override=self.base)
+        self.assertEqual(report["changed"], ["docs/other.md"])
+        self.assertEqual(self.by_name(report, "scope")[0]["status"], "FAIL")
+        self.assertEqual(self.by_name(report, "history"), [])
+
+    def test_base_that_is_not_an_ancestor_warns_and_keeps_the_recorded_base(self) -> None:
+        self.write("src/hero/Hero.ts", "export const hero = 3\n")
+        self.git("commit", "-q", "-a", "-m", "second")
+        data = self.record([])
+        data["base"] = self.git("rev-parse", "HEAD").strip()
+        self.git("reset", "-q", "--hard", self.base)  # history rewritten: the recorded base is gone from HEAD
+        self.write("src/hero/Hero.ts", "export const hero = 4\n")
+        report = self.report(data)
+        [history] = self.by_name(report, "history")
+        self.assertEqual(history["status"], "WARN")
+        self.assertIn("not an ancestor", history["detail"])
+        self.assertEqual(report["changed"], ["src/hero/Hero.ts"])
+
+    def test_cli_accepts_a_base_flag(self) -> None:
+        self.record([])
+        self.commit_other()
+        out = io.StringIO()
+        old = os.getcwd()
+        os.chdir(self.repo)
+        try:
+            args = SimpleNamespace(ident="run_1", self_check=False, no_verify=True, no_queue=False, verify_timeout=60,
+                                   accept=None, reject=None, override=None, json=True, base=self.base)
+            gate.run(args, env=self.env, out=out)
+        finally:
+            os.chdir(old)
+        self.assertEqual(json.loads(out.getvalue())["changed"], ["docs/other.md"])

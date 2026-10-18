@@ -211,6 +211,35 @@ def _git(cwd: str, *args: str, run: Runner = subprocess.run) -> str:
     return done.stdout
 
 
+def _git_succeeds(cwd: str, *args: str, run: Runner = subprocess.run) -> bool:
+    try:
+        return run(["git", "-C", cwd, *args], capture_output=True, text=True, errors="replace",
+                   timeout=60, check=False).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def diff_base(cwd: str, base: str, run: Runner = subprocess.run) -> tuple[str, dict[str, Any] | None]:
+    """What to diff the worker's folder against, and a ``history`` check when HEAD moved.
+
+    Workers never commit (AGENTS.md), so after a merge or fast-forward into the folder the
+    commits past the recorded base belong to the commander: the worker's change is what is
+    uncommitted on top of HEAD. A base that is no longer an ancestor of HEAD (history was
+    rewritten) cannot be told apart, so the recorded base stays.
+    """
+    head = _git(cwd, "rev-parse", "HEAD", run=run).strip()
+    if head == base:
+        return base, None
+    if not _git_succeeds(cwd, "merge-base", "--is-ancestor", base, "HEAD", run=run):
+        return base, check("history", "WARN", "base commit is not an ancestor of HEAD; diffing against the recorded base")
+    count = _git(cwd, "rev-list", "--count", f"{base}..HEAD", run=run).strip()
+    committed = sorted({_norm(p) for p in _git(cwd, "diff", "--name-only", base, "HEAD", run=run).splitlines() if p.strip()})
+    return "HEAD", check(
+        "history", "WARN",
+        f"HEAD moved since agent-start ({count} commits); files changed by them are not checked as worker changes",
+        committed[:8])
+
+
 def changed_files(cwd: str, base: str, dirty: list[str], run: Runner = subprocess.run) -> list[str]:
     tracked = _git(cwd, "diff", "--name-only", base, run=run).splitlines()
     untracked = _git(cwd, "ls-files", "--others", "--exclude-standard", run=run).splitlines()
@@ -344,7 +373,7 @@ def verify_queue(
 def draft_correction(checks: list[dict[str, Any]], rnd: int, budget: int) -> str:
     lines = [f"REVIEW RESULT: FAIL (correction round {rnd} of {budget})"]
     for item in checks:
-        if item["status"] not in ("FAIL", "WARN"):
+        if item["status"] not in ("FAIL", "WARN") or item["name"] == "history":  # history: not the worker's to fix
             continue
         lines.append(f"- {item['name']}: {item['detail']}")
         lines.extend(f"    {ln}" for ln in item["lines"][:4])
@@ -355,16 +384,23 @@ def draft_correction(checks: list[dict[str, Any]], rnd: int, budget: int) -> str
 def build_report(
     data: dict[str, Any], *, cwd: str, env: Mapping[str, str], verify: bool, self_check: bool,
     timeout: int, run: Runner = subprocess.run, log_dir: Path | None = None,
-    queue_wait: float = QUEUE_WAIT_SECONDS,
+    queue_wait: float = QUEUE_WAIT_SECONDS, base_override: str | None = None,
 ) -> dict[str, Any]:
     contract = data.get("contract") or {}
     work_dir = data.get("cwd") or cwd
     base = data.get("base")
     if not base:
         raise GateError("the record has no git base commit (was the folder a git repository at agent-start?)")
+    history = None
+    if base_override:
+        base = base_override
+    else:
+        base, history = diff_base(work_dir, base, run)
     files = changed_files(work_dir, base, data.get("dirty") or [], run)
     checks = [check_scope(files, contract.get("scope") or []), check_do_not(files, contract.get("do_not") or []),
               check_tests(work_dir, base, files, run)]
+    if history:
+        checks.append(history)
     tag = (data.get("runIds") or ["run"])[-1]
     queue: dict[str, Any] = {"waited": 0.0, "held": False}
     if verify:
@@ -449,6 +485,7 @@ def run(args: Any, *, env: Mapping[str, str] | None = None, out: Any = None, run
             data, cwd=cwd, env=env, verify=not args.no_verify, self_check=args.self_check,
             timeout=args.verify_timeout, run=runner,
             queue_wait=0 if getattr(args, "no_queue", False) else QUEUE_WAIT_SECONDS,
+            base_override=getattr(args, "base", None),
         )
         if args.accept is not None or args.reject is not None:
             verdict = "accept" if args.accept is not None else "reject"
