@@ -526,6 +526,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--override", default=None, metavar="REASON", help="accept although the mechanical check failed")
     p.add_argument("--json", action="store_true", help="machine-readable output")
     p = sub.add_parser(
+        "cx", help="dispatch worker contracts to the Codex CLI (run/fix/audit/gate/status)",
+        description=(
+            "Worker loop for the Codex CLI plugin: run/fix send a contract to codex-companion.mjs "
+            "and record every round for zcrew gate; --background enqueues and returns at once; "
+            "status reconciles background jobs and reports their state. See 'zcrew cx --help'."
+        ),
+    )
+    p.add_argument("rest", nargs=argparse.REMAINDER, metavar="COMMAND",
+                   help="cx subcommand and options (run/fix/audit/gate/status)")
+    p = sub.add_parser(
         "codex-hook", help="Codex Stop hook that wakes the commander when ZCode workers end",
         description=(
             "stop: the hook itself (Codex runs it; JSON on stdin). install/uninstall: add or remove it in "
@@ -594,6 +604,8 @@ def main(
         return int(_load_sibling("activity_cli").run(args, env=env))
     if args.command == "gate":
         return int(_load_sibling("gate").run(args, env=env))
+    if args.command == "cx":
+        return int(_load_sibling("cx").main(args.rest, env=env))
     if args.command == "capacity":
         return int(_load_sibling("capacity").run(args, env=env))
     if args.command == "codex-hook":
