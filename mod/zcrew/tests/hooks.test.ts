@@ -174,7 +174,7 @@ test('showUsage off leaves the status line as it was', { options: { showUsage: f
   expect(statuses[statuses.length - 1]).toBeUndefined()
 })
 
-// process.run serves both the gate and `zcrew capacity --json`; dispatch on argv.
+// process.run serves the gate, `zcrew capacity --json` and `zcrew cx status`; dispatch on argv.
 const CAP_JSON = (backoff: boolean) => JSON.stringify({ cap: { cap: backoff ? 2 : 5, configured: 5, backoff }, slots_in_use: 2 })
 
 test('a run silent for 30 min is flagged stalled and wakes Claude once, without the gate', { timeoutMs: 20000 }, async ($, on) => {
@@ -186,6 +186,7 @@ test('a run silent for 30 min is flagged stalled and wakes Claude once, without 
   on('mcp.call', () => ({ value: { content: [{ type: 'text', text: JSON.stringify({ runId: 'run_1', status: 'running', revision: 3 }) }], isError: false } }) as never)
   on('process.run', ($, e) => {
     const argv = (e as unknown as { argv: readonly string[] }).argv
+    if (argv.includes('cx')) return { value: { exitCode: 0, stdout: '{"runs":[]}', stderr: '' } } as never // no Codex work in this test
     if (argv.includes('capacity')) return { value: { exitCode: 0, stdout: CAP_JSON(false), stderr: '' } } as never
     gateCalls.push(argv.join(' '))
     return { value: { exitCode: 0, stdout: '{}', stderr: '' } } as never
@@ -312,5 +313,155 @@ test('a queued run waiting for a worker slot shows the queued row', async ($, on
   const band = await $.ui.mount({ plugin: 'zcrew', surface: 'terminal', ...BAND } as never)
   expect(await band.find({ type: 'Text', text: /⏳ 1 รอคิว/ } as never)).toBeDefined()
   expect(await band.find({ type: 'Text', text: /เต็มเพดาน/ } as never)).toBeDefined()
+  await band.unmount()
+})
+
+// The Codex feed of `zcrew cx status --json --active`, one run shaped as the CLI contract prints it.
+const CX_ID = 'codex_20261107101500_ab12'
+const CX_FEED = (status: string, over: Record<string, unknown> = {}) => JSON.stringify({ runs: [{
+  runId: CX_ID, worker: 'codex', threadId: 'th_9', jobId: 'task-7', cwd: '/work',
+  title: 'Fix the gate', status, startedAt: 900_000, roundStartedAt: 950_000,
+  endedAt: status === 'running' ? null : 1_030_000, round: 1,
+  report: `/work/.cx/${CX_ID}.report.md`, verdict: null, warning: null, ...over,
+}] })
+
+test('a codex run appears from the feed unobserved, and its end gates and wakes Claude once', { timeoutMs: 20000 }, async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  mock.env(on, { HOME: '/home/u' })
+  const prompts: string[] = []
+  const gateCalls: string[] = []
+  const observed: string[] = []
+  let status = 'running'
+  on('mcp.call', ($, e) => {
+    observed.push(String((e as unknown as { args?: { runId?: string } }).args?.runId ?? ''))
+    return { value: { content: [{ type: 'text', text: '{}' }], isError: false } } as never
+  })
+  on('process.run', ($, e) => {
+    const argv = (e as unknown as { argv: readonly string[] }).argv
+    if (argv.includes('cx')) return { value: { exitCode: 0, stdout: CX_FEED(status), stderr: '' } } as never
+    if (argv.includes('capacity')) return { value: { exitCode: 0, stdout: CAP_JSON(false), stderr: '' } } as never
+    gateCalls.push(argv.join(' '))
+    return { value: { exitCode: 0, stdout: JSON.stringify({ mechanical: 'PASS', checks: [] }), stderr: '' } } as never
+  })
+  on('fs.read', () => ({ deny: 'absent' }) as never)
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('command.register', () => ({ value: {} }) as never)
+  on('prompt.submit', ($, e) => { prompts.push(e.text); return { text: e.text } as never })
+  on('ui.notify', () => ({ value: { isSent: true, channel: 'terminal_bell' } }) as never)
+  for (const op of ['ui.status', 'ui.toast', 'ui.open', 'ui.close'] as const) on(op, () => ({ value: undefined }) as never)
+  await $.session.start({ cwd: '/work' } as never)
+  await clock.advance(15_000) // first tick: the feed carries the running Codex run
+  expect(observed).toEqual([]) // never agent-observed: it is not a ZCode run
+  const pane = await $.ui.mount({ plugin: 'zcrew', surface: 'terminal', ...PANE } as never)
+  expect(await pane.find({ type: 'Text', text: /Codex · Fix the gate/ } as never)).toBeDefined()
+  await pane.unmount()
+  status = 'completed'
+  await clock.advance(15_000)
+  await clock.advance(25_000) // the wake debounce fires
+  expect(prompts.length).toBe(1)
+  expect(prompts[0]).toContain(`${CX_ID} "Fix the gate" [Codex]: completed after 1 min; gate MECHANICAL PASS.`)
+  expect(prompts[0]).toContain(`Its worker report (read it instead of agent-wait): /work/.cx/${CX_ID}.report.md`)
+  expect(gateCalls.length).toBe(1) // `zcrew gate <runId> --json` ran for the Codex run
+  expect(gateCalls[0]).toContain(`gate ${CX_ID} --json`)
+  await clock.advance(60_000)
+  expect(prompts.length).toBe(1) // woken once
+})
+
+test('a codex correction replaces its base card', { timeoutMs: 20000 }, async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  mock.env(on, { HOME: '/home/u' })
+  on('process.run', ($, e) => {
+    const argv = (e as unknown as { argv: readonly string[] }).argv
+    if (argv.includes('cx')) return { value: { exitCode: 0, stdout: CX_FEED('queued', { runId: `${CX_ID}.r2`, round: 2, roundStartedAt: 1_005_000 }), stderr: '' } } as never
+    if (argv.includes('capacity')) return { value: { exitCode: 0, stdout: CAP_JSON(false), stderr: '' } } as never
+    return { value: { exitCode: 0, stdout: '{}', stderr: '' } } as never
+  })
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('command.register', () => ({ value: {} }) as never)
+  for (const op of ['ui.status', 'ui.toast', 'ui.open', 'ui.close', 'ui.notify'] as const) on(op, () => ({ value: undefined }) as never)
+  await $.session.start({ cwd: '/work' } as never)
+  await clock.advance(15_000)
+  const pane = await $.ui.mount({ plugin: 'zcrew', surface: 'terminal', ...PANE } as never)
+  expect(await pane.find({ type: 'Text', text: /Codex · Fix the gate · แก้รอบ 1/ } as never)).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /รวม 1 งาน/ } as never)).toBeDefined() // the base card is gone, not stacked
+  await pane.unmount()
+})
+
+test('a codex correction learns its verdict from the base record file', { options: { language: 'en' }, timeoutMs: 20000 }, async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  mock.env(on, { HOME: '/home/u' })
+  const reads: string[] = []
+  on('process.run', ($, e) => {
+    const argv = (e as unknown as { argv: readonly string[] }).argv
+    if (argv.includes('cx')) return { value: { exitCode: 0, stdout: CX_FEED('completed', { runId: `${CX_ID}.r2`, round: 2, roundStartedAt: 1_005_000 }), stderr: '' } } as never
+    if (argv.includes('capacity')) return { value: { exitCode: 0, stdout: CAP_JSON(false), stderr: '' } } as never
+    return { value: { exitCode: 0, stdout: '{}', stderr: '' } } as never
+  })
+  on('fs.read', ($, e) => {
+    const path = String((e as unknown as { path: string }).path).replace(/\\/g, '/').toLowerCase()
+    reads.push(path)
+    if (path.endsWith(`/.zcode-commander/gate/${CX_ID.toLowerCase()}.json`)) {
+      return { value: JSON.stringify({ verdicts: [{ verdict: 'accept' }] }) } as never // `zcrew gate <base> --accept` wrote the base record
+    }
+    return { deny: 'absent' } as never // among others, the nonexistent <base>.r2.json
+  })
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('command.register', () => ({ value: {} }) as never)
+  on('prompt.submit', ($, e) => ({ text: e.text }) as never)
+  for (const op of ['ui.status', 'ui.toast', 'ui.open', 'ui.close', 'ui.notify'] as const) on(op, () => ({ value: undefined }) as never)
+  await $.session.start({ cwd: '/work' } as never)
+  await clock.advance(15_000) // the feed ends the correction; the verdict loop reads the record file
+  await clock.advance(25_000) // flush the wake debounce
+  expect(reads.some(p => p.endsWith(`/.zcode-commander/gate/${CX_ID.toLowerCase()}.json`))).toBe(true)
+  expect(reads.some(p => p.endsWith('.r2.json'))).toBe(false) // the correction has no record of its own
+  const pane = await $.ui.mount({ plugin: 'zcrew', surface: 'terminal', ...PANE } as never)
+  expect(await pane.find({ type: 'Text', text: /✅ Codex · Fix the gate/ } as never)).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: 'accepted' } as never)).toBeDefined() // the verdict draws, not "waiting for Claude"
+  await pane.unmount()
+})
+
+test('the codex feed is polled in the session folder', { timeoutMs: 20000 }, async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  mock.env(on, { HOME: '/home/u' })
+  const calls: string[][] = []
+  on('process.run', ($, e) => {
+    const argv = [...(e as unknown as { argv: readonly string[] }).argv]
+    if (argv.includes('cx')) calls.push(argv)
+    return { value: { exitCode: 0, stdout: '{"runs":[]}', stderr: '' } } as never
+  })
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('command.register', () => ({ value: {} }) as never)
+  for (const op of ['ui.status', 'ui.toast', 'ui.open', 'ui.close', 'ui.notify'] as const) on(op, () => ({ value: undefined }) as never)
+  await $.session.start({ cwd: '/work' } as never)
+  await clock.advance(15_000) // eager window after session start: the first tick polls the feed
+  expect(calls.length >= 1).toBe(true)
+  const at = calls[0].indexOf('status')
+  expect(at !== -1).toBe(true)
+  expect(calls[0][at + 1]).toBe('/work') // the positional DIR, not the mod process's own working directory
+})
+
+test('a failing or garbage codex feed changes nothing and throws nothing', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  mock.env(on, { HOME: '/home/u' })
+  let exitCode = 1
+  let stdout = 'zcrew: cx: nothing here'
+  on('process.run', ($, e) => {
+    const argv = (e as unknown as { argv: readonly string[] }).argv
+    if (argv.includes('cx')) return { value: { exitCode, stdout, stderr: '' } } as never
+    return { value: { exitCode: 0, stdout: '{}', stderr: '' } } as never
+  })
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('command.register', () => ({ value: {} }) as never)
+  on('ui.render', { component: 'AbovePrompt' }, () => ({ type: 'engine', ref: 0 }) as never)
+  for (const op of ['ui.status', 'ui.toast', 'ui.open', 'ui.close', 'ui.notify'] as const) on(op, () => ({ value: undefined }) as never)
+  await $.session.start({ cwd: '/work' } as never)
+  await clock.advance(15_000) // non-zero exit: no data this tick
+  exitCode = 0
+  stdout = '{"runs": [garbage'
+  await clock.advance(15_000) // unparsable output: same
+  stdout = JSON.stringify({ runs: 'no' })
+  await clock.advance(15_000) // a feed without a runs array: same
+  const band = await $.ui.mount({ plugin: 'zcrew', surface: 'terminal', ...BAND } as never)
+  expect(await band.find({ type: 'Text', text: /zcrew/ } as never)).toBeUndefined() // no card appeared
   await band.unmount()
 })

@@ -9,6 +9,10 @@
 //   for 30 min is STALLED and wakes Claude once without the gate; while runs
 //   are active one `zcrew capacity --json` per tick draws the machine-wide
 //   cap (ช่าง 2/5) and toasts once when a 1302 backoff starts.
+// - Codex runs (`zcrew cx run|fix --background`) never cross MCP: the tick
+//   polls `zcrew cx status --json --active` for them instead (at most once a
+//   minute when there is no Codex work). A finished Codex run takes the same
+//   gate + wake path, with its report file named in the wake message.
 // - drawing: a band above the prompt and a status-line entry while there is
 //   news; a sidebar pane opens by itself only in the fullscreen layout.
 // - status line: Claude usage (context fill, rate-limit windows, each with a
@@ -20,7 +24,7 @@ import type { RunView } from '../types'
 import {
   HANDS_FREE_LIMIT, SERVER, TERMINAL,
   bandRows, bandVisible, bar, boxFromConfig, capSegs, chromeText, detailOf, gateSummary, handsFreeNote, iconOf,
-  isActive, isStalled, levelOf, liveJobs, minutes, notifyText, parseSnapshot, queueReason, sorted, stageColor, stageOf,
+  isActive, isStalled, levelOf, liveJobs, mergeCodex, minutes, notifyText, parseSnapshot, queueReason, recordIdOf, sorted, stageColor, stageOf,
   statusText, titleOf, turnOver, usageText, wakeMessage, words,
 } from './model'
 import type { CapView, Lang, UsageView } from './model'
@@ -30,6 +34,10 @@ const TICK_MS = 15_000
 const WAKE_DEBOUNCE_MS = 20_000
 const GATE_TIMEOUT_MS = 600_000
 const CAP_TIMEOUT_MS = 10_000
+const CX_TIMEOUT_MS = 10_000
+// How long after session start, or after a feed that had runs, the Codex feed
+// is polled every tick; outside these windows one poll per minute suffices.
+const CX_EAGER_MS = 2 * 60_000
 
 const runs = atom({ plugin: 'zcrew', key: 'runs' } as const, {} as Record<string, RunView>)
 
@@ -53,6 +61,11 @@ const ctx = {
   cap: undefined as CapView | undefined,
   capping: false,
   lastBackoff: undefined as boolean | undefined,
+  tickCount: 0,
+  codexPolling: false,
+  sessionStartAt: undefined as number | undefined,
+  cwd: undefined as string | undefined, // the session folder, for commands that take a DIR
+  lastCodexFeedAt: undefined as number | undefined, // the last feed that listed runs
 }
 
 async function allRuns($: EngineInterface): Promise<RunView[]> {
@@ -197,13 +210,63 @@ async function readCap($: EngineInterface): Promise<void> {
   }
 }
 
+// The Codex feed is cheap but not free: every tick while it may have news (an
+// active Codex card, the first minutes of the session, or right after a feed
+// that listed runs), otherwise one poll per minute.
+function codexDue(list: RunView[], now: number): boolean {
+  if (list.some(r => r.worker === 'codex' && isActive(r))) return true
+  if (ctx.sessionStartAt !== undefined && now - ctx.sessionStartAt < CX_EAGER_MS) return true
+  if (ctx.lastCodexFeedAt !== undefined && now - ctx.lastCodexFeedAt < CX_EAGER_MS) return true
+  return ctx.tickCount % 4 === 0
+}
+
+// One `zcrew cx status --json --active` at a time, in the session folder when
+// the mod knows it: the only view of Codex runs, which no MCP call reveals. A
+// non-zero exit or unparsable output is no data: the cards keep their state
+// and nothing throws.
+async function pollCodex($: EngineInterface, now: number): Promise<void> {
+  if (ctx.codexPolling) return
+  ctx.codexPolling = true
+  try {
+    const args = ctx.cwd ? ['cx', 'status', ctx.cwd, '--json', '--active'] : ['cx', 'status', '--json', '--active']
+    const res = await $.process.run(await zcrewArgv($, args), { timeoutMs: CX_TIMEOUT_MS })
+    if (res.exitCode !== 0) return
+    const feed = parseSnapshot(res.stdout)
+    if (feed === undefined) return
+    if (Array.isArray(feed.runs) && feed.runs.length > 0) ctx.lastCodexFeedAt = now
+    let fresh: string[] = []
+    let ended: string[] = []
+    await update($, runs, current => {
+      const merged = mergeCodex(current, feed, now)
+      fresh = Object.keys(merged).filter(id => merged[id].worker === 'codex' && current[id] === undefined)
+      ended = Object.keys(merged).filter(id => merged[id].worker === 'codex' && TERMINAL.has(merged[id].status)
+        && (current[id] === undefined || !TERMINAL.has(current[id].status)))
+      return merged
+    })
+    if (fresh.length > 0 && ctx.isFullscreen && !ctx.paneOpenedByUs) {
+      const opened = await $.ui.open({ id: PANE, title: 'zcrew' }) // the same way a ZCode start opens it
+      ctx.paneOpenedByUs = opened.isPlaced
+    }
+    const list = await read($, runs)
+    for (const id of ended) {
+      const run = list[id]
+      if (run && !run.woke) void scheduleWake($, run) // gate + wake, as for a ZCode run that ends
+    }
+  } catch {
+    // zcrew missing, slow, or the feed failed: keep the cards, try next tick
+  } finally {
+    ctx.codexPolling = false
+  }
+}
+
 async function tick($: EngineInterface): Promise<void> {
   if (ctx.ticking) return
   ctx.ticking = true
   try {
     const now = await $.clock.now()
+    ctx.tickCount += 1
     for (const run of await allRuns($)) {
-      if (!isActive(run)) continue
+      if (!isActive(run) || run.worker === 'codex') continue // Codex cards live on the feed, not on agent-observe
       const snap = await observe($, run.runId)
       if (!snap) continue
       const status = String(snap.status ?? run.status)
@@ -239,9 +302,10 @@ async function tick($: EngineInterface): Promise<void> {
         void scheduleWake($, { ...next, stalled: true, endedAt: now }, false)
       }
     }
+    if (codexDue(await allRuns($), now)) await pollCodex($, now)
     for (const run of await allRuns($)) {
       if (isActive(run) || run.verdict) continue
-      const verdict = await readVerdict($, run.runId) // recorded by `zcrew gate --accept/--reject`
+      const verdict = await readVerdict($, recordIdOf(run)) // recorded by `zcrew gate --accept/--reject`; all Codex rounds share the base's record
       if (verdict) await patch($, run.runId, { verdict })
     }
     if ((await allRuns($)).some(isActive)) await readCap($)
@@ -302,6 +366,8 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     const started = await next(e)
+    ctx.sessionStartAt = await $.clock.now()
+    ctx.cwd = e.cwd ? String(e.cwd) : undefined
     await loadBox($, e.cwd)
     await $.command.register({ name: 'zcrew', description: 'Show the ZCode worker runs zcrew is watching' })
     $.clock.every(TICK_MS, () => void tick($))
@@ -405,7 +471,7 @@ export const register: Register = (on, options) => {
           return (
             <Box key={run.runId} flexDirection="column" marginBottom={1}>
               <Text bold wrap="truncate-end" color={stageColor(stageOf(run, now, ctx.boxMs))}>
-                {iconOf(run, now, ctx.boxMs)} {run.title}{run.round ? ` · ${w.round} ${run.round}` : ''}
+                {iconOf(run, now, ctx.boxMs)} {run.worker === 'codex' ? 'Codex · ' : ''}{run.title}{run.round ? ` · ${w.round} ${run.round}` : ''}
               </Text>
               {isActive(run)
                 ? <Text color={levelOf(fill * 100)}>{'   '}{bar(fill, width)} {minutes(now - since)}/{minutes(ctx.boxMs)}</Text>

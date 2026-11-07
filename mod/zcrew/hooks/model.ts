@@ -137,6 +137,80 @@ export function isStalled(run: Pick<RunView, 'status' | 'lastChangeAt'>, now: nu
   return run.status === 'running' && run.lastChangeAt !== undefined && now - run.lastChangeAt >= STALL_MS
 }
 
+/** A Codex round id: `codex_<stamp>_<hex>` is round 1; `<base>.r2`, `.r3` … are corrections of it. */
+function codexRound(runId: string): { base: string; round: number } {
+  const at = runId.lastIndexOf('.r')
+  const n = Number(runId.slice(at + 2))
+  return at > 0 && Number.isInteger(n) && n >= 2 ? { base: runId.slice(0, at), round: n } : { base: runId, round: 1 }
+}
+
+/**
+ * The gate record a run's verdicts live in: every round of a Codex run shares
+ * the one file named after its first round (`<base>.json`); any other run has
+ * its own `<runId>.json`.
+ */
+export function recordIdOf(run: Pick<RunView, 'runId' | 'worker'>): string {
+  return run.worker === 'codex' ? codexRound(run.runId).base : run.runId
+}
+
+const CODEX_TERMINAL = new Set(['completed', 'failed', 'cancelled'])
+
+const when = (value: unknown): number | undefined => (typeof value === 'number' && Number.isFinite(value) ? value : undefined)
+
+/**
+ * Cards for Codex runs, which no MCP tool call reveals: `zcrew cx status --json
+ * --active` is their only source. A new runId becomes a card, a correction
+ * replaces its base's card, an end sticks once, and cards the feed no longer
+ * lists are left alone (the feed filters by age and verdict, not by liveness).
+ */
+export function mergeCodex(current: Record<string, RunView>, feed: unknown, now: number): Record<string, RunView> {
+  const data = parseSnapshot(feed)
+  const entries = Array.isArray(data?.runs) ? (data.runs as unknown[]) : []
+  let next = current
+  for (const entry of entries) {
+    const e = parseSnapshot(entry)
+    if (!e?.runId || String(e.worker ?? '') !== 'codex') continue
+    const runId = String(e.runId)
+    const prev = next[runId]
+    if (prev && prev.worker !== 'codex') continue // never displace a ZCode card
+    const { base, round: idRound } = codexRound(runId)
+    // a stale round of a base we already hold a newer card for never comes back
+    if (Object.keys(next).some(id => id !== runId && next[id].worker === 'codex'
+      && codexRound(id).base === base && codexRound(id).round > idRound)) continue
+    const fed = e.status === undefined ? undefined : String(e.status)
+    const status = fed && fed !== 'unknown' ? fed : prev?.status ?? fed ?? 'unknown'
+    const run: RunView = {
+      runId,
+      worker: 'codex',
+      threadId: e.threadId ? String(e.threadId) : prev?.threadId,
+      title: e.title ? String(e.title) : prev?.title ?? runId,
+      cwd: e.cwd ? String(e.cwd) : prev?.cwd,
+      status,
+      tools: [],
+      startedAt: when(e.roundStartedAt) ?? when(e.startedAt) ?? prev?.startedAt ?? now,
+      round: typeof e.round === 'number' && e.round >= 1 ? Math.max(0, Math.trunc(e.round) - 1) : prev?.round ?? 0,
+      report: e.report ? String(e.report) : prev?.report,
+      warning: e.warning ? String(e.warning) : prev?.warning,
+    }
+    const verdict = e.verdict ? String(e.verdict) : prev?.verdict
+    if (verdict) run.verdict = verdict
+    if (prev?.gate) run.gate = prev.gate // re-merges never undo what the gate already found
+    if (prev?.woke) run.woke = prev.woke
+    if (prev?.endedAt !== undefined) run.endedAt = prev.endedAt
+    else if (CODEX_TERMINAL.has(status)) run.endedAt = when(e.endedAt) ?? now
+    const rest = { ...next }
+    for (const other of Object.keys(rest)) {
+      const card = rest[other]
+      if (other !== runId && card.worker === 'codex') {
+        const o = codexRound(other)
+        if (o.base === base && o.round < idRound) delete rest[other]
+      }
+    }
+    next = { ...rest, [runId]: run }
+  }
+  return next
+}
+
 /** The machine's worker cap, as `zcrew capacity --json` reports it. */
 export type CapView = { used: number; cap: number; configured: number; backoff: boolean }
 
@@ -262,6 +336,7 @@ export function bandRows(runs: RunView[], now: number, boxMs: number, lang: Lang
       rows.push([
         { text: '  ' },
         { text: `${iconOf(run, now, boxMs)} `, color: stageColor(stage) },
+        ...(run.worker === 'codex' ? [{ text: 'Codex ', color: 'subtle' }] : []),
         { text: run.title },
         { text: ' — ', color: 'subtle' },
         { text: detailOf(run, now, boxMs, lang), dim: true },
@@ -351,15 +426,22 @@ export function wakeMessage(finished: RunView[], now: number): string {
     const gate = run.gate
       ? `gate MECHANICAL ${run.gate.mechanical}${run.gate.summary ? ` (${run.gate.summary})` : ''}`
       : 'gate not run (run it yourself)'
-    lines.push(`- ${run.runId} "${run.title}": ${run.status} after ${took} min; ${gate}.`)
+    lines.push(`- ${run.runId} "${run.title}"${run.worker === 'codex' ? ' [Codex]' : ''}: ${run.status} after ${took} min; ${gate}.`)
+    if (run.worker === 'codex' && run.report) lines.push(`  Its worker report (read it instead of agent-wait): ${run.report}`)
+    if (run.worker === 'codex' && run.warning) lines.push(`  The feed warns: ${run.warning}`)
     if (run.status === 'background' && run.background?.length) {
       const jobs = run.background.map(j => `${j.taskId}${j.description ? ` (${j.description})` : ''}`).join(', ')
       lines.push(`  Its turn ended but background job(s) still run and keep the run open: ${jobs}. Unless you need them, stop each with agent-control {"runId": "${run.runId}", "action": "cancel-background", "taskId": "<id>"}.`)
     }
   }
-  if (finished.some(r => !r.stalled)) {
+  if (finished.some(r => !r.stalled && r.worker !== 'codex')) {
     lines.push(
       'Review each with `zcrew gate <runId>` (its VERIFY results count as evidence), fetch the worker result with agent-wait (resultChars > 0) if you need its REPORT, then accept with `zcrew gate <runId> --accept "..."` or send a correction to the same thread.',
+    )
+  }
+  if (finished.some(r => !r.stalled && r.worker === 'codex')) {
+    lines.push(
+      'Review the Codex run(s) above with `zcrew gate <runId>` (its VERIFY results count as evidence) and the report file named on their lines — there is no agent-wait for a Codex run — then accept with `zcrew gate <runId> --accept "..."` or start a correction round.',
     )
   }
   return lines.join('\n')

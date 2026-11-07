@@ -1,6 +1,8 @@
 /** One worker run as the mod sees it. Times are epoch milliseconds. */
 export type RunView = {
   runId: string
+  /** Which worker owns the run: missing means ZCode (seen via MCP); Codex runs arrive from the CLI feed. */
+  worker?: 'zcode' | 'codex'
   threadId?: string
   title: string
   cwd?: string
@@ -13,6 +15,10 @@ export type RunView = {
   round: number
   gate?: { mechanical: string; summary: string }
   verdict?: string
+  /** Codex runs: the worker's report file, named in the wake message. */
+  report?: string
+  /** Codex runs: whatever the feed flagged about the run. */
+  warning?: string
   woke?: boolean
   /** Why a queued run waits: the machine's worker cap, or the folder another commander holds. */
   queue?: 'slot' | 'folder'

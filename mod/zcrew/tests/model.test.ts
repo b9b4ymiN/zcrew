@@ -4,7 +4,7 @@ import type { RunView } from '../types'
 import type { Seg } from '../hooks/model'
 import {
   BACKGROUND_GRACE_MS, STALL_MS, activityOf, bandLines, bandRows, bandVisible, boxFromConfig, capText, chromeText, detailOf,
-  gateSummary, iconOf, isStalled, levelOf, liveJobs, meter, parseSnapshot, queueReason, slots, stageOf, statusText, titleOf, turnOver,
+  gateSummary, iconOf, isStalled, levelOf, liveJobs, mergeCodex, meter, parseSnapshot, queueReason, recordIdOf, slots, stageOf, statusText, titleOf, turnOver,
   usageText, wakeMessage,
 } from '../hooks/model'
 
@@ -207,6 +207,88 @@ describe('queue, stall and capacity', () => {
       { text: '●', color: 'warning' }, { text: '○', color: 'subtle' },
     ])
     expect(backoff[0].find(s => s.text === ' ⚠1302')).toEqual({ text: ' ⚠1302', color: 'warning' })
+  })
+})
+
+describe('codex runs', () => {
+  const ID = 'codex_20261107101500_ab12'
+  const cxEntry = (over: Record<string, unknown> = {}) => ({
+    runId: ID, worker: 'codex', threadId: 'th_9', jobId: 'task-7', cwd: 'C:\\repo',
+    title: 'Fix the gate', status: 'running', startedAt: NOW - 10 * 60_000, roundStartedAt: NOW - 5 * 60_000,
+    endedAt: null, round: 1, report: `C:\\repo\\.cx\\${ID}.report.md`, verdict: null, warning: null, ...over,
+  })
+  const cxFeed = (runs: unknown[]) => ({ runs })
+
+  test('the feed adds a card with the mod\'s rounds and the report path', () => {
+    const card = mergeCodex({}, cxFeed([cxEntry()]), NOW)[ID]
+    expect(card).toBeDefined()
+    expect(card.worker).toBe('codex')
+    expect(card.title).toBe('Fix the gate')
+    expect(card.cwd).toBe('C:\\repo')
+    expect(card.threadId).toBe('th_9')
+    expect(card.status).toBe('running')
+    expect(card.startedAt).toBe(NOW - 5 * 60_000) // roundStartedAt, not the run's first start
+    expect(card.round).toBe(0) // feed rounds are 1-based, the mod's are 0-based
+    expect(card.report).toBe(`C:\\repo\\.cx\\${ID}.report.md`)
+    expect(card.endedAt).toBeUndefined()
+  })
+
+  test('a correction replaces its base card; an older round never wins', () => {
+    let merged = mergeCodex({}, cxFeed([cxEntry()]), NOW)
+    merged = mergeCodex(merged, cxFeed([cxEntry({ runId: `${ID}.r2`, round: 2, roundStartedAt: NOW - 60_000, status: 'queued' })]), NOW)
+    expect(Object.keys(merged)).toEqual([`${ID}.r2`])
+    expect(merged[`${ID}.r2`].round).toBe(1)
+    merged = mergeCodex(merged, cxFeed([cxEntry({ status: 'completed', endedAt: NOW - 1000 })]), NOW)
+    expect(Object.keys(merged)).toEqual([`${ID}.r2`]) // the base round id is stale, not a second card
+  })
+
+  test('unknown keeps the previous status; a terminal status ends the card once', () => {
+    let merged = mergeCodex({}, cxFeed([cxEntry()]), NOW)
+    merged = mergeCodex(merged, cxFeed([cxEntry({ status: 'unknown' })]), NOW)
+    expect(merged[ID].status).toBe('running')
+    merged = mergeCodex(merged, cxFeed([cxEntry({ status: 'completed', endedAt: NOW - 123 })]), NOW)
+    expect(merged[ID].status).toBe('completed')
+    expect(merged[ID].endedAt).toBe(NOW - 123)
+    merged = mergeCodex(merged, cxFeed([cxEntry({ status: 'completed', endedAt: NOW })]), NOW)
+    expect(merged[ID].endedAt).toBe(NOW - 123) // set once
+    expect(mergeCodex({}, cxFeed([cxEntry({ status: 'failed', endedAt: null })]), NOW)[ID].endedAt).toBe(NOW) // feed endedAt missing: now
+  })
+
+  test('a feed verdict is copied; absent cards and bad or foreign entries change nothing', () => {
+    const accepted = mergeCodex({}, cxFeed([cxEntry({ verdict: 'accept' })]), NOW)
+    expect(accepted[ID].verdict).toBe('accept')
+    const kept = mergeCodex(accepted, cxFeed([]), NOW) // the feed filters by age/verdict: absence is not an end
+    expect(Object.keys(kept)).toEqual([ID])
+    expect(kept[ID].verdict).toBe('accept')
+    const zcode = run({ runId: 'run_1' })
+    const none = mergeCodex({ run_1: zcode }, cxFeed([
+      cxEntry({ runId: '' }), cxEntry({ runId: 'other_1', worker: 'zcode' }), 'junk', null, 7,
+    ]), NOW)
+    expect(none).toEqual({ run_1: zcode })
+    expect(mergeCodex(accepted, 'not json', NOW)).toBe(accepted)
+    expect(mergeCodex(accepted, undefined, NOW)).toBe(accepted)
+  })
+
+  test('the record of a verdict is the base file for a Codex correction, else the runId', () => {
+    expect(recordIdOf(run({ runId: `${ID}.r2`, worker: 'codex' }))).toBe(ID)
+    expect(recordIdOf(run({ runId: `${ID}.r3`, worker: 'codex' }))).toBe(ID)
+    expect(recordIdOf(run({ runId: ID, worker: 'codex' }))).toBe(ID) // a first round is its own record
+    expect(recordIdOf(run({ runId: `${ID}.r2` }))).toBe(`${ID}.r2`) // a ZCode run is never re-based
+    expect(recordIdOf(run({}))).toBe('run_1')
+  })
+
+  test('band and wake text carry the Codex tag and the report path, ZCode rows unchanged', () => {
+    const cx = run({ runId: 'codex_x', worker: 'codex', title: 'Nav', status: 'queued', report: 'C:\\repo\\.cx\\codex_x.report.md' })
+    expect(bandLines([cx], NOW, BOX, 'en', 3)).toEqual(['zcrew  ⏳ 1 queued', '  ⏳ Codex Nav — queued'])
+    const text = wakeMessage([run({
+      runId: 'codex_x', worker: 'codex', status: 'completed', endedAt: NOW, report: 'C:\\repo\\.cx\\codex_x.report.md',
+    })], NOW)
+    expect(text).toContain('codex_x "Hero section" [Codex]: completed after 5 min; gate not run (run it yourself).')
+    expect(text).toContain('Its worker report (read it instead of agent-wait): C:\\repo\\.cx\\codex_x.report.md')
+    expect(text).not.toContain('fetch the worker result with agent-wait') // the ZCode-only advice line
+    expect(bandLines([run({ runId: 'q', title: 'Nav', status: 'queued' })], NOW, BOX, 'en', 3))
+      .toEqual(['zcrew  ⏳ 1 queued', '  ⏳ Nav — queued'])
+    expect(wakeMessage([run({ status: 'completed', endedAt: NOW })], NOW)).not.toContain('Codex')
   })
 })
 
