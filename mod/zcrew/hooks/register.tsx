@@ -1,14 +1,19 @@
 // zcrew mod: watches ZCode worker runs so the model does not have to.
 //
-// - agent-start: remember the run (title from the contract's OBJECTIVE).
+// - agent-start: remember the run (title from the contract's OBJECTIVE, its
+//   own time box from gate.timebox).
 // - agent-wait: answered at once while the run works, with a note telling
 //   Claude to end its turn (hands-free); a few quick answers per run at most.
 // - every 15 s: agent-observe each live run through the same MCP connection,
-//   no model call. When runs end: `zcrew gate <run> --json`, then one prompt
-//   wakes Claude with the results, plus a native notification. A run silent
-//   for 30 min is STALLED and wakes Claude once without the gate; while runs
-//   are active one `zcrew capacity --json` per tick draws the machine-wide
-//   cap (ช่าง 2/5) and toasts once when a 1302 backoff starts.
+//   no model call. A failed/timed_out snapshot carries its `failure` (cause +
+//   advice) into the wake message, the notification and the pane; an observe
+//   error fails a run at once only when the bridge no longer knows it
+//   (run_lost), else after three errors in a row. When runs end: `zcrew gate
+//   <run> --json`, then one prompt wakes Claude with the results, plus a native
+//   notification. A run silent for 30 min is STALLED and wakes Claude once
+//   without the gate; while runs are active one `zcrew capacity --json` per
+//   tick draws the machine-wide cap (ช่าง 2/5) and toasts once when a 1302
+//   backoff starts.
 // - Codex runs (`zcrew cx run|fix --background`) never cross MCP: the tick
 //   polls `zcrew cx status --json --active` for them instead (at most once a
 //   minute when there is no Codex work). A finished Codex run takes the same
@@ -23,8 +28,8 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { RunView } from '../types'
 import {
   HANDS_FREE_LIMIT, SERVER, TERMINAL,
-  bandRows, bandVisible, bar, boxFromConfig, capSegs, chromeText, detailOf, gateSummary, handsFreeNote, iconOf,
-  isActive, isStalled, levelOf, liveJobs, mergeCodex, minutes, notifyText, parseSnapshot, queueReason, recordIdOf, sorted, stageColor, stageOf,
+  bandRows, bandVisible, bar, boxFromConfig, boxOf, capSegs, chromeText, detailOf, gateSummary, handsFreeNote, iconOf,
+  isActive, isStalled, levelOf, liveJobs, mergeCodex, minutes, notifyText, observeError, parseFailure, parseSnapshot, queueReason, recordIdOf, sorted, stageColor, stageOf,
   statusText, titleOf, turnOver, usageText, wakeMessage, words,
 } from './model'
 import type { CapView, Lang, UsageView } from './model'
@@ -56,6 +61,7 @@ const ctx = {
   ticking: false,
   wakeTimer: undefined as { cancel: () => void } | undefined,
   quickWaits: new Map<string, number>(),
+  observeErrors: new Map<string, number>(),
   gating: new Set<string>(),
   usage: undefined as UsageView | undefined,
   cap: undefined as CapView | undefined,
@@ -153,8 +159,14 @@ async function wake($: EngineInterface): Promise<void> {
 async function observe($: EngineInterface, runId: string): Promise<Record<string, unknown> | undefined> {
   try {
     const res = await $.mcp.call(SERVER, 'agent-observe', { runId, refresh: false, maxEvents: 0, resultChars: 0 })
-    if (res.isError) return { status: 'failed' }
     const block = res.content.find(c => c.type === 'text') as { text?: string } | undefined
+    if (res.isError) {
+      const seen = (ctx.observeErrors.get(runId) ?? 0) + 1
+      ctx.observeErrors.set(runId, seen)
+      const verdict = observeError(String(block?.text ?? ''), seen)
+      return verdict.failed ? { status: 'failed', failure: verdict.failure } : undefined
+    }
+    ctx.observeErrors.delete(runId) // one good observe clears the error count
     return parseSnapshot(res.structuredContent) ?? parseSnapshot(block?.text)
   } catch {
     return undefined // bridge busy or restarting: try again next tick
@@ -276,6 +288,8 @@ async function tick($: EngineInterface): Promise<void> {
         phase: snap.phase ? String(snap.phase) : undefined,
         queue: queueReason(snap),
       }
+      const failure = parseFailure(snap)
+      if (failure) change.failure = failure
       const revision = typeof snap.revision === 'number' ? snap.revision : undefined
       if (revision !== undefined && revision !== run.lastRevision) {
         change.lastRevision = revision
@@ -320,6 +334,12 @@ async function tick($: EngineInterface): Promise<void> {
   }
 }
 
+/** The run's own time box from its agent-start snapshot (`gate.timebox.seconds`), in ms. */
+function timeboxMs(snap: Record<string, unknown>): number | undefined {
+  const seconds = parseSnapshot(parseSnapshot(snap.gate)?.timebox)?.seconds
+  return typeof seconds === 'number' && seconds > 0 ? seconds * 1000 : undefined
+}
+
 async function rememberStart($: EngineInterface, args: Record<string, unknown>, snap: Record<string, unknown>): Promise<string> {
   const runId = String(snap.runId)
   const now = await $.clock.now()
@@ -336,6 +356,8 @@ async function rememberStart($: EngineInterface, args: Record<string, unknown>, 
       startedAt: now,
       round: earlier ? earlier.round + 1 : 0,
     }
+    const boxMs = timeboxMs(snap) // each run's box comes from its own start, never the base's
+    if (boxMs !== undefined) run.boxMs = boxMs
     const rest = { ...current }
     if (earlier) delete rest[earlier.runId] // a correction replaces its thread's card
     return { ...rest, [runId]: run }
@@ -467,14 +489,15 @@ export const register: Register = (on, options) => {
         ) : null}
         {sorted(list, now, ctx.boxMs).map(run => {
           const since = run.runningSince ?? run.startedAt
-          const fill = Math.min(1, (now - since) / ctx.boxMs)
+          const boxMs = boxOf(run, ctx.boxMs)
+          const fill = Math.min(1, (now - since) / boxMs)
           return (
             <Box key={run.runId} flexDirection="column" marginBottom={1}>
               <Text bold wrap="truncate-end" color={stageColor(stageOf(run, now, ctx.boxMs))}>
                 {iconOf(run, now, ctx.boxMs)} {run.worker === 'codex' ? 'Codex · ' : ''}{run.title}{run.round ? ` · ${w.round} ${run.round}` : ''}
               </Text>
               {isActive(run)
-                ? <Text color={levelOf(fill * 100)}>{'   '}{bar(fill, width)} {minutes(now - since)}/{minutes(ctx.boxMs)}</Text>
+                ? <Text color={levelOf(fill * 100)}>{'   '}{bar(fill, width)} {minutes(now - since)}/{minutes(boxMs)}</Text>
                 : null}
               <Text dimColor wrap="wrap">{'   '}{detailOf(run, now, ctx.boxMs, ctx.lang)}</Text>
             </Box>

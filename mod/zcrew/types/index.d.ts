@@ -11,9 +11,13 @@ export type RunView = {
   tools: string[]
   startedAt: number
   runningSince?: number
+  /** The run's own time box (its contract's TIMEBOX, from agent-start), in ms; missing means the config box applies. */
+  boxMs?: number
   endedAt?: number
   round: number
   gate?: { mechanical: string; summary: string }
+  /** Why the run failed: the bridge's `failure` (kind, message, advice) or repeated agent-observe errors. */
+  failure?: { kind: string; message: string; advice: string; resetsAt?: string }
   verdict?: string
   /** Codex runs: the worker's report file, named in the wake message. */
   report?: string

@@ -316,6 +316,84 @@ test('a queued run waiting for a worker slot shows the queued row', async ($, on
   await band.unmount()
 })
 
+test('a run the bridge no longer knows fails as run_lost and wakes Claude', { timeoutMs: 20000 }, async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  mock.env(on, { HOME: '/home/u' })
+  const prompts: string[] = []
+  const notes: string[] = []
+  on('tool.call', { tool: START }, () => ({ result: {}, text: '{"runId":"run_1","status":"running","revision":1}' }))
+  on('mcp.call', () => ({ value: { content: [{ type: 'text', text: 'run not found: run_e1f80bc58dcd4b3caf2f2509f17b7bc7' }], isError: true } }) as never)
+  on('process.run', ($, e) => {
+    const argv = (e as unknown as { argv: readonly string[] }).argv
+    if (argv.includes('cx')) return { value: { exitCode: 0, stdout: '{"runs":[]}', stderr: '' } } as never
+    if (argv.includes('capacity')) return { value: { exitCode: 0, stdout: CAP_JSON(false), stderr: '' } } as never
+    return { value: { exitCode: 0, stdout: '{}', stderr: '' } } as never
+  })
+  on('fs.read', () => ({ deny: 'absent' }) as never)
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('command.register', () => ({ value: {} }) as never)
+  on('prompt.submit', ($, e) => { prompts.push(e.text); return { text: e.text } as never })
+  on('ui.notify', ($, e) => { notes.push((e as unknown as { text: string }).text); return { value: { isSent: true, channel: 'terminal_bell' } } as never })
+  for (const op of ['ui.status', 'ui.toast', 'ui.open', 'ui.close'] as const) on(op, () => ({ value: undefined }) as never)
+  await $.session.start({ cwd: '/work' } as never)
+  await $.tool.call({ tool: START, prompt: CONTRACT, cwd: '/work' } as never)
+  await clock.advance(15_000) // the first observe already knows: failed at once, not after three errors
+  await clock.advance(25_000) // the wake debounce fires
+  expect(prompts.length).toBe(1)
+  expect(prompts[0]).toContain('run_1 "Add the hero section.": failed after 0 min: run not found: run_e1f80bc58dcd4b3caf2f2509f17b7bc7; gate not run')
+  expect(prompts[0]).toContain('  The bridge no longer knows this run (bridge restart); check the worktree, then start a new run.')
+  expect(notes).toEqual(['❌ Add the hero section. — run หาย (bridge restart)'])
+})
+
+test('transient observe errors do not fail a run; three in a row do', { timeoutMs: 20000 }, async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  mock.env(on, { HOME: '/home/u' })
+  const prompts: string[] = []
+  let error: string | undefined = 'MCP error: connection closed'
+  on('tool.call', { tool: START }, () => ({ result: {}, text: '{"runId":"run_1","status":"running","revision":1}' }))
+  on('mcp.call', () => (error === undefined
+    ? { value: { content: [{ type: 'text', text: JSON.stringify({ runId: 'run_1', status: 'running', revision: 3 }) }], isError: false } }
+    : { value: { content: [{ type: 'text', text: error }], isError: true } }) as never)
+  on('process.run', ($, e) => {
+    const argv = (e as unknown as { argv: readonly string[] }).argv
+    if (argv.includes('cx')) return { value: { exitCode: 0, stdout: '{"runs":[]}', stderr: '' } } as never
+    if (argv.includes('capacity')) return { value: { exitCode: 0, stdout: CAP_JSON(false), stderr: '' } } as never
+    return { value: { exitCode: 0, stdout: '{}', stderr: '' } } as never
+  })
+  on('fs.read', () => ({ deny: 'absent' }) as never)
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('command.register', () => ({ value: {} }) as never)
+  on('prompt.submit', ($, e) => { prompts.push(e.text); return { text: e.text } as never })
+  on('ui.notify', () => ({ value: { isSent: true, channel: 'terminal_bell' } }) as never)
+  for (const op of ['ui.status', 'ui.toast', 'ui.open', 'ui.close'] as const) on(op, () => ({ value: undefined }) as never)
+  await $.session.start({ cwd: '/work' } as never)
+  await $.tool.call({ tool: START, prompt: CONTRACT, cwd: '/work' } as never)
+  await clock.advance(15_000) // 1st error: still watching
+  await clock.advance(15_000) // 2nd error: still watching
+  error = undefined
+  await clock.advance(15_000) // a good observe resets the count
+  error = 'MCP error: connection closed'
+  await clock.advance(15_000) // 1st error again
+  await clock.advance(15_000) // 2nd error again
+  await clock.advance(25_000)
+  expect(prompts.length).toBe(0) // two errors after a success never failed the run
+  await clock.advance(15_000) // 3rd in a row: failed
+  await clock.advance(25_000)
+  expect(prompts.length).toBe(1)
+  expect(prompts[0]).toContain('failed after 2 min: MCP error: connection closed')
+  expect(prompts[0]).toContain('  agent-observe kept failing; check the run with agent-observe yourself.')
+})
+
+test('a run started with its own time box gets a 60-minute bar', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  on('tool.call', { tool: START }, () => ({ result: {}, text: '{"runId":"run_1","status":"running","revision":1,"gate":{"timebox":{"seconds":3600,"source":"contract"}}}' }))
+  for (const op of ['ui.status', 'ui.open'] as const) on(op, () => ({ value: undefined }) as never)
+  await $.tool.call({ tool: START, prompt: CONTRACT } as never)
+  const pane = await $.ui.mount({ plugin: 'zcrew', surface: 'terminal', ...PANE } as never)
+  expect(await pane.find({ type: 'Text', text: /0\/60/ } as never)).toBeDefined() // the config box would say 0/20
+  await pane.unmount()
+})
+
 // The Codex feed of `zcrew cx status --json --active`, one run shaped as the CLI contract prints it.
 const CX_ID = 'codex_20261107101500_ab12'
 const CX_FEED = (status: string, over: Record<string, unknown> = {}) => JSON.stringify({ runs: [{

@@ -12,6 +12,7 @@ export const DEFAULT_BOX_MS = 1200 * 1000
 export const NEAR_BOX = 0.85 // share of the time box after which a run is flagged
 export const LINGER_MS = 2 * 60 * 1000 // how long finished news stays on the band
 export const HANDS_FREE_LIMIT = 2 // quick wait answers per run before letting waits block again
+export const OBSERVE_ERRORS_TO_FAIL = 3 // agent-observe errors in a row before an ailing run is called failed
 // A run whose turn ended but whose background jobs live on stays `background`
 // (not terminal) until they stop or the run times out; after this long Claude
 // is told, so a forgotten dev server does not hold the task open.
@@ -31,6 +32,11 @@ const WORDS = {
     finished: 'เสร็จ', today: 'รวม', workers: 'ช่าง',
     queuedFull: 'รอคิว (เต็มเพดาน)', waitFolder: 'รอโฟลเดอร์ว่าง', silent: 'เงียบ',
     lingering: 'งานเสร็จแต่มีโปรเซสค้าง',
+    failures: {
+      quota: 'โควต้า GLM หมด', concurrency: 'worker เกินโควต้าพร้อมกัน (1302)', overload: 'z.ai ขัดข้อง',
+      network: 'z.ai ขัดข้อง', model_timeout: 'โมเดลไม่ตอบ', app_server_exited: 'ZCode app-server ล่ม',
+      run_lost: 'run หาย (bridge restart)', timed_out: 'หมดเวลา', other: 'ล้ม',
+    },
   },
   en: {
     running: 'working', review: 'to review', accepted: 'accepted', rejected: 'sent back', failed: 'failed',
@@ -42,6 +48,11 @@ const WORDS = {
     finished: 'done', today: 'total', workers: 'workers',
     queuedFull: 'queued (worker cap full)', waitFolder: 'waiting for the folder', silent: 'silent',
     lingering: 'done, but background jobs still run',
+    failures: {
+      quota: 'GLM quota used up', concurrency: 'too many workers at once (1302)', overload: 'z.ai error',
+      network: 'z.ai error', model_timeout: 'model timed out', app_server_exited: 'ZCode app-server died',
+      run_lost: 'run lost (bridge restart)', timed_out: 'timed out', other: 'failed',
+    },
   },
 } as const
 
@@ -57,6 +68,25 @@ export function parseSnapshot(value: unknown): Record<string, unknown> | undefin
   } catch {
     return undefined
   }
+}
+
+/** The failure a failed / timed_out snapshot carries, when the bridge names its cause. */
+export function parseFailure(snap: Record<string, unknown> | undefined): RunView['failure'] {
+  const f = parseSnapshot(snap?.failure)
+  if (!f || typeof f.kind !== 'string' || typeof f.message !== 'string' || typeof f.advice !== 'string') return undefined
+  const failure: NonNullable<RunView['failure']> = { kind: f.kind, message: f.message, advice: f.advice }
+  if (typeof f.resetsAt === 'string' && f.resetsAt.length > 0) failure.resetsAt = f.resetsAt
+  return failure
+}
+
+/** A short human label for why a run failed: the notification and the pane lead with it. */
+export function failureLabel(failure: NonNullable<RunView['failure']>, lang: Lang): string {
+  const w = words(lang)
+  const label = (w.failures as Record<string, string>)[failure.kind] ?? w.failures.other
+  if (failure.kind === 'quota' && failure.resetsAt) {
+    return lang === 'th' ? `${label} · รีเซ็ต ${failure.resetsAt}` : `${label} · resets ${failure.resetsAt}`
+  }
+  return label
 }
 
 /** The task's name: the first line under OBJECTIVE, else the first line of the prompt. */
@@ -135,6 +165,28 @@ export function queueReason(snap: Record<string, unknown> | undefined): 'slot' |
 /** A running run is stalled when its revision has not moved for STALL_MS (queued runs never are). */
 export function isStalled(run: Pick<RunView, 'status' | 'lastChangeAt'>, now: number): boolean {
   return run.status === 'running' && run.lastChangeAt !== undefined && now - run.lastChangeAt >= STALL_MS
+}
+
+/**
+ * What an agent-observe error means: a run the bridge no longer knows failed at
+ * once (bridge restart; nothing will bring it back), any other error only after
+ * OBSERVE_ERRORS_TO_FAIL in a row — one transient error is not a failed run.
+ */
+export function observeError(text: string, consecutive: number): { failed: false } | { failed: true; failure: NonNullable<RunView['failure']> } {
+  const message = text.slice(0, 160)
+  if (/run not found|run_not_found|Session not found/i.test(text)) {
+    return {
+      failed: true,
+      failure: {
+        kind: 'run_lost', message,
+        advice: 'The bridge no longer knows this run (bridge restart); check the worktree, then start a new run.',
+      },
+    }
+  }
+  if (consecutive >= OBSERVE_ERRORS_TO_FAIL) {
+    return { failed: true, failure: { kind: 'other', message, advice: 'agent-observe kept failing; check the run with agent-observe yourself.' } }
+  }
+  return { failed: false }
 }
 
 /** A Codex round id: `codex_<stamp>_<hex>` is round 1; `<base>.r2`, `.r3` … are corrections of it. */
@@ -225,6 +277,11 @@ export function turnOver(run: RunView, now: number): boolean {
   return run.status === 'background' && run.backgroundSince !== undefined && now - run.backgroundSince >= BACKGROUND_GRACE_MS
 }
 
+/** A run's own time box when its contract set one (agent-start `gate.timebox`), else the configured default. */
+export function boxOf(run: Pick<RunView, 'boxMs'>, defaultBoxMs: number): number {
+  return typeof run.boxMs === 'number' && run.boxMs > 0 ? run.boxMs : defaultBoxMs
+}
+
 /** Where a run stands, for ordering and icons: attention first. */
 export function stageOf(run: RunView, now: number, boxMs: number): 'attention' | 'near' | 'queued' | 'running' | 'review' | 'accepted' | 'rejected' {
   if (run.verdict === 'accept' || run.verdict === 'closed') return 'accepted'
@@ -234,7 +291,7 @@ export function stageOf(run: RunView, now: number, boxMs: number): 'attention' |
   if (run.status === 'queued') return 'queued'
   if (isActive(run)) {
     const since = run.runningSince ?? run.startedAt
-    return now - since >= boxMs * NEAR_BOX ? 'near' : 'running'
+    return now - since >= boxOf(run, boxMs) * NEAR_BOX ? 'near' : 'running'
   }
   if (run.status !== 'completed' || run.gate?.mechanical === 'FAIL') return 'attention'
   return 'review'
@@ -259,13 +316,13 @@ export function detailOf(run: RunView, now: number, boxMs: number, lang: Lang): 
   }
   if (stage === 'running' || stage === 'near') {
     const since = run.runningSince ?? run.startedAt
-    const left = `${minutes(now - since)}/${minutes(boxMs)} ${lang === 'th' ? w.min : 'min'}`
+    const left = `${minutes(now - since)}/${minutes(boxOf(run, boxMs))} ${lang === 'th' ? w.min : 'min'}`
     return `${stage === 'near' ? w.nearBox + ' ' : ''}${left} · ${activityOf(run, lang)}`
   }
   if (stage === 'attention') {
     if (run.stalled) return `${w.silent} ${minutes(now - (run.lastChangeAt ?? run.startedAt))} ${lang === 'th' ? w.min : 'min'}`
     if (run.status === 'background') return `${w.lingering} ${run.background?.length ?? ''}`.trim()
-    if (run.status !== 'completed') return `${w.failed} (${run.status})`
+    if (run.status !== 'completed') return run.failure ? failureLabel(run.failure, lang) : `${w.failed} (${run.status})`
     return `${w.gateFail}: ${run.gate?.summary ?? ''}`.trim()
   }
   if (stage === 'review') return run.gate ? `${w.gatePass} · ${w.waitClaude}` : w.waitClaude
@@ -426,7 +483,14 @@ export function wakeMessage(finished: RunView[], now: number): string {
     const gate = run.gate
       ? `gate MECHANICAL ${run.gate.mechanical}${run.gate.summary ? ` (${run.gate.summary})` : ''}`
       : 'gate not run (run it yourself)'
-    lines.push(`- ${run.runId} "${run.title}"${run.worker === 'codex' ? ' [Codex]' : ''}: ${run.status} after ${took} min; ${gate}.`)
+    lines.push(`- ${run.runId} "${run.title}"${run.worker === 'codex' ? ' [Codex]' : ''}: ${run.status} after ${took} min${run.failure ? `: ${run.failure.message}` : ''}; ${gate}.`)
+    if (run.failure) {
+      lines.push(`  ${run.failure.advice}`)
+      if (run.failure.kind === 'quota') {
+        const reset = run.failure.resetsAt ? ` and resets at ${run.failure.resetsAt}` : ''
+        lines.push(`  Tell the user now, in their language: the GLM quota is used up${reset}; they can reset it themselves.`)
+      }
+    }
     if (run.worker === 'codex' && run.report) lines.push(`  Its worker report (read it instead of agent-wait): ${run.report}`)
     if (run.worker === 'codex' && run.warning) lines.push(`  The feed warns: ${run.warning}`)
     if (run.status === 'background' && run.background?.length) {
@@ -456,7 +520,13 @@ export function handsFreeNote(runId: string): string {
 export function notifyText(finished: RunView[], lang: Lang): string {
   const w = words(lang)
   return finished
-    .map(r => `${r.status === 'completed' && r.gate?.mechanical !== 'FAIL' ? '✅' : '❌'} ${r.title} — ${r.status === 'completed' ? (r.gate?.mechanical === 'FAIL' ? w.gateFail : w.waitClaude) : w.failed}`)
+    .map(r => {
+      const done = r.status === 'completed'
+      const tail = done
+        ? (r.gate?.mechanical === 'FAIL' ? w.gateFail : w.waitClaude)
+        : r.failure ? failureLabel(r.failure, lang) : w.failed
+      return `${done && r.gate?.mechanical !== 'FAIL' ? '✅' : '❌'} ${r.title} — ${tail}`
+    })
     .join('\n')
 }
 

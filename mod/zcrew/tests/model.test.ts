@@ -3,8 +3,9 @@ import { describe, expect, test } from 'claude-code/testing'
 import type { RunView } from '../types'
 import type { Seg } from '../hooks/model'
 import {
-  BACKGROUND_GRACE_MS, STALL_MS, activityOf, bandLines, bandRows, bandVisible, boxFromConfig, capText, chromeText, detailOf,
-  gateSummary, iconOf, isStalled, levelOf, liveJobs, mergeCodex, meter, parseSnapshot, queueReason, recordIdOf, slots, stageOf, statusText, titleOf, turnOver,
+  BACKGROUND_GRACE_MS, OBSERVE_ERRORS_TO_FAIL, STALL_MS, activityOf, bandLines, bandRows, bandVisible, boxFromConfig, boxOf, capText,
+  chromeText, detailOf, failureLabel, gateSummary, iconOf, isStalled, levelOf, liveJobs, mergeCodex, meter, notifyText, observeError,
+  parseFailure, parseSnapshot, queueReason, recordIdOf, slots, stageOf, statusText, titleOf, turnOver,
   usageText, wakeMessage,
 } from '../hooks/model'
 
@@ -89,6 +90,109 @@ describe('model', () => {
     expect(boxFromConfig([undefined, '{"wrapUpSeconds": 900}'])).toBe(900_000)
     expect(boxFromConfig(['{"wrapUpSeconds": 0}'])).toBe(1_200_000)
     expect(boxFromConfig([])).toBe(1_200_000)
+  })
+})
+
+describe('failure causes', () => {
+  const quota = { kind: 'quota', message: 'GLM quota used up for the 5h window', advice: 'Wait for the window to reset.', resetsAt: '15:00' }
+
+  test('parseFailure accepts only a well-formed failure', () => {
+    expect(parseFailure({ failure: quota })).toEqual(quota)
+    expect(parseFailure({ failure: { kind: 'other', message: 'boom', advice: 'check it' } })).toEqual({ kind: 'other', message: 'boom', advice: 'check it' })
+    expect(parseFailure({ failure: { kind: 'other', message: 'boom', advice: 'check it', resetsAt: 15 } })).toEqual({ kind: 'other', message: 'boom', advice: 'check it' })
+    expect(parseFailure({ failure: 'junk' })).toBeUndefined()
+    expect(parseFailure({ failure: { kind: 1, message: 'boom', advice: 'check it' } })).toBeUndefined()
+    expect(parseFailure({})).toBeUndefined()
+    expect(parseFailure(undefined)).toBeUndefined()
+  })
+
+  test('failure labels in both languages, quota reset only when known', () => {
+    expect(failureLabel(quota, 'th')).toBe('โควต้า GLM หมด · รีเซ็ต 15:00')
+    expect(failureLabel(quota, 'en')).toBe('GLM quota used up · resets 15:00')
+    expect(failureLabel({ ...quota, resetsAt: undefined }, 'th')).toBe('โควต้า GLM หมด')
+    expect(failureLabel({ ...quota, resetsAt: undefined }, 'en')).toBe('GLM quota used up')
+    expect(failureLabel({ kind: 'concurrency', message: 'm', advice: 'a' }, 'th')).toBe('worker เกินโควต้าพร้อมกัน (1302)')
+    expect(failureLabel({ kind: 'concurrency', message: 'm', advice: 'a' }, 'en')).toBe('too many workers at once (1302)')
+    expect(failureLabel({ kind: 'overload', message: 'm', advice: 'a' }, 'th')).toBe('z.ai ขัดข้อง')
+    expect(failureLabel({ kind: 'network', message: 'm', advice: 'a' }, 'en')).toBe('z.ai error')
+    expect(failureLabel({ kind: 'model_timeout', message: 'm', advice: 'a' }, 'th')).toBe('โมเดลไม่ตอบ')
+    expect(failureLabel({ kind: 'model_timeout', message: 'm', advice: 'a' }, 'en')).toBe('model timed out')
+    expect(failureLabel({ kind: 'app_server_exited', message: 'm', advice: 'a' }, 'th')).toBe('ZCode app-server ล่ม')
+    expect(failureLabel({ kind: 'app_server_exited', message: 'm', advice: 'a' }, 'en')).toBe('ZCode app-server died')
+    expect(failureLabel({ kind: 'run_lost', message: 'm', advice: 'a' }, 'th')).toBe('run หาย (bridge restart)')
+    expect(failureLabel({ kind: 'run_lost', message: 'm', advice: 'a' }, 'en')).toBe('run lost (bridge restart)')
+    expect(failureLabel({ kind: 'timed_out', message: 'm', advice: 'a' }, 'th')).toBe('หมดเวลา')
+    expect(failureLabel({ kind: 'timed_out', message: 'm', advice: 'a' }, 'en')).toBe('timed out')
+    expect(failureLabel({ kind: 'other', message: 'm', advice: 'a' }, 'th')).toBe('ล้ม')
+    expect(failureLabel({ kind: 'other', message: 'm', advice: 'a' }, 'en')).toBe('failed')
+    expect(failureLabel({ kind: 'surprise', message: 'm', advice: 'a' }, 'th')).toBe('ล้ม') // unknown kinds fall back
+    expect(failureLabel({ kind: 'surprise', message: 'm', advice: 'a' }, 'en')).toBe('failed')
+  })
+
+  test('an unknown run is lost at once; other observe errors fail on the 3rd', () => {
+    expect(observeError('run not found: run_e1f80bc58dcd4b3caf2f2509f17b7bc7', 1)).toEqual({
+      failed: true,
+      failure: {
+        kind: 'run_lost', message: 'run not found: run_e1f80bc58dcd4b3caf2f2509f17b7bc7',
+        advice: 'The bridge no longer knows this run (bridge restart); check the worktree, then start a new run.',
+      },
+    })
+    expect(observeError('Session not found: run_1', 1).failed).toBe(true)
+    expect(observeError('error code: run_not_found', 1).failed).toBe(true)
+    expect(observeError('MCP error: connection closed', 1).failed).toBe(false) // transient: watch on
+    expect(observeError('MCP error: connection closed', 2).failed).toBe(false)
+    const third = observeError('MCP error: connection closed', OBSERVE_ERRORS_TO_FAIL)
+    expect(third.failed).toBe(true)
+    if (third.failed) {
+      expect(third.failure.kind).toBe('other')
+      expect(third.failure.advice).toBe('agent-observe kept failing; check the run with agent-observe yourself.')
+    }
+    const clipped = observeError('x'.repeat(300), OBSERVE_ERRORS_TO_FAIL)
+    expect(clipped.failed && clipped.failure.message.length).toBe(160) // the message is capped
+  })
+
+  test('the wake message names the failure, its advice, and the quota line', () => {
+    const text = wakeMessage([run({ status: 'failed', endedAt: NOW, failure: quota })], NOW)
+    expect(text).toContain('run_1 "Hero section": failed after 5 min: GLM quota used up for the 5h window; gate not run')
+    expect(text).toContain('  Wait for the window to reset.')
+    expect(text).toContain('  Tell the user now, in their language: the GLM quota is used up and resets at 15:00; they can reset it themselves.')
+    const unknownReset = wakeMessage([run({ status: 'failed', endedAt: NOW, failure: { ...quota, resetsAt: undefined } })], NOW)
+    expect(unknownReset).toContain('  Tell the user now, in their language: the GLM quota is used up; they can reset it themselves.')
+    const lost = wakeMessage([run({
+      status: 'failed', endedAt: NOW,
+      failure: { kind: 'run_lost', message: 'run not found: run_1', advice: 'The bridge no longer knows this run (bridge restart); check the worktree, then start a new run.' },
+    })], NOW)
+    expect(lost).toContain('failed after 5 min: run not found: run_1')
+    expect(lost).toContain('  The bridge no longer knows this run (bridge restart); check the worktree, then start a new run.')
+    expect(lost).not.toContain('Tell the user') // only quota says that
+    expect(wakeMessage([run({ status: 'completed', endedAt: NOW })], NOW)).not.toContain('Tell the user') // no failure: unchanged shape
+  })
+
+  test('the notification and the band label the failure instead of the bare word', () => {
+    const failed = run({ status: 'failed', endedAt: NOW, failure: quota })
+    expect(notifyText([failed], 'th')).toBe('❌ Hero section — โควต้า GLM หมด · รีเซ็ต 15:00')
+    expect(notifyText([failed], 'en')).toBe('❌ Hero section — GLM quota used up · resets 15:00')
+    expect(notifyText([run({ status: 'failed', endedAt: NOW })], 'en')).toBe('❌ Hero section — failed') // no failure: the bare word stays
+    expect(bandLines([failed], NOW, BOX, 'th', 3)[1]).toBe('  ❌ Hero section — โควต้า GLM หมด · รีเซ็ต 15:00')
+    expect(bandLines([failed], NOW, BOX, 'en', 3)[1]).toBe('  ❌ Hero section — GLM quota used up · resets 15:00')
+  })
+})
+
+describe('a run\'s own time box', () => {
+  const hour = run({ boxMs: 60 * 60_000, runningSince: NOW - 25 * 60_000 })
+
+  test('boxOf prefers the run\'s box, else the default', () => {
+    expect(boxOf(hour, BOX)).toBe(60 * 60_000)
+    expect(boxOf(run({ boxMs: 0 }), BOX)).toBe(BOX)
+    expect(boxOf(run({ boxMs: -1 }), BOX)).toBe(BOX)
+    expect(boxOf(run({}), BOX)).toBe(BOX)
+  })
+
+  test('25 min of a 60-min box is running, not near; the default box still flags it', () => {
+    expect(stageOf(hour, NOW, BOX)).toBe('running')
+    expect(stageOf(run({ runningSince: NOW - 25 * 60_000 }), NOW, BOX)).toBe('near')
+    expect(detailOf(hour, NOW, BOX, 'en')).toBe('25/60 min · thinking')
+    expect(detailOf(hour, NOW, BOX, 'th')).toBe('25/60 นาที · กำลังคิด')
   })
 })
 
