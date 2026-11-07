@@ -7,6 +7,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -781,6 +782,31 @@ class ContractParseTests(unittest.TestCase):
         self.assertEqual(c["verify"], ["python -m py_compile scripts/doctor.py"])
         self.assertEqual(c["sections"]["OBJECTIVE"], ["Add a line."])
 
+    def test_heading_with_a_note_in_parentheses(self) -> None:
+        # issue #2: "SCOPE (may change)" was not recognised
+        c = compat.parse_contract("SCOPE (may change)\n- `src/a.py`\n- docs\n")
+        self.assertEqual(c["sections"]["SCOPE"], ["`src/a.py`", "docs"])
+        self.assertEqual(c["scope"], ["src/a.py"])
+        self.assertNotIn("SCOPE", c["missing"])
+        for text in (
+            "SCOPE (may change):\n- `src/a.py`\n",
+            "**SCOPE (files):** `src/a.py`\n",
+            "**SCOPE (files)**:\n- `src/a.py`\n",
+            "## SCOPE (files)\n- `src/a.py`\n",
+            "SCOPE(files): `src/a.py`\n",
+        ):
+            self.assertEqual(compat.parse_contract(text)["scope"], ["src/a.py"], text)
+
+    def test_near_miss_headings_are_reported_only_for_missing_sections(self) -> None:
+        c = compat.parse_contract("OBJECTIVE\nx\nSCOPE - files\n- `a/b.py`\n")
+        self.assertIn("SCOPE", c["missing"])
+        self.assertEqual(c["near_misses"], {"SCOPE": "SCOPE - files"})
+        # the section exists, so a prose line starting with its name is not a near miss
+        c = compat.parse_contract(CONTRACT + "\nDO NOT touch the lockfile either\n")
+        self.assertEqual((c["missing"], c["near_misses"]), ([], {}))
+        # optional sections never produce near misses
+        self.assertEqual(compat.parse_contract("CONTEXT shows how it reads\n")["near_misses"], {})
+
     def test_non_path_backticks_are_not_scope(self) -> None:
         c = compat.parse_contract("SCOPE\n- the `Hero` component\n")
         self.assertEqual(c["scope"], [])
@@ -790,6 +816,23 @@ class ContractParseTests(unittest.TestCase):
         self.assertEqual(compat.parse_timebox("TIMEBOX: 90s"), 90)
         self.assertEqual(compat.parse_timebox("TIMEBOX: 1h"), 3600)
         self.assertIsNone(compat.parse_timebox("no limit here"))
+
+    def test_timebox_anywhere_on_a_line(self) -> None:
+        # issue #2: a TIMEBOX at the end of the first line was silently ignored
+        self.assertEqual(compat.parse_timebox("TASK X \u2014 do something. TIMEBOX: 60m"), 3600)
+        self.assertEqual(compat.parse_timebox("TIMEBOX:90s"), 90)
+        self.assertEqual(compat.parse_timebox("TIMEBOX: 2h and more"), 7200)
+        self.assertEqual(compat.parse_timebox("TIMEBOX: 45 min"), 2700)
+        self.assertEqual(compat.parse_timebox("TIMEBOX: 2 hours"), 7200)
+        self.assertEqual(compat.parse_timebox("TIMEBOX: 45"), 2700)  # no unit: minutes
+        self.assertEqual(compat.parse_timebox("TIMEBOX: 30M"), 1800)  # the unit may be any case
+
+    def test_timebox_lookalikes_are_not_matched(self) -> None:
+        for text in ("timebox: 60m", "MYTIMEBOX: 5m", "X-TIMEBOX: 5m", "TIMEBOX: soon", "TIMEBOX 60m", "TIMEBOX: 5x"):
+            self.assertIsNone(compat.parse_timebox(text), text)
+
+    def test_first_timebox_wins(self) -> None:
+        self.assertEqual(compat.parse_timebox("TIMEBOX: 10m then TIMEBOX: 20m"), 600)
 
 
 class RunHookFixture(unittest.TestCase):
@@ -894,6 +937,53 @@ class WatchForWrapUpTests(unittest.TestCase):
         self.assertIn("wrap-up interrupt failed", logs[0])
 
 
+class ResolveTimeboxTests(RunHookFixture):
+    def resolve(self, prompt: str, **over: object) -> "compat.Timebox":
+        return compat.resolve_timebox({"prompt": prompt, "cwd": str(self.work), "timeout": 1800, **over}, self.env)
+
+    def test_issue_2_inline_timebox_is_applied_and_reported(self) -> None:
+        tb = self.resolve("TASK P2-T12 \u2014 Guard rules. TIMEBOX: 60m", timeout=5400)
+        self.assertEqual((tb.seconds, tb.source, tb.warnings), (3600, "contract", []))
+        self.assertEqual(compat.wrap_up_delay({"prompt": "TASK X \u2014 do it. TIMEBOX: 60m", "timeout": 5400}, self.env), 3600)
+
+    def test_without_timebox_the_config_applies(self) -> None:
+        tb = self.resolve("OBJECTIVE\nx")
+        self.assertEqual((tb.seconds, tb.source, tb.warnings), (1200, "config", []))
+        self.config(wrapUpSeconds=0)
+        self.assertEqual(self.resolve("OBJECTIVE\nx")[:2], (None, "off"))
+
+    def test_unparsable_timebox_warns_and_falls_back_to_config(self) -> None:
+        for text in ("timebox: 60m", "TIMEBOX: soon"):
+            tb = self.resolve(text)
+            self.assertEqual((tb.seconds, tb.source), (1200, "config"), text)
+            self.assertEqual(len(tb.warnings), 1, text)
+            self.assertIn("TIMEBOX found but not understood", tb.warnings[0])
+            self.assertIn("wrapUpSeconds=1200", tb.warnings[0])
+
+    def test_several_different_values_warn(self) -> None:
+        tb = self.resolve("TIMEBOX: 10m\nTIMEBOX: 20m")
+        self.assertEqual(tb.seconds, 600)
+        self.assertEqual(tb.warnings, ["several TIMEBOX values; using the first (10m)"])
+        self.assertEqual(self.resolve("TIMEBOX: 10m\nTIMEBOX: 10m").warnings, [])
+
+    def test_timebox_longer_than_the_timeout_is_capped_with_a_warning(self) -> None:
+        tb = self.resolve("TIMEBOX: 60m", timeout=1800)
+        self.assertEqual((tb.seconds, tb.source), (1680, "contract"))
+        self.assertEqual(tb.warnings, ["TIMEBOX 60m is longer than the run timeout 30m; wrap-up at 28m instead (raise timeout)"])
+
+    def test_too_short_timebox_means_no_time_box(self) -> None:
+        for text, over in (("TIMEBOX: 30s", {}), ("TIMEBOX: 10m", {"timeout": 150})):
+            tb = self.resolve(text, **over)
+            self.assertEqual((tb.seconds, tb.source), (None, "off"), text)
+            self.assertIn("TIMEBOX too short", tb.warnings[0])
+
+    def test_notice_names_the_wrap_up_clock_time(self) -> None:
+        now = time.mktime((2026, 10, 18, 10, 5, 0, 0, 0, -1))
+        notice = compat.timebox_notice(3600, now)
+        self.assertIn("about 60 minutes (wrap-up near 11:05 local time)", notice)
+        self.assertIn("Run the VERIFY commands before then", notice)
+
+
 class PatchRunHooksTests(RunHookFixture):
     def start_args(self, **over: object) -> dict:
         return {"prompt": CONTRACT, "cwd": str(self.work), "timeout": 1800, **over}
@@ -930,6 +1020,44 @@ class PatchRunHooksTests(RunHookFixture):
         self.assertEqual(record["rounds"], 1)
         self.assertEqual(record["verdicts"], [])
 
+    def test_start_result_reports_the_effective_timebox(self) -> None:
+        manager = self.patched()
+        result = self.run_start(manager, self.start_args(prompt=CONTRACT + "\nTASK Z. TIMEBOX: 25m", timeout=5400))
+        self.assertEqual(result["gate"]["timebox"], {"seconds": 1500, "source": "contract"})
+        self.assertIn("about 25 minutes", manager.started[0]["prompt"])
+        [record_path] = list((self.root / "state" / "gate").glob("*.json"))
+        self.assertEqual(json.loads(record_path.read_text(encoding="utf-8"))["timebox"],
+                         {"seconds": 1500, "source": "contract"})
+
+    def test_unrecognised_heading_is_named_in_the_warning(self) -> None:
+        manager = self.patched()
+        prompt = CONTRACT.replace("SCOPE\n", "SCOPE - what may change\n", 1)
+        result = self.run_start(manager, self.start_args(prompt=prompt))
+        warning = result["gate"]["warnings"][0]
+        self.assertIn("contract is missing: SCOPE", warning)
+        self.assertIn('heading not recognised: "SCOPE - what may change" - write "SCOPE:" or "SCOPE (note):"', warning)
+
+    def test_timebox_warnings_join_the_gate_warnings(self) -> None:
+        manager = self.patched()
+        result = self.run_start(manager, self.start_args(prompt="no sections, timebox: 5m"))
+        warnings = result["gate"]["warnings"]
+        self.assertIn("contract is missing", warnings[0])
+        self.assertIn("TIMEBOX found but not understood", warnings[1])
+
+    def test_gate_mode_off_still_reports_timebox_warnings(self) -> None:
+        self.config(gateMode="off")
+        manager = self.patched()
+        result = self.run_start(manager, self.start_args(prompt=CONTRACT + "\nTIMEBOX: 60m", timeout=1800))
+        self.assertEqual(result["gate"]["timebox"], {"seconds": 1680, "source": "contract"})
+        self.assertIn("longer than the run timeout", result["gate"]["warnings"][0])
+        self.assertNotIn("verify", result["gate"])
+
+    def test_wrap_up_zero_reports_no_time_box(self) -> None:
+        self.config(wrapUpSeconds=0)
+        manager = self.patched()
+        result = self.run_start(manager, self.start_args())
+        self.assertEqual(result["gate"]["timebox"], {"seconds": None, "source": "off"})
+
     def test_incomplete_contract_warns(self) -> None:
         manager = self.patched()
         result = self.run_start(manager, self.start_args(prompt="Just fix the bug please"))
@@ -965,7 +1093,7 @@ class PatchRunHooksTests(RunHookFixture):
         self.config(gateMode="off")
         manager = self.patched()
         result = self.run_start(manager, self.start_args())
-        self.assertNotIn("gate", result)
+        self.assertEqual(result["gate"], {"timebox": {"seconds": 1200, "source": "config"}})  # no verify hint
         self.assertFalse((self.root / "state" / "gate").exists())
         self.assertEqual(manager.close_run("run_1"), {"runId": "run_1", "status": "closed", "revision": 4})
 
