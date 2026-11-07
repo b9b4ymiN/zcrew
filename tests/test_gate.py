@@ -325,6 +325,9 @@ class ResolveRecordTests(RepoFixture):
     def test_by_run_thread_prefix_and_cwd(self) -> None:
         self.record([], run_id="run_a", thread="sess_aaaa1111")
         self.record([], run_id="run_b", thread="sess_bbbb2222")
+        # Both files can share one mtime tick on Windows; "newest" must not depend on write speed.
+        older = compat.state_dir(self.env) / "run_a.json"
+        os.utime(older, (older.stat().st_atime, older.stat().st_mtime - 10))
         for ident, expected in (("run_a", "run_a"), ("sess_bbbb2222", "run_b"), ("sess_aaaa", "run_a"), ("bbbb2", "run_b")):
             _path, data = gate.resolve_record(self.env, ident, str(self.repo))
             self.assertEqual(data["runIds"], [expected], ident)
