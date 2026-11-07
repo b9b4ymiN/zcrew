@@ -8,7 +8,7 @@
     zcrew doctor
     zcrew context [DIR] [--session ID|PATH] [--top N] [--json] [--commander claude|codex]
     zcrew runs   [DIR] [--limit N] [--all] [--json]
-    zcrew show   SESSION [--json]
+    zcrew show   SESSION [--json] [--last N]
     zcrew stats  [DIR] [--days N] [--limit N] [--all] [--json]
     zcrew gate   [RUN|THREAD] [--self] [--no-verify] [--no-queue] [--accept NOTE | --reject NOTE] [--override REASON] [--json]
     zcrew watch  [DIR] [--all] [--interval SECONDS] [--since MINUTES]
@@ -497,6 +497,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("show", help="print one session's activity timeline (read-only)")
     p.add_argument("session", metavar="SESSION", help="session id or unique prefix")
     p.add_argument("--json", action="store_true", help="machine-readable output")
+    p.add_argument("--last", type=int, default=None, metavar="N",
+                   help="only the newest N activity items; with --json adds whole-session counts and last_at_ms")
     p = sub.add_parser("stats", help="time, correction turns and errors of recent worker tasks (read-only)")
     p.add_argument("dir", nargs="?", default=None, metavar="DIR")
     p.add_argument("--days", type=float, default=7, metavar="N", help="look back N days (default 7)")

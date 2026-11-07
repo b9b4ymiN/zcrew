@@ -38,7 +38,7 @@ def runs_args(**over: object) -> SimpleNamespace:
 
 
 def show_args(session: str, **over: object) -> SimpleNamespace:
-    base: dict[str, object] = dict(command="show", session=session, json=False)
+    base: dict[str, object] = dict(command="show", session=session, json=False, last=None)
     base.update(over)
     return SimpleNamespace(**base)
 
@@ -253,6 +253,98 @@ class ActivityCliTest(unittest.TestCase):
         self.assertEqual(payload["tool_calls"], 3)
         self.assertEqual([a["kind"] for a in payload["activity"]],
                          ["file_read", "command", "file_edit", "message", "step", "turn_end"])
+
+    def seed_live_tail(self) -> str:
+        """Six activities: two edits of one file, a write of another, two commands
+        (one fails) and a Thai message, so counts and the tail differ."""
+        fx = self.fx
+        sid = "sess_last0001"
+        at = NOW - 60_000
+        fx.session(sid, SANDBOX, "live one", at, at)
+        fx.message(f"{sid}_a", sid, "assistant", at + 10)
+        fx.part(sid, f"{sid}_a", tool("Edit", "completed",
+                                      {"file_path": SANDBOX + r"\src\a.py",
+                                       "old_string": "x", "new_string": "y"}, output="ok"), at + 100, at + 110)
+        fx.part(sid, f"{sid}_a", tool("Edit", "error",
+                                      {"file_path": SANDBOX + r"\src\a.py",
+                                       "old_string": "p", "new_string": "q\nr"},
+                                      error="old_string not found"), at + 200, at + 210)
+        fx.part(sid, f"{sid}_a", tool("Write", "completed",
+                                      {"file_path": SANDBOX + r"\src\b.py",
+                                       "content": "one\ntwo\nthree"}), at + 300, at + 310)
+        fx.part(sid, f"{sid}_a", tool("Bash", "completed", {"command": "python -m unittest"},
+                                      output="OK"), at + 400, at + 410)
+        fx.part(sid, f"{sid}_a", tool("Bash", "error", {"command": "bad"}, error="boom"),
+                at + 500, at + 510)
+        fx.part(sid, f"{sid}_a", {"type": "text", "text": "ทดสอบข้อความ",
+                                  "time": {"start": at + 600, "end": at + 640}}, at + 600, at + 640)
+        return sid
+
+    def test_show_json_last_newest_items_counts_compact(self) -> None:
+        sid = self.seed_live_tail()
+        code, out, err = self.run_cli(show_args(sid, json=True, last=3), clock=lambda: NOW)
+        self.assertEqual((code, err), (0, ""))
+        payload = json.loads(out)
+        self.assertEqual([a["kind"] for a in payload["activity"]], ["command", "command", "message"])
+        self.assertEqual(payload["counts"], {"files_edited": 2, "commands": 2, "errors": 2})
+        self.assertEqual(payload["last_at_ms"], NOW - 60_000 + 640)
+        self.assertNotIn("a.py", out)  # the two edits fell out of the newest 3
+        self.assertEqual(out.count("\n"), 1)  # one compact line, not indent=2
+        self.assertIn('"activity":[', out)
+
+    def test_show_json_last_counts_are_whole_session(self) -> None:
+        sid = self.seed_live_tail()
+        code, out, _ = self.run_cli(show_args(sid, json=True, last=2), clock=lambda: NOW)
+        self.assertEqual(code, 0)
+        payload = json.loads(out)
+        self.assertEqual([a["kind"] for a in payload["activity"]], ["command", "message"])
+        # src/a.py edited twice (different (+N -M) notes, the failed one with an !! note too)
+        # plus src/b.py written once
+        self.assertEqual(payload["counts"]["files_edited"], 2)
+        self.assertEqual(payload["counts"]["errors"], 2)  # the failed edit is outside the tail
+
+    def test_show_json_last_escapes_thai_as_ascii(self) -> None:
+        sid = self.seed_live_tail()
+        code, out, _ = self.run_cli(show_args(sid, json=True, last=1), clock=lambda: NOW)
+        self.assertEqual(code, 0)
+        self.assertIn("\\u0e", out)  # ensure_ascii keeps a Windows pipe ASCII-only
+        self.assertTrue(out.isascii())
+        self.assertEqual(json.loads(out)["activity"][0]["kind"], "message")
+
+    def test_show_json_without_last_keeps_payload_keys(self) -> None:
+        seed_completed(self.fx)
+        code, out, _ = self.run_cli(show_args("sess_aaaa", json=True), clock=lambda: NOW)
+        self.assertEqual(code, 0)
+        payload = json.loads(out)
+        self.assertEqual(set(payload), {"id", "directory", "title", "created_ms", "updated_ms", "status",
+                                        "tool_calls", "errors", "last_context_tokens", "duration_ms",
+                                        "parent_id", "activity"})
+
+    def test_show_json_last_empty_session(self) -> None:
+        self.fx.session("sess_empty000", SANDBOX, "quiet", NOW - 60_000, NOW - 50_000)
+        code, out, _ = self.run_cli(show_args("sess_empty000", json=True, last=5), clock=lambda: NOW)
+        self.assertEqual(code, 0)
+        payload = json.loads(out)
+        self.assertEqual(payload["activity"], [])
+        self.assertEqual(payload["counts"], {"files_edited": 0, "commands": 0, "errors": 0})
+        self.assertIsNone(payload["last_at_ms"])
+
+    def test_show_text_last_prints_only_tail(self) -> None:
+        seed_completed(self.fx)
+        code, out, err = self.run_cli(show_args("sess_aaaa", last=2), clock=lambda: NOW)
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("session   sess_aaaa1111-done", out)  # header stays
+        self.assertIn(". step", out)  # second newest
+        self.assertIn("# turn", out)  # newest
+        self.assertNotIn("R read", out)
+        self.assertNotIn("$ cmd", out)
+        self.assertNotIn("All done.", out)  # the message is third from the end
+
+    def test_show_last_below_one_is_an_error(self) -> None:
+        seed_completed(self.fx)
+        code, out, err = self.run_cli(show_args("sess_aaaa", json=True, last=0), clock=lambda: NOW)
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("--last", err)
 
     def test_show_header_status_matches_runs_without_turn_row(self) -> None:
         fx = self.fx
@@ -477,6 +569,9 @@ class ZcrewWiringTest(unittest.TestCase):
         self.assertEqual(parser.parse_args(["runs"]).command, "runs")
         self.assertEqual(parser.parse_args(["runs", "--limit", "3", "--all", "--json"]).limit, 3)
         self.assertEqual(parser.parse_args(["show", "sess_x"]).command, "show")
+        show = parser.parse_args(["show", "sess_x", "--json", "--last", "20"])
+        self.assertEqual((show.command, show.json, show.last), ("show", True, 20))
+        self.assertIsNone(parser.parse_args(["show", "sess_x"]).last)
         stats = parser.parse_args(["stats", "--days", "3"])
         self.assertEqual((stats.command, stats.days, stats.limit, stats.all), ("stats", 3.0, 15, False))
         watch = parser.parse_args(["watch", "--all"])

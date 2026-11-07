@@ -17,6 +17,7 @@ import errno
 import importlib.util
 import json
 import os
+import re
 import statistics
 import sys
 import time
@@ -265,37 +266,75 @@ def run_runs(
 # --- show -------------------------------------------------------------------------------
 
 
+# Notes _tool_activity appends to a file item's summary; the path itself is what precedes them
+# (a failed item also carries " !! <error>" after the size note).
+_EDIT_NOTE = re.compile(r" \(\+\d+ -\d+\)( !! .*)?$")
+_WRITE_NOTE = re.compile(r" \(\d+ lines\)( !! .*)?$")
+
+
+def _edited_path(act: Any) -> str:
+    if act.tool == "Edit":
+        return _EDIT_NOTE.sub("", act.summary)
+    if act.tool == "Write":
+        return _WRITE_NOTE.sub("", act.summary)
+    return act.summary
+
+
+def _counts(acts: list[Any]) -> dict[str, int]:
+    """Whole-session totals for the mod's live worker card (never limited by --last)."""
+    files: set[str] = set()
+    commands = errors = 0
+    for a in acts:
+        if a.kind in ("file_edit", "file_write"):
+            files.add(_edited_path(a))
+        elif a.kind == "command":
+            commands += 1
+        if a.status in ("error", "failed"):
+            errors += 1
+    return {"files_edited": len(files), "commands": commands, "errors": errors}
+
+
 def run_show(
     za: ModuleType,
     db: Any,
     session: str,
     *,
     as_json: bool = False,
+    last: int | None = None,
     out: Any = None,
     env: Mapping[str, str] | None = None,
     now_ms: int | None = None,
 ) -> int:
+    if last is not None and int(last) < 1:
+        raise za.ActivityError("--last N: N must be at least 1")
     summary = za.session_summary(db, session, now_ms=now_ms)
     acts, _cursor = za.session_activity(db, summary.id)
     if as_json:
+        items = [
+            {"at_ms": a.at_ms, "kind": a.kind, "status": a.status, "summary": a.summary,
+             "tool": a.tool, "detail": a.detail}
+            for a in acts
+        ]
+        if last is None:
+            out.write(json.dumps({**dataclasses.asdict(summary), "activity": items}, indent=2) + "\n")
+            return 0
         payload = {
             **dataclasses.asdict(summary),
-            "activity": [
-                {"at_ms": a.at_ms, "kind": a.kind, "status": a.status, "summary": a.summary,
-                 "tool": a.tool, "detail": a.detail}
-                for a in acts
-            ],
+            "activity": items[-int(last):],
+            "counts": _counts(acts),
+            "last_at_ms": acts[-1].at_ms if acts else None,
         }
-        out.write(json.dumps(payload, indent=2) + "\n")
+        out.write(json.dumps(payload, separators=(",", ":"), ensure_ascii=True) + "\n")
         return 0
     use_colour = _use_colour(out, env or {})
     out.write(f"session   {summary.id}\n")
     out.write(f"title     {summary.title or '(no title)'}\n")
     out.write(f"dir       {summary.directory or '?'}\n")
     out.write(f"status    {_paint(summary.status, STATUS_COLOURS.get(summary.status, '') if use_colour else '')}\n\n")
-    for act in acts:
+    shown = acts if last is None else acts[-int(last):]
+    for act in shown:
         out.write(f"{_hms(act.at_ms)}  {ICONS.get(act.kind, '*')} {LABELS.get(act.kind, act.kind):<6}  {_line_text(act)}\n")
-    if not acts:
+    if not shown:
         out.write("(no activity yet)\n")
     return 0
 
@@ -585,7 +624,7 @@ def run(
             )
         elif args.command == "show":
             rc = run_show(
-                za, db, args.session, as_json=args.json, out=out, env=env,
+                za, db, args.session, as_json=args.json, last=args.last, out=out, env=env,
                 now_ms=int(clock()) if clock else None,
             )
         elif args.command == "stats":
