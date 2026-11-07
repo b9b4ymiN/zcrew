@@ -2,6 +2,19 @@
 
 All notable changes to the Claude Commander × ZCode Executor Kit are recorded here.
 
+## 0.14.0 — 2026-11-07
+
+The Claude Code mod (0.6.0) gets a new look: numbers first on the status line, and a sectioned worker pane that shows what each worker is really doing.
+
+### Added
+
+- **Live worker cards in the pane.** Each running ZCode worker shows the file it is editing (`✎`), its last command with ✓/✗ (`$`), how long ago it last acted and its totals (`◷`), plus a time bar with % of its own time box. The pane is split into sections (Working / Needs you / To review / Done; Thai: กำลังทำ / ต้องดู / รอตรวจ / เสร็จแล้ว); finished runs take one line.
+- `zcrew show SESSION --json --last N`: only the newest N activity items plus whole-session counts (`files_edited`, `commands`, `errors`) and `last_at_ms`, as compact ASCII JSON. The mod polls it once per tick per running worker. Without `--last` the output is unchanged.
+
+### Changed
+
+- Status line and band redesigned, no emoji: `◆ 81% ctx   ◆ 85% 5h ⟳18:10   ◆ 86% 7d ⟳18:00  ┃  ▶ 1 ทำอยู่  ✓ 2 ผ่าน  ◼◻◻◻◻ 1/5`. The reset time shows only past 80%. Claude Code's status line takes plain text, so colours stay on the band and pane.
+
 ## 0.13.0 — 2026-11-07
 
 Fixes driven by 60 days of real logs across projects (466 worker tasks, 421 gate records): fewer false gate alarms, a named cause for every failed run, and a capacity estimate that survives outliers. Closes the rest of issue #2.
