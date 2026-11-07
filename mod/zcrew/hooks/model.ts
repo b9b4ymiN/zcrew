@@ -23,7 +23,7 @@ const LIVE_JOB = new Set(['pending', 'queued', 'starting', 'running', 'waiting',
 
 const WORDS = {
   th: {
-    running: 'กำลังทำ', review: 'รอตรวจ', accepted: 'ผ่าน', rejected: 'ส่งแก้', failed: 'ล้ม',
+    running: 'ทำอยู่', review: 'รอตรวจ', accepted: 'ผ่าน', rejected: 'ส่งแก้', failed: 'ล้ม', attention: 'ต้องดู',
     left: 'เหลือ ~', min: 'นาที', allDone: 'เสร็จหมด', tasks: 'งาน', nearBox: 'ใกล้หมดเวลา',
     gateFail: 'ตรวจอัตโนมัติไม่ผ่าน', gatePass: 'ตรวจอัตโนมัติผ่าน', waitClaude: 'รอ Claude ตัดสิน',
     round: 'แก้รอบ', first: 'รอบแรก', details: 'รายละเอียด', none: 'ยังไม่มีงานของช่าง',
@@ -39,7 +39,7 @@ const WORDS = {
     },
   },
   en: {
-    running: 'working', review: 'to review', accepted: 'accepted', rejected: 'sent back', failed: 'failed',
+    running: 'working', review: 'to review', accepted: 'accepted', rejected: 'sent back', failed: 'failed', attention: 'needs you',
     left: '~', min: 'min left', allDone: 'all done', tasks: 'tasks', nearBox: 'near time box',
     gateFail: 'gate failed', gatePass: 'gate passed', waitClaude: 'waiting for Claude',
     round: 'fix round', first: 'first run', details: 'details', none: 'no worker runs yet',
@@ -117,7 +117,7 @@ export function bar(fraction: number, width = 10): string {
   return '▓'.repeat(filled) + '░'.repeat(width - filled)
 }
 
-/** A mini meter for the status line: 42 at width 5 -> `▰▰▱▱▱`, clamped to the width. */
+/** A mini meter of a fill: 42 at width 5 -> `▰▰▱▱▱`, clamped to the width. */
 export function meter(percent: number, width = 5): string {
   const filled = Math.max(0, Math.min(width, Math.round(percent / 100 * width)))
   return '▰'.repeat(filled) + '▱'.repeat(width - filled)
@@ -134,6 +134,12 @@ export function levelOf(percent: number): 'success' | 'warning' | 'error' {
 export function slots(used: number, cap: number): string {
   const filled = Math.max(0, Math.min(cap, used))
   return '●'.repeat(filled) + '○'.repeat(Math.max(0, cap - filled))
+}
+
+/** Worker-slot squares for the status line: `◼◼◻◻◻`, filled up to the cap, never past it. */
+export function slotSquares(used: number, cap: number): string {
+  const filled = Math.max(0, Math.min(cap, used))
+  return '◼'.repeat(filled) + '◻'.repeat(Math.max(0, cap - filled))
 }
 
 export const minutes = (ms: number) => Math.max(0, Math.round(ms / 60000))
@@ -267,7 +273,7 @@ export function mergeCodex(current: Record<string, RunView>, feed: unknown, now:
 export type CapView = { used: number; cap: number; configured: number; backoff: boolean }
 
 export function capText(cap: CapView, lang: Lang): string {
-  return `${words(lang).workers} ${cap.used}/${cap.cap}${cap.backoff ? ' ⚠1302' : ''}`
+  return `${slotSquares(cap.used, cap.cap)} ${cap.used}/${cap.cap}${cap.backoff ? ' ⚠1302' : ''}`
 }
 
 /** The worker's turn is over: terminal, stalled, or only background jobs keep the run open past the grace. */
@@ -297,7 +303,7 @@ export function stageOf(run: RunView, now: number, boxMs: number): 'attention' |
   return 'review'
 }
 
-const ICON = { attention: '❌', near: '⏰', queued: '⏳', running: '🔧', review: '👀', accepted: '✅', rejected: '↩' } as const
+const ICON = { attention: '✗', near: '▲', queued: '⏸', running: '▶', review: '◎', accepted: '✓', rejected: '↩' } as const
 const ORDER = { attention: 0, near: 1, queued: 2, running: 3, review: 4, rejected: 5, accepted: 6 } as const
 
 export function sorted(runs: RunView[], now: number, boxMs: number): RunView[] {
@@ -350,13 +356,12 @@ export function stageColor(stage: string): string | undefined {
 /** One span of a band row: its text plus how to draw it. */
 export type Seg = { text: string; color?: string; bold?: boolean; dim?: boolean }
 
-/** The cap the band tail and the pane header share: `ช่าง ●●○○○ 2/5` (+ ` ⚠1302` on backoff). */
+/** The cap the band tail and the pane header share: `◼◼◻◻◻ 2/5` (+ ` ⚠1302` on backoff). */
 export function capSegs(cap: CapView, lang: Lang): Seg[] {
   const filled = Math.max(0, Math.min(cap.cap, cap.used))
   return [
-    { text: `${words(lang).workers} `, color: 'subtle' },
-    { text: '●'.repeat(filled), color: cap.backoff ? 'warning' : 'success' },
-    { text: '○'.repeat(Math.max(0, cap.cap - filled)), color: 'subtle' },
+    { text: '◼'.repeat(filled), color: cap.backoff ? 'warning' : 'success' },
+    { text: '◻'.repeat(Math.max(0, cap.cap - filled)), color: 'subtle' },
     { text: ` ${cap.used}/${cap.cap}`, color: 'subtle' },
     ...(cap.backoff ? [{ text: ' ⚠1302', color: 'warning' }] : []),
   ]
@@ -371,13 +376,13 @@ export function bandRows(runs: RunView[], now: number, boxMs: number, lang: Lang
   const working = count('running', 'near')
   const tail: Seg[] = cap ? [{ text: '   ', color: 'subtle' }, ...capSegs(cap, lang)] : []
   const parts: Seg[] = []
-  if (working) parts.push({ text: `🔧 ${working} ${w.running}`, color: stageColor('running') })
-  if (count('queued')) parts.push({ text: `⏳ ${count('queued')} ${w.queued}`, color: stageColor('queued') })
-  if (count('review')) parts.push({ text: `👀 ${count('review')} ${w.review}`, color: stageColor('review') })
-  if (count('accepted')) parts.push({ text: `✅ ${count('accepted')} ${w.accepted}`, color: stageColor('accepted') })
-  if (count('attention')) parts.push({ text: `❌ ${count('attention')} ${w.failed}`, color: stageColor('attention') })
+  if (working) parts.push({ text: `▶ ${working} ${w.running}`, color: stageColor('running') })
+  if (count('queued')) parts.push({ text: `⏸ ${count('queued')} ${w.queued}`, color: stageColor('queued') })
+  if (count('review')) parts.push({ text: `◎ ${count('review')} ${w.review}`, color: stageColor('review') })
+  if (count('attention')) parts.push({ text: `✗ ${count('attention')} ${w.attention}`, color: stageColor('attention') })
+  if (count('accepted')) parts.push({ text: `✓ ${count('accepted')} ${w.accepted}`, color: stageColor('accepted') })
   if (working === 0 && count('queued') === 0 && count('review', 'attention') === 0) {
-    return [[{ text: 'zcrew  ' }, { text: `🎉 ${w.allDone} ${runs.length} ${w.tasks}`, color: 'success' }, ...tail]]
+    return [[{ text: 'zcrew  ' }, { text: `✓ ${w.allDone} ${runs.length} ${w.tasks}`, color: 'success' }, ...tail]]
   }
   const head: Seg[] = [{ text: 'zcrew  ' }]
   parts.forEach((part, i) => {
@@ -411,17 +416,18 @@ export function bandLines(runs: RunView[], now: number, boxMs: number, lang: Lan
 /** The pinned status-line text, or undefined to clear it. */
 export function statusText(runs: RunView[], now: number, boxMs: number, cap?: CapView, lang: Lang = 'th'): string | undefined {
   if (!bandVisible(runs, now)) return undefined
+  const w = words(lang)
   const stages = runs.map(r => stageOf(r, now, boxMs))
   const n = (s: string) => stages.filter(x => x === s).length
   const bits = [
-    n('running') + n('near') ? `🔧${n('running') + n('near')}` : '',
-    n('queued') ? `⏳${n('queued')}` : '',
-    n('review') ? `👀${n('review')}` : '',
-    n('attention') ? `❌${n('attention')}` : '',
-    n('accepted') ? `✅${n('accepted')}` : '',
+    n('running') + n('near') ? `▶ ${n('running') + n('near')} ${w.running}` : '',
+    n('queued') ? `⏸ ${n('queued')} ${w.queued}` : '',
+    n('review') ? `◎ ${n('review')} ${w.review}` : '',
+    n('attention') ? `✗ ${n('attention')} ${w.attention}` : '',
+    n('accepted') ? `✓ ${n('accepted')} ${w.accepted}` : '',
   ].filter(Boolean)
   if (!bits.length) return undefined
-  return `zcrew ${bits.join(' ')}${cap ? ` · ${capText(cap, lang)}` : ''}`
+  return `${bits.join('  ')}${cap ? `  ${capText(cap, lang)}` : ''}`
 }
 
 /** What the status line needs of `$.session.usage()` / `session.measure`. */
@@ -433,31 +439,30 @@ export type UsageView = {
 /** Rate-limit windows worth a place on the status line. */
 const WINDOW_LABEL: Record<string, string> = { five_hour: '5h', seven_day: '7d' }
 
-/** The status line's usage segment: context fill and rate-limit windows, each with a mini meter. */
+/** The status line's usage segment: `◆ <n>% <label>` per window, its reset clock once past 80%. */
 export function usageText(usage: UsageView | undefined, now: number, lang: Lang): string | undefined {
   const parts: string[] = []
   const percent = usage?.context?.percent
-  if (typeof percent === 'number') parts.push(`ctx ${meter(percent)} ${Math.round(percent)}%`)
+  if (typeof percent === 'number') parts.push(`◆ ${Math.round(percent)}% ctx`)
   for (const limit of usage?.rateLimits ?? []) {
     const label = WINDOW_LABEL[limit.kind]
     if (!label) continue
-    let text = `${label} ${meter(limit.percentUsed)} ${Math.round(limit.percentUsed)}%`
+    let text = `◆ ${Math.round(limit.percentUsed)}% ${label}`
     if (limit.percentUsed >= 80 && limit.resetsAt) {
       const at = new Date(limit.resetsAt)
       if (!Number.isNaN(at.getTime())) {
-        const clock = `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`
-        text += lang === 'th' ? ` (รีเซ็ต ${clock})` : ` (resets ${clock})`
+        text += ` ⟳${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`
       }
     }
     parts.push(text)
   }
-  return parts.length ? parts.join(' │ ') : undefined
+  return parts.length ? parts.join('   ') : undefined
 }
 
 /** The whole status line: the usage segment, then the zcrew one. */
 export function chromeText(usagePart: string | undefined, zcrewPart: string | undefined): string | undefined {
   const parts = [usagePart, zcrewPart].filter(p => p !== undefined)
-  return parts.length ? parts.join(' │ ') : undefined
+  return parts.length ? parts.join('  ┃  ') : undefined
 }
 
 /** One line of the gate's JSON report for Claude. */

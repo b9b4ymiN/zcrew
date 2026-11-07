@@ -85,7 +85,7 @@ test('band and pane draw on every surface once a run starts', async ($, on) => {
   for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
     const band = await $.ui.mount({ plugin: 'zcrew', surface, ...BAND } as never)
     expect(await band.find({ type: 'Text', text: /zcrew {2}/ } as never)).toBeDefined()
-    const working = await band.find({ type: 'Text', text: /🔧 1 กำลังทำ/ } as never)
+    const working = await band.find({ type: 'Text', text: /▶ 1 ทำอยู่/ } as never)
     expect(working).toBeDefined()
     expect(working?.props.color).toBe('claude') // the summary is drawn in colored segments
     await band.unmount()
@@ -144,9 +144,9 @@ test('session.measure paints usage on the status line, runs or not', async ($, o
     changed: ['context'],
   } as never)
   expect(measured).toEqual({ changed: ['context'] }) // next(e) passed through untouched
-  expect(statuses[statuses.length - 1]).toBe('ctx ▰▰▱▱▱ 42% │ 5h ▰▱▱▱▱ 23% │ 7d ▰▰▰▱▱ 61%') // no runs: usage alone
+  expect(statuses[statuses.length - 1]).toBe('◆ 42% ctx   ◆ 23% 5h   ◆ 61% 7d') // no runs: usage alone
   await $.tool.call({ tool: START, prompt: CONTRACT } as never)
-  expect(statuses[statuses.length - 1]).toBe('ctx ▰▰▱▱▱ 42% │ 5h ▰▱▱▱▱ 23% │ 7d ▰▰▰▱▱ 61% │ zcrew 🔧1')
+  expect(statuses[statuses.length - 1]).toBe('◆ 42% ctx   ◆ 23% 5h   ◆ 61% 7d  ┃  ▶ 1 ทำอยู่')
 })
 
 test('session.start paints usage read from the engine', async ($, on) => {
@@ -158,7 +158,7 @@ test('session.start paints usage read from the engine', async ($, on) => {
   on('command.register', () => ({ value: {} }) as never)
   on('ui.status', ($, e) => { statuses.push(e.text); return { value: undefined } as never })
   await $.session.start({ cwd: '/work' } as never)
-  expect(statuses[statuses.length - 1]).toBe('ctx ▰▱▱▱▱ 15%')
+  expect(statuses[statuses.length - 1]).toBe('◆ 15% ctx')
 })
 
 test('showUsage off leaves the status line as it was', { options: { showUsage: false } }, async ($, on) => {
@@ -290,7 +290,7 @@ test('capacity failing leaves the band drawn without the cap', async ($, on) => 
   await $.tool.call({ tool: START, prompt: CONTRACT, cwd: '/work' } as never)
   await clock.advance(15_000)
   const band = await $.ui.mount({ plugin: 'zcrew', surface: 'terminal', ...BAND } as never)
-  expect(await band.find({ type: 'Text', text: /🔧 1 กำลังทำ/ } as never)).toBeDefined()
+  expect(await band.find({ type: 'Text', text: /▶ 1 ทำอยู่/ } as never)).toBeDefined()
   expect(await band.find({ type: 'Text', text: /ช่าง|workers/ } as never)).toBeUndefined()
   await band.unmount()
 })
@@ -311,7 +311,7 @@ test('a queued run waiting for a worker slot shows the queued row', async ($, on
   await $.tool.call({ tool: START, prompt: CONTRACT, cwd: '/work' } as never)
   await clock.advance(15_000)
   const band = await $.ui.mount({ plugin: 'zcrew', surface: 'terminal', ...BAND } as never)
-  expect(await band.find({ type: 'Text', text: /⏳ 1 รอคิว/ } as never)).toBeDefined()
+  expect(await band.find({ type: 'Text', text: /⏸ 1 รอคิว/ } as never)).toBeDefined()
   expect(await band.find({ type: 'Text', text: /เต็มเพดาน/ } as never)).toBeDefined()
   await band.unmount()
 })
@@ -493,7 +493,7 @@ test('a codex correction learns its verdict from the base record file', { option
   expect(reads.some(p => p.endsWith(`/.zcode-commander/gate/${CX_ID.toLowerCase()}.json`))).toBe(true)
   expect(reads.some(p => p.endsWith('.r2.json'))).toBe(false) // the correction has no record of its own
   const pane = await $.ui.mount({ plugin: 'zcrew', surface: 'terminal', ...PANE } as never)
-  expect(await pane.find({ type: 'Text', text: /✅ Codex · Fix the gate/ } as never)).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /✓ Codex · Fix the gate/ } as never)).toBeDefined()
   expect(await pane.find({ type: 'Text', text: 'accepted' } as never)).toBeDefined() // the verdict draws, not "waiting for Claude"
   await pane.unmount()
 })

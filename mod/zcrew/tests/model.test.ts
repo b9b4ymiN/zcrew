@@ -5,7 +5,7 @@ import type { Seg } from '../hooks/model'
 import {
   BACKGROUND_GRACE_MS, OBSERVE_ERRORS_TO_FAIL, STALL_MS, activityOf, bandLines, bandRows, bandVisible, boxFromConfig, boxOf, capText,
   chromeText, detailOf, failureLabel, gateSummary, iconOf, isStalled, levelOf, liveJobs, mergeCodex, meter, notifyText, observeError,
-  parseFailure, parseSnapshot, queueReason, recordIdOf, slots, stageOf, statusText, titleOf, turnOver,
+  parseFailure, parseSnapshot, queueReason, recordIdOf, slots, slotSquares, stageOf, statusText, titleOf, turnOver,
   usageText, wakeMessage,
 } from '../hooks/model'
 
@@ -56,20 +56,20 @@ describe('model', () => {
       run({ runId: 'c', title: 'Nav', status: 'completed', verdict: 'accept' }),
     ]
     const lines = bandLines(runs, NOW, BOX, 'en', 3)
-    expect(lines[0]).toBe('zcrew  🔧 1 working · ✅ 1 accepted · ❌ 1 failed')
-    expect(lines[1]).toContain('❌ Footer — gate failed: verify: npm test -> exit 1')
+    expect(lines[0]).toBe('zcrew  ▶ 1 working · ✗ 1 needs you · ✓ 1 accepted')
+    expect(lines[1]).toContain('✗ Footer — gate failed: verify: npm test -> exit 1')
     expect(lines.length).toBe(2) // the running Hero is counted, not listed
     expect(bandLines(runs, NOW, BOX, 'en', 1).length).toBe(1)
   })
 
   test('band: all done, then gone after it lingers', () => {
     const done = [run({ status: 'completed', verdict: 'accept', endedAt: NOW - 1000 })]
-    expect(bandLines(done, NOW, BOX, 'th', 3)).toEqual(['zcrew  🎉 เสร็จหมด 1 งาน'])
+    expect(bandLines(done, NOW, BOX, 'th', 3)).toEqual(['zcrew  ✓ เสร็จหมด 1 งาน'])
     expect(bandVisible(done, NOW)).toBe(true)
     expect(bandVisible(done, NOW + 3 * 60_000)).toBe(false)
     expect(bandVisible([], NOW)).toBe(false)
     expect(statusText(done, NOW + 3 * 60_000, BOX)).toBeUndefined()
-    expect(statusText([run({}), run({ runId: 'b', status: 'completed' })], NOW, BOX)).toBe('zcrew 🔧1 👀1')
+    expect(statusText([run({}), run({ runId: 'b', status: 'completed' })], NOW, BOX)).toBe('▶ 1 ทำอยู่  ◎ 1 รอตรวจ')
   })
 
   test('gate summary and wake message', () => {
@@ -173,8 +173,8 @@ describe('failure causes', () => {
     expect(notifyText([failed], 'th')).toBe('❌ Hero section — โควต้า GLM หมด · รีเซ็ต 15:00')
     expect(notifyText([failed], 'en')).toBe('❌ Hero section — GLM quota used up · resets 15:00')
     expect(notifyText([run({ status: 'failed', endedAt: NOW })], 'en')).toBe('❌ Hero section — failed') // no failure: the bare word stays
-    expect(bandLines([failed], NOW, BOX, 'th', 3)[1]).toBe('  ❌ Hero section — โควต้า GLM หมด · รีเซ็ต 15:00')
-    expect(bandLines([failed], NOW, BOX, 'en', 3)[1]).toBe('  ❌ Hero section — GLM quota used up · resets 15:00')
+    expect(bandLines([failed], NOW, BOX, 'th', 3)[1]).toBe('  ✗ Hero section — โควต้า GLM หมด · รีเซ็ต 15:00')
+    expect(bandLines([failed], NOW, BOX, 'en', 3)[1]).toBe('  ✗ Hero section — GLM quota used up · resets 15:00')
   })
 })
 
@@ -243,10 +243,10 @@ describe('queue, stall and capacity', () => {
   })
 
   test('cap text in both languages, backoff flagged', () => {
-    expect(capText({ used: 2, cap: 5, configured: 5, backoff: false }, 'th')).toBe('ช่าง 2/5')
-    expect(capText({ used: 2, cap: 5, configured: 5, backoff: false }, 'en')).toBe('workers 2/5')
-    expect(capText({ used: 1, cap: 2, configured: 5, backoff: true }, 'th')).toBe('ช่าง 1/2 ⚠1302')
-    expect(capText({ used: 1, cap: 2, configured: 5, backoff: true }, 'en')).toBe('workers 1/2 ⚠1302')
+    expect(capText({ used: 2, cap: 5, configured: 5, backoff: false }, 'th')).toBe('◼◼◻◻◻ 2/5')
+    expect(capText({ used: 2, cap: 5, configured: 5, backoff: false }, 'en')).toBe('◼◼◻◻◻ 2/5')
+    expect(capText({ used: 1, cap: 2, configured: 5, backoff: true }, 'th')).toBe('◼◻ 1/2 ⚠1302')
+    expect(capText({ used: 1, cap: 2, configured: 5, backoff: true }, 'en')).toBe('◼◻ 1/2 ⚠1302')
   })
 
   test('band counts queued runs, lists them, and appends the cap with slot dots', () => {
@@ -254,25 +254,25 @@ describe('queue, stall and capacity', () => {
       [run({ runId: 'a', title: 'Hero' }), run({ runId: 'q', title: 'Nav', status: 'queued', queue: 'slot' })],
       NOW, BOX, 'th', 3, { used: 2, cap: 5, configured: 5, backoff: false },
     )
-    expect(lines[0]).toBe('zcrew  🔧 1 กำลังทำ · ⏳ 1 รอคิว   ช่าง ●●○○○ 2/5')
-    expect(lines[1]).toBe('  ⏳ Nav — รอคิว (เต็มเพดาน)')
+    expect(lines[0]).toBe('zcrew  ▶ 1 ทำอยู่ · ⏸ 1 รอคิว   ◼◼◻◻◻ 2/5')
+    expect(lines[1]).toBe('  ⏸ Nav — รอคิว (เต็มเพดาน)')
     expect(bandLines([run({ runId: 'q', title: 'Nav', status: 'queued', queue: 'folder' })], NOW, BOX, 'en', 3))
-      .toEqual(['zcrew  ⏳ 1 queued', '  ⏳ Nav — waiting for the folder'])
+      .toEqual(['zcrew  ⏸ 1 queued', '  ⏸ Nav — waiting for the folder'])
     expect(bandLines([run({ runId: 'q', title: 'Nav', status: 'queued' })], NOW, BOX, 'en', 3))
-      .toEqual(['zcrew  ⏳ 1 queued', '  ⏳ Nav — queued'])
+      .toEqual(['zcrew  ⏸ 1 queued', '  ⏸ Nav — queued'])
   })
 
   test('status line counts queued and carries the cap', () => {
     const queued = run({ runId: 'q', status: 'queued', queue: 'slot' })
     expect(statusText([run({ runId: 'a' }), queued], NOW, BOX, { used: 2, cap: 5, configured: 5, backoff: false }, 'en'))
-      .toBe('zcrew 🔧1 ⏳1 · workers 2/5')
-    expect(statusText([run({ runId: 'a' }), queued], NOW, BOX)).toBe('zcrew 🔧1 ⏳1')
+      .toBe('▶ 1 working  ⏸ 1 queued  ◼◼◻◻◻ 2/5')
+    expect(statusText([run({ runId: 'a' }), queued], NOW, BOX)).toBe('▶ 1 ทำอยู่  ⏸ 1 รอคิว')
   })
 
   test('a stalled run draws as attention and wakes with STALLED', () => {
     const stalled = run({ stalled: true, lastChangeAt: NOW - 35 * 60_000, endedAt: NOW })
     expect(stageOf(stalled, NOW, BOX)).toBe('attention')
-    expect(iconOf(stalled, NOW, BOX)).toBe('❌')
+    expect(iconOf(stalled, NOW, BOX)).toBe('✗')
     expect(detailOf(stalled, NOW, BOX, 'th')).toBe('เงียบ 35 นาที')
     expect(detailOf(stalled, NOW, BOX, 'en')).toBe('silent 35 min')
     expect(turnOver(stalled, NOW)).toBe(true)
@@ -289,26 +289,26 @@ describe('queue, stall and capacity', () => {
     ]
     const rows = bandRows(runs, NOW, BOX, 'en', 3, cap)
     const head = rows[0]
-    expect(head.find(s => s.text.startsWith('🔧'))?.color).toBe('claude')
-    expect(head.find(s => s.text.startsWith('⏳'))?.color).toBe('subtle')
-    expect(head.find(s => s.text.startsWith('❌'))?.color).toBe('error')
-    expect(head.filter(s => /^[●○]+$/.test(s.text))).toEqual([
-      { text: '●●', color: 'success' }, { text: '○○○', color: 'subtle' },
+    expect(head.find(s => s.text.startsWith('▶'))?.color).toBe('claude')
+    expect(head.find(s => s.text.startsWith('⏸'))?.color).toBe('subtle')
+    expect(head.find(s => s.text.startsWith('✗'))?.color).toBe('error')
+    expect(head.filter(s => /^[◼◻]+$/.test(s.text))).toEqual([
+      { text: '◼◼', color: 'success' }, { text: '◻◻◻', color: 'subtle' },
     ])
     const byTitle = (word: string): Seg[] | undefined => rows.find(r => r.some(s => s.text === word))
-    expect(byTitle('Migrate')?.find(s => s.text === '❌ ')?.color).toBe('error')
+    expect(byTitle('Migrate')?.find(s => s.text === '✗ ')?.color).toBe('error')
     expect(byTitle('Migrate')?.find(s => s.dim)?.text).toBe('silent 35 min')
-    expect(byTitle('Nav')?.find(s => s.text === '⏳ ')?.color).toBe('subtle')
+    expect(byTitle('Nav')?.find(s => s.text === '⏸ ')?.color).toBe('subtle')
     expect(byTitle('Nav')?.find(s => s.dim)?.text).toBe('queued (worker cap full)')
   })
 
-  test('a review row is a suggestion; backoff dots and the marker warn', () => {
+  test('a review row is a suggestion; backoff squares and the marker warn', () => {
     const review = bandRows([run({ runId: 'r', status: 'completed', gate: { mechanical: 'PASS', summary: '' } })], NOW, BOX, 'en', 3)
-    expect(review[0].find(s => s.text.startsWith('👀'))?.color).toBe('suggestion')
-    expect(review[1].find(s => s.text === '👀 ')?.color).toBe('suggestion')
+    expect(review[0].find(s => s.text.startsWith('◎'))?.color).toBe('suggestion')
+    expect(review[1].find(s => s.text === '◎ ')?.color).toBe('suggestion')
     const backoff = bandRows([run({ runId: 'a' })], NOW, BOX, 'th', 3, { used: 1, cap: 2, configured: 5, backoff: true })
-    expect(backoff[0].filter(s => /^[●○]+$/.test(s.text))).toEqual([
-      { text: '●', color: 'warning' }, { text: '○', color: 'subtle' },
+    expect(backoff[0].filter(s => /^[◼◻]+$/.test(s.text))).toEqual([
+      { text: '◼', color: 'warning' }, { text: '◻', color: 'subtle' },
     ])
     expect(backoff[0].find(s => s.text === ' ⚠1302')).toEqual({ text: ' ⚠1302', color: 'warning' })
   })
@@ -383,7 +383,7 @@ describe('codex runs', () => {
 
   test('band and wake text carry the Codex tag and the report path, ZCode rows unchanged', () => {
     const cx = run({ runId: 'codex_x', worker: 'codex', title: 'Nav', status: 'queued', report: 'C:\\repo\\.cx\\codex_x.report.md' })
-    expect(bandLines([cx], NOW, BOX, 'en', 3)).toEqual(['zcrew  ⏳ 1 queued', '  ⏳ Codex Nav — queued'])
+    expect(bandLines([cx], NOW, BOX, 'en', 3)).toEqual(['zcrew  ⏸ 1 queued', '  ⏸ Codex Nav — queued'])
     const text = wakeMessage([run({
       runId: 'codex_x', worker: 'codex', status: 'completed', endedAt: NOW, report: 'C:\\repo\\.cx\\codex_x.report.md',
     })], NOW)
@@ -391,7 +391,7 @@ describe('codex runs', () => {
     expect(text).toContain('Its worker report (read it instead of agent-wait): C:\\repo\\.cx\\codex_x.report.md')
     expect(text).not.toContain('fetch the worker result with agent-wait') // the ZCode-only advice line
     expect(bandLines([run({ runId: 'q', title: 'Nav', status: 'queued' })], NOW, BOX, 'en', 3))
-      .toEqual(['zcrew  ⏳ 1 queued', '  ⏳ Nav — queued'])
+      .toEqual(['zcrew  ⏸ 1 queued', '  ⏸ Nav — queued'])
     expect(wakeMessage([run({ status: 'completed', endedAt: NOW })], NOW)).not.toContain('Codex')
   })
 })
@@ -416,12 +416,18 @@ describe('meters, levels and slots', () => {
     expect(slots(0, 3)).toBe('○○○')
     expect(slots(7, 5)).toBe('●●●●●')
   })
+
+  test('slot squares fill up to the cap, never past it', () => {
+    expect(slotSquares(2, 5)).toBe('◼◼◻◻◻')
+    expect(slotSquares(0, 3)).toBe('◻◻◻')
+    expect(slotSquares(7, 5)).toBe('◼◼◼◼◼')
+  })
 })
 
 describe('usage segment', () => {
   const RESETS_AT = new Date(2026, 0, 2, 14, 30).toISOString() // 14:30 local
 
-  test('context and windows render with meters, unknown kinds ignored', () => {
+  test('context and windows lead with the number, unknown kinds ignored', () => {
     expect(usageText({
       context: { percent: 42 },
       rateLimits: [
@@ -429,12 +435,12 @@ describe('usage segment', () => {
         { kind: 'seven_day', percentUsed: 61 },
         { kind: 'spend_limit', percentUsed: 90 },
       ],
-    }, NOW, 'en')).toBe('ctx ▰▰▱▱▱ 42% │ 5h ▰▱▱▱▱ 23% │ 7d ▰▰▰▱▱ 61%')
+    }, NOW, 'en')).toBe('◆ 42% ctx   ◆ 23% 5h   ◆ 61% 7d')
   })
 
   test('missing pieces are omitted, nothing known is undefined', () => {
-    expect(usageText({ context: { percent: 7 }, rateLimits: [] }, NOW, 'en')).toBe('ctx ▱▱▱▱▱ 7%') // off-subscription
-    expect(usageText({ rateLimits: [{ kind: 'five_hour', percentUsed: 10 }] }, NOW, 'en')).toBe('5h ▰▱▱▱▱ 10%')
+    expect(usageText({ context: { percent: 7 }, rateLimits: [] }, NOW, 'en')).toBe('◆ 7% ctx') // off-subscription
+    expect(usageText({ rateLimits: [{ kind: 'five_hour', percentUsed: 10 }] }, NOW, 'en')).toBe('◆ 10% 5h')
     expect(usageText({ context: { window: 200000 } }, NOW, 'en')).toBeUndefined() // no fill yet
     expect(usageText({}, NOW, 'en')).toBeUndefined()
     expect(usageText(undefined, NOW, 'en')).toBeUndefined()
@@ -442,18 +448,79 @@ describe('usage segment', () => {
 
   test('a window past 80% says when it resets', () => {
     expect(usageText({ rateLimits: [{ kind: 'seven_day', percentUsed: 85, resetsAt: RESETS_AT }] }, NOW, 'en'))
-      .toBe('7d ▰▰▰▰▱ 85% (resets 14:30)')
+      .toBe('◆ 85% 7d ⟳14:30')
     expect(usageText({ rateLimits: [{ kind: 'five_hour', percentUsed: 92, resetsAt: RESETS_AT }] }, NOW, 'th'))
-      .toBe('5h ▰▰▰▰▰ 92% (รีเซ็ต 14:30)')
+      .toBe('◆ 92% 5h ⟳14:30')
     expect(usageText({ rateLimits: [{ kind: 'five_hour', percentUsed: 79, resetsAt: RESETS_AT }] }, NOW, 'en'))
-      .toBe('5h ▰▰▰▰▱ 79%') // below 80%: no reset time even with resetsAt
-    expect(usageText({ rateLimits: [{ kind: 'five_hour', percentUsed: 85 }] }, NOW, 'en')).toBe('5h ▰▰▰▰▱ 85%') // no resetsAt
+      .toBe('◆ 79% 5h') // below 80%: no reset time even with resetsAt
+    expect(usageText({ rateLimits: [{ kind: 'five_hour', percentUsed: 85 }] }, NOW, 'en')).toBe('◆ 85% 5h') // no resetsAt
   })
 
   test('chrome joins the parts that exist', () => {
-    expect(chromeText('ctx 42% · 5h 23%', 'zcrew 🔧1')).toBe('ctx 42% · 5h 23% │ zcrew 🔧1')
-    expect(chromeText('ctx 42%', undefined)).toBe('ctx 42%')
-    expect(chromeText(undefined, 'zcrew 🔧1')).toBe('zcrew 🔧1')
+    expect(chromeText('◆ 42% ctx   ◆ 23% 5h', '▶ 1 ทำอยู่')).toBe('◆ 42% ctx   ◆ 23% 5h  ┃  ▶ 1 ทำอยู่')
+    expect(chromeText('◆ 42% ctx', undefined)).toBe('◆ 42% ctx')
+    expect(chromeText(undefined, '▶ 1 working')).toBe('▶ 1 working')
     expect(chromeText(undefined, undefined)).toBeUndefined()
+  })
+})
+
+describe('HUD status line', () => {
+  const RESETS_AT = new Date(2026, 0, 2, 18, 10).toISOString()
+
+  test('each stage count reads as glyph, number, word', () => {
+    const one = (over: Partial<RunView>) => [run(over)]
+    expect(statusText(one({}), NOW, BOX, undefined, 'th')).toBe('▶ 1 ทำอยู่')
+    expect(statusText(one({}), NOW, BOX, undefined, 'en')).toBe('▶ 1 working')
+    expect(statusText(one({ status: 'queued' }), NOW, BOX, undefined, 'th')).toBe('⏸ 1 รอคิว')
+    expect(statusText(one({ status: 'queued' }), NOW, BOX, undefined, 'en')).toBe('⏸ 1 queued')
+    expect(statusText(one({ status: 'completed' }), NOW, BOX, undefined, 'th')).toBe('◎ 1 รอตรวจ')
+    expect(statusText(one({ status: 'completed' }), NOW, BOX, undefined, 'en')).toBe('◎ 1 to review')
+    expect(statusText(one({ stalled: true, lastChangeAt: NOW - 35 * 60_000 }), NOW, BOX, undefined, 'th')).toBe('✗ 1 ต้องดู')
+    expect(statusText(one({ stalled: true, lastChangeAt: NOW - 35 * 60_000 }), NOW, BOX, undefined, 'en')).toBe('✗ 1 needs you')
+    expect(statusText(one({ status: 'completed', verdict: 'accept', endedAt: NOW }), NOW, BOX, undefined, 'th')).toBe('✓ 1 ผ่าน')
+    expect(statusText(one({ status: 'completed', verdict: 'accept', endedAt: NOW }), NOW, BOX, undefined, 'en')).toBe('✓ 1 accepted')
+  })
+
+  test('the cap reads as slot squares, warning on backoff', () => {
+    expect(statusText([run({})], NOW, BOX, { used: 1, cap: 5, configured: 5, backoff: false }, 'th'))
+      .toBe('▶ 1 ทำอยู่  ◼◻◻◻◻ 1/5')
+    expect(statusText([run({})], NOW, BOX, { used: 1, cap: 2, configured: 5, backoff: true }, 'en'))
+      .toBe('▶ 1 working  ◼◻ 1/2 ⚠1302')
+  })
+
+  test('the whole line matches the chosen design', () => {
+    const usage = {
+      context: { percent: 81 },
+      rateLimits: [
+        { kind: 'five_hour' as const, percentUsed: 85, resetsAt: new Date(2026, 0, 2, 18, 10).toISOString() },
+        { kind: 'seven_day' as const, percentUsed: 86, resetsAt: new Date(2026, 0, 2, 18, 0).toISOString() },
+      ],
+    }
+    const runs = [
+      run({ runId: 'a' }),
+      run({ runId: 'b', status: 'completed', verdict: 'accept', endedAt: NOW }),
+      run({ runId: 'c', status: 'completed', verdict: 'accept', endedAt: NOW }),
+    ]
+    const cap = { used: 1, cap: 5, configured: 5, backoff: false }
+    expect(chromeText(usageText(usage, NOW, 'th'), statusText(runs, NOW, BOX, cap, 'th')))
+      .toBe('◆ 81% ctx   ◆ 85% 5h ⟳18:10   ◆ 86% 7d ⟳18:00  ┃  ▶ 1 ทำอยู่  ✓ 2 ผ่าน  ◼◻◻◻◻ 1/5')
+  })
+
+  test('no emoji in the status line or the band', () => {
+    const EMOJI = /🔧|👀|❌|✅|⏳|🎉/
+    const runs = [
+      run({ runId: 'w' }),
+      run({ runId: 'q', status: 'queued', queue: 'slot' }),
+      run({ runId: 'r', status: 'completed' }),
+      run({ runId: 's', title: 'Migrate', stalled: true, lastChangeAt: NOW - 35 * 60_000, endedAt: NOW }),
+      run({ runId: 'ok', status: 'completed', verdict: 'accept', endedAt: NOW }),
+    ]
+    const cap = { used: 2, cap: 5, configured: 5, backoff: true }
+    const status = chromeText(
+      usageText({ context: { percent: 81 }, rateLimits: [{ kind: 'five_hour', percentUsed: 85, resetsAt: RESETS_AT }] }, NOW, 'th'),
+      statusText(runs, NOW, BOX, cap, 'th'),
+    )
+    expect(status).not.toMatch(EMOJI)
+    for (const line of bandLines(runs, NOW, BOX, 'th', 3, cap)) expect(line).not.toMatch(EMOJI)
   })
 })
