@@ -23,6 +23,22 @@ def args(**over: object) -> SimpleNamespace:
     return SimpleNamespace(**base)
 
 
+def context_distribution() -> tuple[list[tuple[int, int]], list[tuple[int, str]]]:
+    """The real machine's last 60 days, compressed: 104 of the 130 1302s in one
+    server-side burst (busy 1-5); outside it the busy counts were 1x1, 4x2, 2x3,
+    2x4, 17x5. Groups sit 40 min apart so no two non-burst hits share a window."""
+    turns: list[tuple[int, int]] = []
+    errors: list[tuple[int, str]] = []
+    for k, busy in enumerate([1] + [2] * 4 + [3] * 2 + [4] * 2 + [5] * 17):
+        at = k * 40 * MIN
+        errors.append((at, "concurrency"))
+        turns += [(at - 1, at + 10 * MIN)] * busy
+    burst = 24 * 60 * MIN
+    errors += [(burst + k * 10_000, "concurrency") for k in range(104)]
+    turns += [(burst - 1, burst + 104 * 10_000 + MIN)] * 5
+    return turns, errors
+
+
 class AnalyzeTests(unittest.TestCase):
     def test_busy_profile(self) -> None:
         turns = [(0, 10 * MIN), (5 * MIN, 15 * MIN)]
@@ -42,7 +58,9 @@ class AnalyzeTests(unittest.TestCase):
         # 4 ran cleanly at 20m, 5 min from either hit: the limit moves with load, and
         # the estimate keeps the lowest count that failed
         self.assertEqual(a["clean_peak"], 4)
-        self.assertEqual(cap.analyze(turns[:1], [(5, "concurrency")], cap=1)["estimate"], 1)  # never below 1
+        # a 1302 with a single busy worker is another client or server load: ignored
+        self.assertIsNone(cap.analyze(turns[:1], [(5, "concurrency")], cap=1)["estimate"])
+        self.assertEqual(cap.analyze(turns[:2], [(5, "concurrency")], cap=1)["estimate"], 1)  # never below 1
 
     def test_no_1302_gives_only_a_floor(self) -> None:
         a = cap.analyze([(0, 10 * MIN), (MIN, 9 * MIN)], [(MIN, "overload")], cap=5)
@@ -53,6 +71,65 @@ class AnalyzeTests(unittest.TestCase):
         self.assertEqual(cap.target_cap(3, 80, 10), 2)
         self.assertEqual(cap.target_cap(10, 80, 5), 5)
         self.assertEqual(cap.target_cap(1, 50, 5), 1)
+
+
+class RobustEstimateTests(unittest.TestCase):
+    """Bursts and one-busy hits are not this account's concurrency; the median of
+    what is left replaces the old min, which one stray hit could drag to 1."""
+
+    def test_real_machine_distribution_gives_4(self) -> None:
+        a = cap.analyze(*context_distribution(), cap=6)
+        self.assertEqual(a["concurrency_hits"], 130)
+        self.assertEqual(a["ignored"], {"burst": 104, "one_busy": 1})
+        self.assertEqual(a["busy_at_1302"], {"min": 2, "max": 5})  # only the counted hits
+        self.assertEqual(a["estimate"], 4)  # median_low([2x4, 3x2, 4x2, 5x17]) = 5, minus one
+
+    def test_burst_boundary_is_20_hits_in_30_minutes(self) -> None:
+        for total, estimate in ((19, 1), (20, None)):
+            with self.subTest(total=total):
+                turns = [(-1, total * MIN + MIN)] * 2  # 2 workers busy at every hit
+                errors = [(k * MIN, "concurrency") for k in range(total)]
+                a = cap.analyze(turns, errors, cap=5)
+                self.assertEqual(a["estimate"], estimate)
+
+    def test_only_ignorable_hits_mean_not_reached(self) -> None:
+        a = cap.analyze([(0, MIN)], [(MIN // 2, "concurrency")], cap=1)
+        self.assertEqual(a["ignored"], {"burst": 0, "one_busy": 1})
+        self.assertIsNone(a["busy_at_1302"])
+        self.assertIsNone(a["estimate"])
+
+    def test_even_count_uses_the_lower_median(self) -> None:
+        turns: list[tuple[int, int]] = []
+        errors: list[tuple[int, str]] = []
+        for k, busy in enumerate((2, 2, 3, 5)):
+            at = k * 40 * MIN
+            errors.append((at, "concurrency"))
+            turns += [(at - 1, at + 10 * MIN)] * busy
+        self.assertEqual(cap.analyze(turns, errors, cap=5)["estimate"], 1)  # median_low = 2
+
+    def test_render_reports_what_was_ignored(self) -> None:
+        report = {
+            "days": 60.0,
+            "analysis": cap.analyze(*context_distribution(), cap=6),
+            "settings": {"concurrencyLimit": None, "concurrencyTarget": 80, "maxWorkers": 6},
+            "cap": {"cap": 5, "configured": 5, "backoff": False},
+            "slots_in_use": None,
+        }
+        text = "\n".join(cap.render(report))
+        self.assertIn("ignored 1302s     104 in server-side bursts, 1 with ≤1 worker busy"
+                      " (not this account's concurrency)", text)
+        self.assertIn("limit estimate   about 4 at once (median of workers busy at the counted 1302s,"
+                      " minus one)", text)
+
+    def test_render_has_no_ignored_line_when_nothing_was(self) -> None:
+        report = {
+            "days": 14.0,
+            "analysis": cap.analyze([(0, 10 * MIN)], [], cap=5),
+            "settings": {"concurrencyLimit": None, "concurrencyTarget": 80, "maxWorkers": 6},
+            "cap": {"cap": 5, "configured": 5, "backoff": False},
+            "slots_in_use": None,
+        }
+        self.assertNotIn("ignored 1302s", "\n".join(cap.render(report)))
 
 
 class CliTests(unittest.TestCase):

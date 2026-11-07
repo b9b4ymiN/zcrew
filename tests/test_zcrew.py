@@ -6,6 +6,7 @@ import io
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -354,6 +355,34 @@ class DispatchTests(TempDir):
             code, _ = _quiet(zcrew.cmd_uninstall, paths, args, {"ZCREW_NO_PATH": "1"}, run)
         self.assertEqual(code, 1)
         popen.assert_not_called()
+
+
+class SafeStdioTests(unittest.TestCase):
+    """zcrew output must survive a console or pipe that encodes cp1252 (issue #2 B)."""
+
+    def test_cp1252_stream_prints_unicode_without_raising(self) -> None:
+        stream = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
+        zcrew.safe_stdio(stream)
+        stream.write("≥ ไทย ·")  # raised UnicodeEncodeError before safe_stdio
+        stream.flush()
+        self.assertEqual(stream.buffer.getvalue().decode("cp1252"), "? ??? ·")
+
+    def test_utf8_stream_is_left_unchanged(self) -> None:
+        stream = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
+        zcrew.safe_stdio(stream)
+        self.assertEqual(stream.errors, "strict")
+        stream.write("≥ ไทย ·")
+        stream.flush()
+        self.assertEqual(stream.buffer.getvalue(), "≥ ไทย ·".encode("utf-8"))
+
+    def test_version_exits_zero_with_a_cp1252_console(self) -> None:
+        done = subprocess.run(
+            [sys.executable, str(SCRIPTS / "zcrew.py"), "version"],
+            capture_output=True, timeout=120,
+            env={**os.environ, "PYTHONIOENCODING": "cp1252"},
+        )
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertTrue(done.stdout.startswith(b"zcrew "), done.stdout)
 
 
 class EnableDisableIntegrationTests(TempDir):

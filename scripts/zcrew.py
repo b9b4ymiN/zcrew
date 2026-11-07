@@ -271,6 +271,16 @@ def _run_doctor(paths: ZcrewPaths, run: Runner) -> int:
     return run([sys.executable, str(paths.scripts / "doctor.py")]).returncode
 
 
+def safe_stdio(stream: Any) -> None:
+    """A Windows console or pipe often defaults to a legacy code page (cp1252);
+    output can carry Thai or symbols like ≥, so replace unencodable characters
+    instead of dying with UnicodeEncodeError. UTF-8 streams are left untouched."""
+    encoding = (getattr(stream, "encoding", "") or "").lower().replace("-", "").replace("_", "")
+    if encoding == "utf8" or not hasattr(stream, "reconfigure"):
+        return
+    stream.reconfigure(errors="replace")
+
+
 # --- commands -----------------------------------------------------------------------
 
 
@@ -621,7 +631,10 @@ def main(
 
 if __name__ == "__main__":
     # Line-buffer so our messages stay in order with child process output
-    # when stdout is a pipe (get.ps1 pipes it through Out-Host).
+    # when stdout is a pipe (get.ps1 pipes it through Out-Host); safe_stdio
+    # first so a cp1252 console or pipe never dies on a Thai title or a ≥.
+    safe_stdio(sys.stdout)
+    safe_stdio(sys.stderr)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(line_buffering=True)
     raise SystemExit(main())

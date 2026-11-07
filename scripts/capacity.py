@@ -10,7 +10,10 @@ load; past it a request fails with 1302 "Rate limit reached for requests" /
 (read-only):
 
 - each 1302 is matched with the number of workers busy at that moment (top-level
-  sessions inside a turn); the limit is below the lowest such count;
+  sessions inside a turn); 1302s inside a server-side burst (BURST_HITS within
+  ±BURST_WINDOW_MS) and ones with at most one worker busy - another client on the
+  account, or z.ai load - say nothing about this account's concurrency, and the
+  limit is the median busy count of the remaining hits, minus one;
 - without any 1302 the limit is unknown, only bounded from below by the most
   workers that ran cleanly.
 
@@ -30,7 +33,9 @@ import os
 import sqlite3
 import sys
 import time
+from bisect import bisect_left, bisect_right
 from pathlib import Path
+from statistics import median_low
 from types import ModuleType
 from typing import Any, Mapping
 from urllib.parse import quote
@@ -38,6 +43,10 @@ from urllib.parse import quote
 HERE = Path(__file__).resolve().parent
 # A 1302 this close to a moment does not count that moment as clean.
 CLEAN_MARGIN_MS = 2 * 60 * 1000
+# A 1302 with this many 1302s within +-BURST_WINDOW_MS is z.ai server load, not
+# this account's concurrency (a real burst: 104 of 130 on one day).
+BURST_HITS = 20
+BURST_WINDOW_MS = 30 * 60 * 1000
 LEASE_DB_ENVS = ("AGENT_MCP_LEASE_DB", "ZCODE_MCP_LEASE_DB")
 ERROR_ROWS = 20_000
 LABELS = {
@@ -131,6 +140,14 @@ def busy_at(turns: list[tuple[int, int]], at: int) -> int:
     return sum(1 for start, end in turns if start <= at < end)
 
 
+def in_burst(sorted_hits: list[int], at: int) -> bool:
+    """True when >= BURST_HITS 1302s (this one included) fall within
+    +-BURST_WINDOW_MS of ``at``: server-side load, not this account's limit."""
+    lo = bisect_left(sorted_hits, at - BURST_WINDOW_MS)
+    hi = bisect_right(sorted_hits, at + BURST_WINDOW_MS)
+    return hi - lo >= BURST_HITS
+
+
 def busy_profile(turns: list[tuple[int, int]], cap: int) -> dict[str, Any]:
     """Average and peak workers busy over the time at least one was, and the share
     of that time spent at or above ``cap``."""
@@ -159,20 +176,32 @@ def analyze(turns: list[tuple[int, int]], errors: list[tuple[int, str]], cap: in
     for _, kind in errors:
         counts[kind] = counts.get(kind, 0) + 1
     hits = [at for at, kind in errors if kind == "concurrency"]
-    busy_at_hits = [busy_at(turns, at) for at in hits]
+    window = sorted(hits)
+    ignored = {"burst": 0, "one_busy": 0}
+    used: list[int] = []
+    for at in hits:
+        if in_burst(window, at):
+            ignored["burst"] += 1
+        elif busy_at(turns, at) <= 1:
+            # one busy worker cannot crowd the account: another client, or z.ai load
+            ignored["one_busy"] += 1
+        else:
+            used.append(at)
+    busy_at_hits = [busy_at(turns, at) for at in used]
     clean_peak = 0
     for start, _ in turns:
         if all(abs(start - at) > CLEAN_MARGIN_MS for at in hits):
             clean_peak = max(clean_peak, busy_at(turns, start))
     estimate = None
     if busy_at_hits:
-        # the request that hit 1302 came from one of the busy workers: the
-        # account carried one fewer, at most
-        estimate = max(1, min(busy_at_hits) - 1)
+        # the request that hit 1302 came from one of the busy workers: the account
+        # carried one fewer, at most; the median rides out stray hits the filters miss
+        estimate = max(1, median_low(busy_at_hits) - 1)
     return {
         "errors": counts,
         "concurrency_hits": len(hits),
         "busy_at_1302": {"min": min(busy_at_hits), "max": max(busy_at_hits)} if busy_at_hits else None,
+        "ignored": ignored,
         "clean_peak": clean_peak,
         "estimate": estimate,
         "busy": busy_profile(turns, cap),
@@ -198,13 +227,21 @@ def render(report: Mapping[str, Any]) -> list[str]:
                                       if errors else "none"))
     if a["busy_at_1302"]:
         lines.append(f"at each 1302     {a['busy_at_1302']['min']}-{a['busy_at_1302']['max']} workers busy")
+    ignored = a["ignored"]
+    parts = []
+    if ignored["burst"]:
+        parts.append(f"{ignored['burst']} in server-side bursts")
+    if ignored["one_busy"]:
+        parts.append(f"{ignored['one_busy']} with ≤1 worker busy")
+    if parts:
+        lines.append("ignored 1302s     " + ", ".join(parts) + " (not this account's concurrency)")
     busy = a["busy"]
     if busy["avg"] is not None:
         lines.append(f"workers busy     avg {busy['avg']:.1f}, peak {busy['peak']}, clean peak {a['clean_peak']};"
                      f" at the cap {_pct(busy['at_cap_share'])} of busy time")
     if a["estimate"] is not None:
-        lines.append(f"limit estimate   about {a['estimate']} at once (measured: 1302 came with"
-                     f" {a['busy_at_1302']['min']} busy)")
+        lines.append(f"limit estimate   about {a['estimate']} at once (median of workers busy at the"
+                     f" counted 1302s, minus one)")
     else:
         lines.append(f"limit estimate   not reached yet; at least {max(1, a['clean_peak'])} ran without a 1302")
     configured = cfg["concurrencyLimit"] or "not set"
