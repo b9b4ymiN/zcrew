@@ -114,6 +114,14 @@ def related(record_cwd: str | None, project: str, cache: dict[str, str | None]) 
     return common is not None and git_common_dir(record_cwd, cache) == common
 
 
+def is_zcode_record(rec: Mapping[str, Any]) -> bool:
+    """A gate record meant for a ZCode worker, not one written for a Codex worker (``zcrew cx``)."""
+    if rec.get("worker") not in (None, "zcode"):
+        return False
+    run_ids = rec.get("runIds") or []
+    return not (run_ids and str(run_ids[0]).startswith("codex_"))
+
+
 def follow(records: list[dict[str, Any]], sessions: list[Any], now_ms: int) -> list[RunState]:
     """Match each record with its ZCode session (its threadId, else the first
     session started in its folder after it) and say where the run stands."""
@@ -264,6 +272,8 @@ def current_runs(cwd: str, env: Mapping[str, str], now_ms: int, cache: dict[str,
         data = compat._read_json(path)
         if not data or data.get("verdicts") or now_ms - int(data.get("startedAt") or 0) > RECORD_MAX_AGE_MS:
             continue
+        if not is_zcode_record(data):
+            continue  # a Codex worker's record has no ZCode session: following it only queues or steals one
         if related(data.get("cwd"), cwd, cache):
             records.append(data)
     if not records:

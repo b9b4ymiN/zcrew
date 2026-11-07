@@ -67,6 +67,17 @@ class FollowTests(unittest.TestCase):
         self.assertEqual((state.state, state.key), ("ended", "sess_a:2:ended"))
 
 
+class IsZcodeRecordTests(unittest.TestCase):
+    def test_worker_field(self) -> None:
+        self.assertTrue(hook.is_zcode_record(record("run_1", "/p", NOW)))  # missing worker = a ZCode record
+        self.assertTrue(hook.is_zcode_record({**record("run_1", "/p", NOW), "worker": "zcode"}))
+        self.assertFalse(hook.is_zcode_record({**record("run_9", "/p", NOW), "worker": "codex"}))
+
+    def test_codex_run_id_prefix(self) -> None:
+        self.assertFalse(hook.is_zcode_record(record("codex_20261106220857_085d", "/p", NOW)))  # legacy: no field
+        self.assertFalse(hook.is_zcode_record({**record("codex_20261106220857_085d", "/p", NOW), "worker": "zcode"}))
+
+
 class StopTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -173,6 +184,24 @@ class StopTests(unittest.TestCase):
             (gate_dir / f"{name}.json").write_text(json.dumps(data), encoding="utf-8")
         env = {**self.env, "ZCREW_ZCODE_DB": str(fx.path)}
         runs = hook.current_runs(str(self.project), env, NOW, {})
+        self.assertEqual([(r.run_id, r.session_id, r.state) for r in runs], [("run_1", "sess_live", "ended")])
+
+    def test_current_runs_ignores_codex_worker_records(self) -> None:
+        fx = Fixture(Path(self._tmp.name))
+        fx.session("sess_live", str(self.project), "Build it", NOW - 5 * MIN, NOW - 5 * MIN)
+        fx.turn("sess_live", "t1", "completed", NOW - 5 * MIN, NOW - 4 * MIN)
+        gate_dir = Path(self.env["ZCODE_COMMANDER_STATE"]) / "gate"
+        gate_dir.mkdir(parents=True)
+        codex = {**record("codex_20261106220857_085d", str(self.project), NOW - 6 * MIN,
+                          thread="0f1e2d3c-4b5a-codex-uuid"), "worker": "codex"}
+        legacy = record("codex_20261106220111_0123", str(self.project), NOW - 6 * MIN)  # old tool: no worker field
+        mine = record("run_1", str(self.project), NOW - 5 * MIN - 1000)
+        for name, data in (("cx_new", codex), ("cx_old", legacy), ("run_1", mine)):
+            (gate_dir / f"{name}.json").write_text(json.dumps(data), encoding="utf-8")
+        env = {**self.env, "ZCREW_ZCODE_DB": str(fx.path)}
+        runs = hook.current_runs(str(self.project), env, NOW, {})
+        # a Codex record's threadId is never in ZCode's db: unfollowed it stays queued forever
+        # or the earliest one steals sess_live, leaving the real ZCode run queued
         self.assertEqual([(r.run_id, r.session_id, r.state) for r in runs], [("run_1", "sess_live", "ended")])
 
 
