@@ -2,6 +2,25 @@
 
 All notable changes to the Claude Commander × ZCode Executor Kit are recorded here.
 
+## Unreleased
+
+Fixes driven by 60 days of real logs across projects (466 worker tasks, 421 gate records): fewer false gate alarms, a named cause for every failed run, and a capacity estimate that survives outliers. Closes the rest of issue #2.
+
+### Fixed
+
+- **`zcrew gate` no longer runs file names as VERIFY commands.** A backticked file or folder inside a VERIFY bullet ("delete `.next` and `tsconfig.tsbuildinfo` first") used to be executed and fail. Such items are now skipped, listed in `gate.warnings` at agent-start and under JUDGMENT. Replayed over 829 recorded VERIFY items: exactly 12 dropped, the other 817 unchanged.
+- **POSIX-style VERIFY commands run on Windows.** `rm -rf …`, `PORT=4541 npm run …` and `test -f …` failed under cmd.exe; they now run through Git for Windows' bash (never WSL's `System32\bash.exe`), and the result says `(via bash)`. Without Git Bash the FAIL carries a hint. VERIFY runs get `stdin=DEVNULL`.
+- **Failed runs say why.** agent-start / agent-wait / agent-observe add a `failure` object (`kind`, `message`, `advice`, `resetsAt`) to failed and timed-out runs: GLM quota (1308–1321, reset shown in local time), 1302, 1305, z.ai network/5xx, model timeout, app-server exit, run lost. When the run's own error is opaque, the newest model error ZCode logged for that session is used (read-only).
+- **The mod no longer calls an observe error "failed".** In the logs, 10 of 18 runs reported as "failed after 0 min" had no model error at all. A run the bridge no longer knows (bridge restart) is now `run lost` with advice; any other agent-observe error fails a run only after three in a row.
+- **`zcrew capacity` estimated "about 1 at once"** because one stray 1302 decided the minimum. 1302s inside a server-side burst (≥20 within ±30 min) and ones with at most one worker busy are now ignored, and the estimate is the median busy count minus one (this machine: 4 instead of 1). The output lists what was ignored.
+- **No UnicodeEncodeError on a cp1252 console or pipe** (issue #2 B): zcrew replaces characters the console cannot show.
+
+### Changed
+
+- `zcrew gate`: test files a worker adds outside SCOPE give a `scope-tests` WARN instead of failing `scope` (DO NOT still fails them). A JUDGMENT line names VERIFY commands the worker's own session never ran (over 50 recent runs: 5 flagged, each confirmed by hand).
+- zcrew mod: the wake message, notification, band and pane show the failure cause (Thai: `โควต้า GLM หมด · รีเซ็ต 15:00`), and for a used-up quota Claude is told to tell the user. Each run's time bar uses its own `TIMEBOX` from agent-start (issue #2 A2).
+- The Codex Stop hook adds a `Cause:` line for failed ZCode runs.
+
 ## 0.12.0 — 2026-11-07
 
 Codex joins the crew as a worker (`zcrew cx`), and the Claude Code mod (0.4.0) follows those runs too.
