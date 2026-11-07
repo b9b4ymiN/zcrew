@@ -520,6 +520,15 @@ class BackgroundTests(CxFixture):
         self.assertEqual(cmd[2], "task")
         self.assertIn("--write", cmd)
 
+    def test_report_dir_ignores_itself_so_gate_never_sees_reports(self) -> None:
+        _path, record = self.run_background()
+        report_dir = Path(record["codex"]["reportPaths"][0]).parent
+        self.assertEqual((report_dir / ".gitignore").read_text(encoding="utf-8"), "*\n")
+        Path(record["codex"]["reportPaths"][0]).write_text("report", encoding="utf-8")
+        status = subprocess.run(["git", "status", "--porcelain", "--untracked-files=all"], cwd=self.repo,
+                                capture_output=True, text=True, check=True).stdout
+        self.assertNotIn(".cx", status)
+
     def test_background_env_has_no_plugin_data_or_session_pin(self) -> None:
         self.run_background()
         self.assertTrue(self.calls)

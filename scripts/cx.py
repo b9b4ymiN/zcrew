@@ -210,6 +210,9 @@ def prepare_report(path: str | None, repo: Path, prompt_path: str) -> Path:
     if report == relative_path(prompt_path, repo):
         raise CxError(f"report path would overwrite prompt: {report}")
     report.parent.mkdir(parents=True, exist_ok=True)
+    ignore = report.parent / ".gitignore"
+    if report.parent == repo / ".cx" and not ignore.exists():
+        ignore.write_text("*\n", encoding="utf-8")  # else zcrew gate counts reports as worker changes
     return report
 
 
