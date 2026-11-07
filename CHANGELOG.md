@@ -2,6 +2,33 @@
 
 All notable changes to the Claude Commander × ZCode Executor Kit are recorded here.
 
+## 0.12.0 — 2026-11-07
+
+Codex joins the crew as a worker (`zcrew cx`), and the Claude Code mod (0.4.0) follows those runs too.
+
+### Added
+
+- **`zcrew cx` — the Codex CLI as a worker.** Until now Codex could only be a commander. A worker contract can now be routed to Codex through the OpenAI Codex plugin for Claude Code (`codex@openai-codex`, its `codex-companion.mjs`; needs Node and the Codex CLI signed in).
+  - `zcrew cx run CONTRACT.md [--write] [--effort E] [--background] [--allow-dirty] [--report PATH]` sends the contract to Codex; `--background` enqueues through the companion and returns at once. `--allow-dirty` exists because the gate cannot review SCOPE files that were already dirty.
+  - `zcrew cx fix RUN CORRECTION.md [--effort E] [--background]` runs the correction on the same Codex thread (`.r2`, `.r3` run ids), falling back to a fresh thread with the original contract and the last report when the thread cannot be resumed.
+  - `zcrew cx audit PROMPT.md [--effort E] [--report PATH]` is a read-only review, foreground.
+  - `zcrew cx gate RUN [--json] [--accept "..."|--reject "..."]` is the same mechanical gate as ZCode runs; every round is a gate record with `"worker": "codex"`.
+  - `zcrew cx status [DIR] [--json] [--active]` lists the repo's Codex runs and settles finished background jobs once (report file, thread id, exit); `--json` is the ASCII JSON feed the mod reads. Reports go to `<repo>/.cx/`.
+- **zcrew mod 0.4.0: Codex runs.** The mod polls `zcrew cx status --json --active` for the session folder (every tick while Codex work is active, else once a minute) and shows Codex cards with a `Codex` tag on the band, pane and wake message. When a Codex run ends it runs the gate and wakes Claude, naming the report file.
+
+### Fixed
+
+- The Codex Stop hook now skips gate records written for Codex workers instead of waiting on them: such records used to stay "queued" forever or claim an unrelated ZCode session. A Codex commander checks its Codex workers with `zcrew cx status`.
+- `<repo>/.cx/` ignores itself (`.cx/.gitignore` = `*`), so the report folder stays out of git and `zcrew gate` never counts it as the worker's changes.
+- Issue #2 A1: `TIMEBOX:` is accepted anywhere in the prompt, and the effective time box is reported back.
+- Issue #2 C: contract headings accept a parenthetical note such as `SCOPE (files)`, with a near-miss warning.
+- Issue #2 D: `zcrew gate` no longer counts commits added after agent-start as the worker's changes; new `--base REV` flag to diff against a chosen base. Issue #2 stays open: A2 (per-run time box in the mod, new defaults) and B (UnicodeEncodeError on cp1252 consoles) are not in this release.
+- A flaky Windows test in test_gate (two records sharing one mtime tick) no longer depends on mtime resolution.
+
+### Changed
+
+- `policy/COMMANDER.md` gains a short *Codex as a worker (optional)* section after *Parallel workers*: same contract and review rules, `zcrew cx gate` as the review gate, corrections through `zcrew cx fix`, and with the mod end the turn after a background dispatch instead of polling.
+
 ## 0.11.0 — 2026-10-13
 
 The Claude Code mod (0.3.0) shows Claude's own usage, the worker cap and stuck runs.
