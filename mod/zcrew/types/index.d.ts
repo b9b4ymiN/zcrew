@@ -1,3 +1,21 @@
+/**
+ * What a running worker is really doing, from `zcrew show <threadId> --json
+ * --last N`. Every field is optional except the whole-session counts: a feed
+ * without file or command activity still carries its totals.
+ */
+export type Live = {
+  /** The file the worker last edited or wrote, size notes stripped. */
+  editing?: string
+  /** The last command it ran, and how that went. */
+  command?: { text: string; state: 'running' | 'ok' | 'fail' }
+  /** When the worker last acted, epoch ms. */
+  lastAt?: number
+  /** Whole-session totals (never limited by --last). */
+  files: number
+  commands: number
+  errors: number
+}
+
 /** One worker run as the mod sees it. Times are epoch milliseconds. */
 export type RunView = {
   runId: string
@@ -34,6 +52,8 @@ export type RunView = {
   /** Background jobs still alive after the worker's turn ended (status `background`). */
   background?: { taskId: string; description: string }[]
   backgroundSince?: number
+  /** Live activity of a running worker, refreshed by the tick from `zcrew show`. */
+  live?: Live
 }
 
 declare module 'claude-code' {

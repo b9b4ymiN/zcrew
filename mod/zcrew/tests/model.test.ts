@@ -3,10 +3,10 @@ import { describe, expect, test } from 'claude-code/testing'
 import type { RunView } from '../types'
 import type { Seg } from '../hooks/model'
 import {
-  BACKGROUND_GRACE_MS, OBSERVE_ERRORS_TO_FAIL, STALL_MS, activityOf, bandLines, bandRows, bandVisible, boxFromConfig, boxOf, capText,
-  chromeText, detailOf, failureLabel, gateSummary, iconOf, isStalled, levelOf, liveJobs, mergeCodex, meter, notifyText, observeError,
-  parseFailure, parseSnapshot, queueReason, recordIdOf, slots, slotSquares, stageOf, statusText, titleOf, turnOver,
-  usageText, wakeMessage,
+  BACKGROUND_GRACE_MS, OBSERVE_ERRORS_TO_FAIL, STALL_MS, activityOf, agoText, bandLines, bandRows, bandVisible, boxFromConfig, boxOf, capText,
+  chromeText, detailOf, failureLabel, fitPath, fitText, gateSummary, iconOf, isStalled, levelOf, liveJobs, liveOf, liveTotals, mergeCodex, meter,
+  notifyText, observeError, paneSections, parseFailure, parseSnapshot, queueReason, recordIdOf, slots, slotSquares, stageOf, statusText, titleOf,
+  turnOver, usageText, wakeMessage,
 } from '../hooks/model'
 
 const BOX = 20 * 60_000
@@ -421,6 +421,82 @@ describe('meters, levels and slots', () => {
     expect(slotSquares(2, 5)).toBe('◼◼◻◻◻')
     expect(slotSquares(0, 3)).toBe('◻◻◻')
     expect(slotSquares(7, 5)).toBe('◼◼◼◼◼')
+  })
+})
+
+describe('live worker card', () => {
+  const feed = (over: Record<string, unknown> = {}) => ({
+    id: 'th_7', status: 'running',
+    activity: [
+      { at_ms: NOW - 60_000, kind: 'file_read', status: 'completed', summary: 'README.md', tool: 'Read', detail: '' },
+      { at_ms: NOW - 45_000, kind: 'command', status: 'completed', summary: 'python -m py_compile scripts/*.py', tool: 'Bash', detail: 'ok' },
+      { at_ms: NOW - 40_000, kind: 'file_edit', status: 'completed', summary: 'scripts/gate.py (+12 -3)', tool: 'Edit', detail: '' },
+      { at_ms: NOW - 20_000, kind: 'file_write', status: 'error', summary: 'mod/zcrew/hooks/model.ts (210 lines) !! disk full', tool: 'Write', detail: 'disk full' },
+      { at_ms: NOW - 10_000, kind: 'command', status: 'running', summary: 'python -m unittest discover', tool: 'Bash', detail: '' },
+    ],
+    counts: { files_edited: 3, commands: 5, errors: 1 },
+    last_at_ms: NOW - 10_000,
+    ...over,
+  })
+
+  test('liveOf takes the newest file and command, notes stripped, counts whole-session', () => {
+    expect(liveOf(feed(), NOW)).toEqual({
+      editing: 'mod/zcrew/hooks/model.ts', // the write wins over the older edit, its size note and error gone
+      command: { text: 'python -m unittest discover', state: 'running' },
+      lastAt: NOW - 10_000,
+      files: 3, commands: 5, errors: 1,
+    })
+  })
+
+  test('command outcomes and a feed without counts or last_at_ms', () => {
+    const only = (item: Record<string, unknown>) => feed({ activity: [item] })
+    expect(liveOf(only({ at_ms: NOW, kind: 'command', status: 'error', summary: 'npm test', tool: 'Bash', detail: 'exit 1' }), NOW)?.command)
+      .toEqual({ text: 'npm test', state: 'fail' })
+    expect(liveOf(only({ at_ms: NOW, kind: 'command', status: 'completed', summary: 'npm test', tool: 'Bash', detail: 'ok' }), NOW)?.command)
+      .toEqual({ text: 'npm test', state: 'ok' })
+    const bare = liveOf(feed({ activity: [], counts: undefined, last_at_ms: null }), NOW)
+    expect(bare).toEqual({ files: 0, commands: 0, errors: 0 }) // well-formed but empty: no rows to draw
+  })
+
+  test('bad input is undefined; a future last_at_ms is clamped to now', () => {
+    expect(liveOf('not json', NOW)).toBeUndefined()
+    expect(liveOf({ activity: 'no' }, NOW)).toBeUndefined()
+    expect(liveOf({ status: 'running' }, NOW)).toBeUndefined() // no activity array
+    expect(liveOf(undefined, NOW)).toBeUndefined()
+    expect(liveOf(feed({ last_at_ms: NOW + 5_000 }), NOW)?.lastAt).toBe(NOW)
+  })
+
+  test('paths trim from the front after a slash, text from the end', () => {
+    expect(fitPath('mod/zcrew/hooks/model.ts', 30)).toBe('mod/zcrew/hooks/model.ts')
+    expect(fitPath('mod/zcrew/hooks/model.ts', 16)).toBe('…/hooks/model.ts')
+    expect(fitPath('verylongname.py', 10)).toBe('…ngname.py') // no slash: the end of the name survives
+    expect(fitText('python -m unittest discover', 40)).toBe('python -m unittest discover')
+    expect(fitText('python -m unittest discover', 12)).toBe('python -m u…')
+  })
+
+  test('sections in draw order, sorted inside, empty ones gone', () => {
+    const groups = paneSections([
+      run({ runId: 'ok', status: 'completed', verdict: 'accept', endedAt: NOW }),
+      run({ runId: 'bad', status: 'failed', endedAt: NOW }),
+      run({ runId: 'rev', status: 'completed' }),
+      run({ runId: 'q', status: 'queued' }),
+      run({ runId: 'go' }),
+    ], NOW, BOX)
+    expect(groups.map(g => g.key)).toEqual(['active', 'attention', 'review', 'done'])
+    expect(groups[0].runs.map(r => r.runId)).toEqual(['q', 'go']) // sorted(): queued ahead of running
+    expect(groups[1].runs.map(r => r.runId)).toEqual(['bad'])
+    expect(groups[3].runs.map(r => r.runId)).toEqual(['ok'])
+    expect(paneSections([run({ runId: 'go' })], NOW, BOX).map(g => g.key)).toEqual(['active'])
+  })
+
+  test('ages and totals in plain words', () => {
+    expect(agoText(12_000, 'th')).toBe('12 วิที่แล้ว')
+    expect(agoText(3 * 60_000, 'th')).toBe('3 นาทีที่แล้ว')
+    expect(agoText(12_000, 'en')).toBe('12s ago')
+    expect(agoText(3 * 60_000, 'en')).toBe('3 min ago')
+    expect(liveTotals({ files: 3, commands: 5 }, 'th')).toBe(' · แก้ 3 ไฟล์ · รัน 5 ครั้ง')
+    expect(liveTotals({ files: 3, commands: 5 }, 'en')).toBe(' · 3 files · 5 runs')
+    expect(liveTotals({ files: 0, commands: 0 }, 'th')).toBe('')
   })
 })
 

@@ -461,7 +461,7 @@ test('a codex correction replaces its base card', { timeoutMs: 20000 }, async ($
   await clock.advance(15_000)
   const pane = await $.ui.mount({ plugin: 'zcrew', surface: 'terminal', ...PANE } as never)
   expect(await pane.find({ type: 'Text', text: /Codex · Fix the gate · แก้รอบ 1/ } as never)).toBeDefined()
-  expect(await pane.find({ type: 'Text', text: /รวม 1 งาน/ } as never)).toBeDefined() // the base card is gone, not stacked
+  expect(await pane.find({ type: 'Text', text: /1 งาน · ช่าง/ } as never)).toBeDefined() // the base card is gone, not stacked
   await pane.unmount()
 })
 
@@ -542,4 +542,75 @@ test('a failing or garbage codex feed changes nothing and throws nothing', async
   const band = await $.ui.mount({ plugin: 'zcrew', surface: 'terminal', ...BAND } as never)
   expect(await band.find({ type: 'Text', text: /zcrew/ } as never)).toBeUndefined() // no card appeared
   await band.unmount()
+})
+
+// The live card's feed: `zcrew show <threadId> --json --last 20`, as the CLI prints it.
+const SHOW_JSON = JSON.stringify({
+  id: 'th_7', status: 'running',
+  activity: [
+    { at_ms: 960_000, kind: 'file_edit', status: 'completed', summary: 'scripts/gate.py (+12 -3)', tool: 'Edit', detail: '' },
+    { at_ms: 995_000, kind: 'command', status: 'completed', summary: 'python -m unittest discover', tool: 'Bash', detail: 'Ran 42 tests OK' },
+  ],
+  counts: { files_edited: 3, commands: 5, errors: 0 },
+  last_at_ms: 1_003_000,
+})
+
+test('the pane shows live activity sections, and a finished run takes one line', { timeoutMs: 20000 }, async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  mock.env(on, { HOME: '/home/u' })
+  const showCalls: string[] = []
+  let started = 0
+  on('tool.call', { tool: START }, () => {
+    started += 1
+    return { result: {}, text: JSON.stringify({ runId: `run_${started}`, status: 'running', revision: 1 }) }
+  })
+  // Observes arrive in card order: run_1 first, run_2 once (it turns terminal),
+  // then run_1 alone — the tick skips finished runs.
+  let observes = 0
+  on('mcp.call', () => {
+    const reply = observes === 1
+      ? { runId: 'run_2', status: 'completed', revision: 2 }
+      : { runId: 'run_1', status: 'running', revision: 2 + observes }
+    observes += 1
+    return { value: { content: [{ type: 'text', text: JSON.stringify(reply) }], isError: false } } as never
+  })
+  on('process.run', ($, e) => {
+    const argv = [...(e as unknown as { argv: readonly string[] }).argv]
+    if (argv.includes('show')) {
+      showCalls.push(argv.join(' '))
+      return { value: { exitCode: 0, stdout: SHOW_JSON, stderr: '' } } as never
+    }
+    if (argv.includes('cx')) return { value: { exitCode: 0, stdout: '{"runs":[]}', stderr: '' } } as never
+    if (argv.includes('capacity')) return { value: { exitCode: 0, stdout: CAP_JSON(false), stderr: '' } } as never
+    return { value: { exitCode: 0, stdout: '{}', stderr: '' } } as never // the gate of the finished run
+  })
+  on('fs.read', ($, e) => {
+    const path = String((e as unknown as { path: string }).path).replace(/\\/g, '/').toLowerCase()
+    return path.endsWith('gate/run_2.json')
+      ? { value: JSON.stringify({ verdicts: [{ verdict: 'accept' }] }) } as never // `zcrew gate run_2 --accept` already recorded
+      : { deny: 'absent' } as never
+  })
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('command.register', () => ({ value: {} }) as never)
+  on('prompt.submit', ($, e) => ({ text: e.text }) as never)
+  for (const op of ['ui.status', 'ui.toast', 'ui.open', 'ui.close', 'ui.notify'] as const) on(op, () => ({ value: undefined }) as never)
+  await $.session.start({ cwd: '/work' } as never)
+  await $.tool.call({ tool: START, prompt: CONTRACT, cwd: '/work', threadId: 'th_7' } as never)
+  await $.tool.call({ tool: START, prompt: 'OBJECTIVE\nSecond task.', cwd: '/work' } as never)
+  await clock.advance(15_000) // the tick reads `zcrew show` for the run with a thread
+  await clock.advance(15_000) // one more: the live patch has surely landed
+  expect(showCalls.length).toBeGreaterThan(0)
+  expect(showCalls[0]).toContain('show th_7 --json --last 20')
+  const pane = await $.ui.mount({ plugin: 'zcrew', surface: 'terminal', ...PANE } as never)
+  expect(await pane.find({ type: 'Text', text: /━ กำลังทำ/ } as never)).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /✎ แก้/ } as never)).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /scripts\/gate\.py/ } as never)).toBeDefined() // the size note is stripped
+  expect(await pane.find({ type: 'Text', text: /\$ รัน/ } as never)).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /python -m unittest/ } as never)).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /◷ ล่าสุด/ } as never)).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /แก้ 3 ไฟล์ · รัน 5 ครั้ง/ } as never)).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /━ เสร็จแล้ว/ } as never)).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /✓ Second task\./ } as never)).toBeDefined() // one line: title left
+  expect(await pane.find({ type: 'Text', text: 'ผ่าน' } as never)).toBeDefined() // its state right, no card rows
+  await pane.unmount()
 })

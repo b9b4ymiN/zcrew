@@ -1,5 +1,5 @@
 // Pure logic of the zcrew mod: no `$`, so every rule here is testable on its own.
-import type { RunView } from '../types'
+import type { Live, RunView } from '../types'
 
 export type Lang = 'th' | 'en'
 
@@ -32,6 +32,8 @@ const WORDS = {
     finished: 'เสร็จ', today: 'รวม', workers: 'ช่าง',
     queuedFull: 'รอคิว (เต็มเพดาน)', waitFolder: 'รอโฟลเดอร์ว่าง', silent: 'เงียบ',
     lingering: 'งานเสร็จแต่มีโปรเซสค้าง',
+    paneWorking: 'กำลังทำ', paneAttention: 'ต้องดู', paneReview: 'รอตรวจ', paneDone: 'เสร็จแล้ว',
+    paneEdit: 'แก้', paneRun: 'รัน', paneLast: 'ล่าสุด', paneFiles: 'ไฟล์', paneTimes: 'ครั้ง',
     failures: {
       quota: 'โควต้า GLM หมด', concurrency: 'worker เกินโควต้าพร้อมกัน (1302)', overload: 'z.ai ขัดข้อง',
       network: 'z.ai ขัดข้อง', model_timeout: 'โมเดลไม่ตอบ', app_server_exited: 'ZCode app-server ล่ม',
@@ -48,6 +50,8 @@ const WORDS = {
     finished: 'done', today: 'total', workers: 'workers',
     queuedFull: 'queued (worker cap full)', waitFolder: 'waiting for the folder', silent: 'silent',
     lingering: 'done, but background jobs still run',
+    paneWorking: 'Working', paneAttention: 'Needs you', paneReview: 'To review', paneDone: 'Done',
+    paneEdit: 'edit', paneRun: 'run', paneLast: 'last', paneFiles: 'files', paneTimes: 'runs',
     failures: {
       quota: 'GLM quota used up', concurrency: 'too many workers at once (1302)', overload: 'z.ai error',
       network: 'z.ai error', model_timeout: 'model timed out', app_server_exited: 'ZCode app-server died',
@@ -114,7 +118,7 @@ export function activityOf(run: Pick<RunView, 'tools' | 'status' | 'phase'>, lan
 
 export function bar(fraction: number, width = 10): string {
   const filled = Math.max(0, Math.min(width, Math.round(fraction * width)))
-  return '▓'.repeat(filled) + '░'.repeat(width - filled)
+  return '█'.repeat(filled) + '░'.repeat(width - filled)
 }
 
 /** A mini meter of a fill: 42 at width 5 -> `▰▰▱▱▱`, clamped to the width. */
@@ -143,6 +147,11 @@ export function slotSquares(used: number, cap: number): string {
 }
 
 export const minutes = (ms: number) => Math.max(0, Math.round(ms / 60000))
+
+const THAI_MARK = /[\u0E31\u0E34-\u0E3A\u0E47-\u0E4E]/g
+
+/** Rough terminal width of a string: Thai combining marks take no column. */
+export const widthOf = (text: string): number => text.replace(THAI_MARK, '').length
 
 export const isActive = (run: RunView) => !TERMINAL.has(run.status)
 
@@ -365,6 +374,95 @@ export function capSegs(cap: CapView, lang: Lang): Seg[] {
     { text: ` ${cap.used}/${cap.cap}`, color: 'subtle' },
     ...(cap.backoff ? [{ text: ' ⚠1302', color: 'warning' }] : []),
   ]
+}
+
+/** Size notes the activity feed appends to a file summary: ` (+3 -1)`, ` (12 lines)`, ` !! err`. */
+const EDIT_NOTE = / \(\+\d+ -\d+\)( !! .*)?$/
+const WRITE_NOTE = / \(\d+ lines\)( !! .*)?$/
+
+/**
+ * Live activity out of `zcrew show <threadId> --json --last N`: the newest file
+ * edited or written (notes stripped) and the newest command with its outcome,
+ * plus the whole-session counts. Anything but a well-formed feed is undefined.
+ */
+export function liveOf(json: unknown, now: number): Live | undefined {
+  const data = parseSnapshot(json)
+  if (!data || !Array.isArray(data.activity)) return undefined
+  const items = data.activity as unknown[]
+  let editing: string | undefined
+  let command: Live['command'] | undefined
+  for (let i = items.length - 1; i >= 0; i--) { // newest last: walk back for the newest of each
+    const item = parseSnapshot(items[i])
+    if (!item) continue
+    const kind = String(item.kind ?? '')
+    const summary = typeof item.summary === 'string' ? item.summary : ''
+    if (editing === undefined && summary && (kind === 'file_edit' || kind === 'file_write')) {
+      editing = summary.replace(EDIT_NOTE, '').replace(WRITE_NOTE, '')
+    }
+    if (command === undefined && summary && kind === 'command') {
+      const status = String(item.status ?? '')
+      const state = status === 'running' ? 'running' : status === 'error' || status === 'failed' ? 'fail' : 'ok'
+      command = { text: summary, state }
+    }
+    if (editing !== undefined && command !== undefined) break
+  }
+  const counts = parseSnapshot(data.counts)
+  const count = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.trunc(value) : 0)
+  const live: Live = { files: count(counts?.files_edited), commands: count(counts?.commands), errors: count(counts?.errors) }
+  if (editing !== undefined) live.editing = editing
+  if (command !== undefined) live.command = command
+  if (typeof data.last_at_ms === 'number' && Number.isFinite(data.last_at_ms)) live.lastAt = Math.min(data.last_at_ms, now)
+  return live
+}
+
+/** Totals tail for the live card's last row: ` · แก้ 3 ไฟล์ · รัน 5 ครั้ง`, empty when nothing happened yet. */
+export function liveTotals(live: Pick<Live, 'files' | 'commands'>, lang: Lang): string {
+  const w = words(lang)
+  const parts = [
+    live.files > 0 ? (lang === 'th' ? `${w.paneEdit} ${live.files} ${w.paneFiles}` : `${live.files} ${w.paneFiles}`) : '',
+    live.commands > 0 ? (lang === 'th' ? `${w.paneRun} ${live.commands} ${w.paneTimes}` : `${live.commands} ${w.paneTimes}`) : '',
+  ].filter(part => part.length > 0)
+  return parts.length > 0 ? ` · ${parts.join(' · ')}` : ''
+}
+
+/** A path kept under `width` by trimming the front, after a slash when it can: `…/hooks/model.ts`. */
+export function fitPath(path: string, width: number): string {
+  const w = Math.max(1, Math.trunc(width))
+  if (path.length <= w) return path
+  const tail = path.slice(path.length - (w - 1))
+  const slash = tail.indexOf('/')
+  return '…' + (slash > 0 ? tail.slice(slash) : tail)
+}
+
+/** Text kept under `width` by trimming the end with an ellipsis. */
+export function fitText(text: string, width: number): string {
+  const w = Math.max(1, Math.trunc(width))
+  return text.length <= w ? text : text.slice(0, w - 1) + '…'
+}
+
+/** Age in plain words: `12 วิที่แล้ว` / `3 นาทีที่แล้ว`. */
+export function agoText(ms: number, lang: Lang): string {
+  const seconds = Math.max(0, Math.round(ms / 1000))
+  if (seconds < 60) return lang === 'th' ? `${seconds} วิที่แล้ว` : `${seconds}s ago`
+  return lang === 'th' ? `${minutes(ms)} นาทีที่แล้ว` : `${minutes(ms)} min ago`
+}
+
+/** The pane's sections, in draw order: working first, finished last; empty ones drop out. */
+export type PaneGroupKey = 'active' | 'attention' | 'review' | 'done'
+export type PaneGroup = { key: PaneGroupKey; runs: RunView[] }
+
+export function paneSections(runs: RunView[], now: number, boxMs: number): PaneGroup[] {
+  const groups: Record<PaneGroupKey, RunView[]> = { active: [], attention: [], review: [], done: [] }
+  for (const run of sorted(runs, now, boxMs)) {
+    const stage = stageOf(run, now, boxMs)
+    if (stage === 'running' || stage === 'near' || stage === 'queued') groups.active.push(run)
+    else if (stage === 'attention') groups.attention.push(run)
+    else if (stage === 'review') groups.review.push(run)
+    else groups.done.push(run) // accepted | rejected
+  }
+  return (['active', 'attention', 'review', 'done'] as const)
+    .filter(key => groups[key].length > 0)
+    .map(key => ({ key, runs: groups[key] }))
 }
 
 /** The band as colored rows: one summary line, then the runs that need someone, most urgent first. */

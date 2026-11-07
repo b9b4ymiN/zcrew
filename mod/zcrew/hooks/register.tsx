@@ -28,11 +28,11 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { RunView } from '../types'
 import {
   HANDS_FREE_LIMIT, SERVER, TERMINAL,
-  bandRows, bandVisible, bar, boxFromConfig, boxOf, capSegs, chromeText, detailOf, gateSummary, handsFreeNote, iconOf,
-  isActive, isStalled, levelOf, liveJobs, mergeCodex, minutes, notifyText, observeError, parseFailure, parseSnapshot, queueReason, recordIdOf, sorted, stageColor, stageOf,
-  statusText, titleOf, turnOver, usageText, wakeMessage, words,
+  agoText, bandRows, bandVisible, bar, boxFromConfig, boxOf, capSegs, chromeText, detailOf, fitPath, fitText, gateSummary, handsFreeNote, iconOf,
+  isActive, isStalled, levelOf, liveJobs, liveOf, liveTotals, mergeCodex, minutes, notifyText, observeError, paneSections, parseFailure, parseSnapshot, queueReason, recordIdOf, stageColor, stageOf,
+  statusText, titleOf, turnOver, usageText, wakeMessage, widthOf, words,
 } from './model'
-import type { CapView, Lang, UsageView } from './model'
+import type { CapView, Lang, PaneGroupKey, UsageView } from './model'
 
 const PANE = 'zcrew'
 const TICK_MS = 15_000
@@ -40,6 +40,9 @@ const WAKE_DEBOUNCE_MS = 20_000
 const GATE_TIMEOUT_MS = 600_000
 const CAP_TIMEOUT_MS = 10_000
 const CX_TIMEOUT_MS = 10_000
+const SHOW_TIMEOUT_MS = 5_000
+// Column where the live card's row values (file, command, age) start.
+const LABEL_W = 8
 // How long after session start, or after a feed that had runs, the Codex feed
 // is polled every tick; outside these windows one poll per minute suffices.
 const CX_EAGER_MS = 2 * 60_000
@@ -63,6 +66,7 @@ const ctx = {
   quickWaits: new Map<string, number>(),
   observeErrors: new Map<string, number>(),
   gating: new Set<string>(),
+  living: new Set<string>(),
   usage: undefined as UsageView | undefined,
   cap: undefined as CapView | undefined,
   capping: false,
@@ -131,6 +135,26 @@ async function runGate($: EngineInterface, run: RunView): Promise<void> {
     // no gate (zcrew missing, no record, timed out): the wake message says so
   } finally {
     ctx.gating.delete(run.runId)
+  }
+}
+
+// One `zcrew show <threadId> --json --last 20` per run at a time: the live
+// card's current file, last command and totals. zcrew missing or slow just
+// leaves the card without those rows; the tick never waits on it.
+async function readLive($: EngineInterface, run: RunView): Promise<void> {
+  if (!run.threadId || ctx.living.has(run.runId)) return
+  ctx.living.add(run.runId)
+  try {
+    const res = await $.process.run(await zcrewArgv($, ['show', run.threadId, '--json', '--last', '20']), {
+      cwd: run.cwd, timeoutMs: SHOW_TIMEOUT_MS,
+    })
+    if (res.exitCode !== 0) return
+    const live = liveOf(res.stdout, await $.clock.now())
+    if (live) await patch($, run.runId, { live })
+  } catch {
+    // no feed this tick: the card keeps its rows from the last good one
+  } finally {
+    ctx.living.delete(run.runId)
   }
 }
 
@@ -306,6 +330,7 @@ async function tick($: EngineInterface): Promise<void> {
       }
       await patch($, run.runId, change)
       const next = { ...run, ...change }
+      if (!TERMINAL.has(status) && next.threadId) void readLive($, next)
       if (TERMINAL.has(status) || (turnOver(next, now) && !run.woke && !run.endedAt)) {
         if (!TERMINAL.has(status)) await patch($, run.runId, { endedAt: now })
         void scheduleWake($, { ...next, endedAt: next.endedAt ?? now })
@@ -476,34 +501,82 @@ export const register: Register = (on, options) => {
     const now = await $.clock.now()
     const w = words(ctx.lang)
     if (list.length === 0) return <Text dimColor>{w.none}</Text>
-    const width = Math.max(10, Math.min(10, e.props.bodyColumns - 14))
+    const paneW = Math.max(24, e.props.bodyColumns || 40)
+    const barW = Math.max(8, Math.min(20, paneW - 18))
+    const padLabel = (label: string) => label + ' '.repeat(Math.max(1, LABEL_W - widthOf(label)))
+    const titles: Record<PaneGroupKey, string> = {
+      active: w.paneWorking, attention: w.paneAttention, review: w.paneReview, done: w.paneDone,
+    }
+    const capList = ctx.cap ? capSegs(ctx.cap, ctx.lang).filter(seg => seg.text.length > 0) : []
+    const headPad = capList.length > 0 ? Math.max(1, paneW - widthOf('ZCREW') - widthOf(capList.map(seg => seg.text).join(''))) : 0
     const workMs = list.reduce((sum, r) => sum + ((r.endedAt ?? now) - (r.runningSince ?? r.startedAt)), 0)
     return (
       <Box flexDirection="column">
-        {ctx.cap ? (
-          <Box flexDirection="row" marginBottom={1}>
-            {capSegs(ctx.cap, ctx.lang).filter(seg => seg.text.length > 0).map((seg, i) => (
-              <Text key={`c${i}`} color={seg.color} bold>{seg.text}</Text>
-            ))}
+        <Box flexDirection="row" marginBottom={1}>
+          <Text bold>ZCREW</Text>
+          {capList.length > 0 ? (
+            <>
+              <Text>{' '.repeat(headPad)}</Text>
+              {capList.map((seg, i) => <Text key={`c${i}`} color={seg.color} bold>{seg.text}</Text>)}
+            </>
+          ) : null}
+        </Box>
+        {paneSections(list, now, ctx.boxMs).map((group, gi) => (
+          <Box key={group.key} flexDirection="column" marginTop={gi > 0 ? 1 : 0}>
+            <Text color="subtle">━ {titles[group.key]} {'━'.repeat(Math.max(1, paneW - widthOf(titles[group.key]) - 3))}</Text>
+            {group.runs.map(run => {
+              const stage = stageOf(run, now, ctx.boxMs)
+              const title = `${run.worker === 'codex' ? 'Codex · ' : ''}${run.title}${run.round ? ` · ${w.round} ${run.round}` : ''}`
+              if (group.key !== 'active') { // one line: icon + title left, state right
+                const state = detailOf(run, now, ctx.boxMs, ctx.lang)
+                const left = fitText(`${iconOf(run, now, ctx.boxMs)} ${title}`, Math.max(8, paneW - widthOf(state) - 2))
+                return (
+                  <Box key={run.runId} flexDirection="row">
+                    <Text bold color={stageColor(stage)} wrap="truncate-end">{left}</Text>
+                    <Text>{' '.repeat(Math.max(1, paneW - widthOf(left) - widthOf(state)))}</Text>
+                    <Text dimColor wrap="truncate-end">{state}</Text>
+                  </Box>
+                )
+              }
+              const since = run.runningSince ?? run.startedAt
+              const boxMs = boxOf(run, ctx.boxMs)
+              const fill = Math.min(1, (now - since) / boxMs)
+              const live = run.live
+              const hasLiveRow = live !== undefined && (live.editing !== undefined || live.command !== undefined || live.lastAt !== undefined)
+              const command = live?.command
+              return (
+                <Box key={run.runId} flexDirection="column" marginBottom={1}>
+                  <Text bold wrap="truncate-end" color={stageColor(stage)}>{iconOf(run, now, ctx.boxMs)} {title}</Text>
+                  {stage === 'running' || stage === 'near' ? (
+                    <Text color={levelOf(fill * 100)}>{'  '}{bar(fill, barW)} {Math.round(fill * 100)}% · {minutes(now - since)}/{minutes(boxMs)} {ctx.lang === 'th' ? w.min : 'min'}</Text>
+                  ) : null}
+                  {live?.editing !== undefined ? (
+                    <Box flexDirection="row">
+                      <Text color="subtle">{'  '}{padLabel(`✎ ${w.paneEdit}`)}</Text>
+                      <Text wrap="truncate-end">{fitPath(live.editing, paneW - LABEL_W - 2)}</Text>
+                    </Box>
+                  ) : null}
+                  {command !== undefined ? (
+                    <Box flexDirection="row">
+                      <Text color="subtle">{'  '}{padLabel(`$ ${w.paneRun}`)}</Text>
+                      <Text wrap="truncate-end">{fitText(command.text, paneW - LABEL_W - 4)}</Text>
+                      {command.state === 'running'
+                        ? <Text color="subtle">…</Text>
+                        : command.state === 'fail'
+                          ? <Text color="error"> ✗</Text>
+                          : <Text color="success"> ✓</Text>}
+                    </Box>
+                  ) : null}
+                  {live?.lastAt !== undefined ? (
+                    <Text dimColor wrap="truncate-end">{'  '}{padLabel(`◷ ${w.paneLast}`)}{agoText(now - live.lastAt, ctx.lang)}{liveTotals(live, ctx.lang)}</Text>
+                  ) : null}
+                  {!hasLiveRow ? <Text dimColor wrap="wrap">{'  '}{detailOf(run, now, ctx.boxMs, ctx.lang)}</Text> : null}
+                </Box>
+              )
+            })}
           </Box>
-        ) : null}
-        {sorted(list, now, ctx.boxMs).map(run => {
-          const since = run.runningSince ?? run.startedAt
-          const boxMs = boxOf(run, ctx.boxMs)
-          const fill = Math.min(1, (now - since) / boxMs)
-          return (
-            <Box key={run.runId} flexDirection="column" marginBottom={1}>
-              <Text bold wrap="truncate-end" color={stageColor(stageOf(run, now, ctx.boxMs))}>
-                {iconOf(run, now, ctx.boxMs)} {run.worker === 'codex' ? 'Codex · ' : ''}{run.title}{run.round ? ` · ${w.round} ${run.round}` : ''}
-              </Text>
-              {isActive(run)
-                ? <Text color={levelOf(fill * 100)}>{'   '}{bar(fill, width)} {minutes(now - since)}/{minutes(boxMs)}</Text>
-                : null}
-              <Text dimColor wrap="wrap">{'   '}{detailOf(run, now, ctx.boxMs, ctx.lang)}</Text>
-            </Box>
-          )
-        })}
-        <Text dimColor>{w.today} {list.length} {w.tasks} · {w.workers} {minutes(workMs)} {ctx.lang === 'th' ? w.min : 'min'}</Text>
+        ))}
+        <Text dimColor>{list.length} {w.tasks} · {w.workers} {minutes(workMs)} {ctx.lang === 'th' ? w.min : 'min'}</Text>
       </Box>
     )
   })
