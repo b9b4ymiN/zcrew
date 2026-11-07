@@ -32,7 +32,7 @@ import os
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable, Mapping
@@ -86,6 +86,7 @@ class RunState:
     status: str  # ZCode's session status, or "queued"
     started_ms: int
     ended_ms: int | None
+    reason: str | None = None  # classified cause of a failed run, when known
 
     @property
     def key(self) -> str:
@@ -197,6 +198,25 @@ def _minutes(ms: int) -> int:
     return max(0, round(ms / 60000))
 
 
+def failure_reason(run: RunState, env: Mapping[str, str]) -> str | None:
+    """Why a failed run failed, as one line for the wake message; None unless the
+    status is failed/timed_out and something names the cause (the bridge's
+    classifier on ZCode's own error for the session)."""
+    if run.status not in ("failed", "timed_out"):
+        return None
+    try:
+        compat = _load("bridge_compat")
+        db = _load("zcode_activity").default_db_path(env)
+        usage_error = compat.latest_usage_error(db, run.session_id or "")
+        failure = compat.classify_failure(run.status, None, usage_error)
+        # nothing named a cause: the generic "Run failed." would only repeat the status line
+        if failure and (usage_error or failure.get("kind") != "other"):
+            return f"{failure['message']} -> {failure['advice']}"
+    except Exception:  # noqa: BLE001 - the cause must never break the report
+        return None
+    return None
+
+
 def wake_message(news: list[tuple[RunState, str]], active: list[RunState], now_ms: int) -> str:
     lines = ["[zcrew] Worker run(s) need you. Continue the review:"]
     for run, gate in news:
@@ -207,6 +227,8 @@ def wake_message(news: list[tuple[RunState, str]], active: list[RunState], now_m
                          " start it again (or send a correction to the same thread).")
         else:
             lines.append(f'- {run.run_id} "{run.title}": {run.status} after {took} min; {gate}.')
+            if run.reason:
+                lines.append(f"  Cause: {run.reason}")
     if active:
         lines.append("Still running: " + ", ".join(f'{r.run_id} "{r.title}"' for r in active) + ".")
     lines.append("Review each ended run with `zcrew gate <runId>` (its VERIFY results count as evidence), fetch the"
@@ -311,6 +333,8 @@ def stop(
         if news:
             reported = []
             for r in news:
+                reason = failure_reason(r, env)
+                r = replace(r, reason=reason) if reason else r
                 # several runs ending together must not push the hook past its timeout
                 room = HOOK_TIMEOUT_SECONDS - 60 - (clock() - began) >= GATE_TIMEOUT_SECONDS
                 reported.append((r, gate(r) if room and r.state == "ended" and r.status == "completed" else None))

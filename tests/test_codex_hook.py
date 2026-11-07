@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,6 +16,18 @@ from test_zcode_activity import Fixture, _load
 hook = _load("codex_hook")
 MIN = 60_000
 NOW = 1_800_000_000_000
+QUOTA_1308 = (
+    "[1308][Usage limit reached for 5 hour. Your limit will reset at 2026-10-23 16:00:21]"
+    "[202610231508096f2364f7f30b4390]"
+)
+
+
+def usage_db(db: Path, rows: list[tuple]) -> None:
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE model_usage (session_id TEXT, started_at INTEGER, error_type TEXT, error_message TEXT)")
+    conn.executemany("INSERT INTO model_usage VALUES (?,?,?,?)", rows)
+    conn.commit()
+    conn.close()
 
 
 def session(sid: str, directory: str, status: str, created: int, updated: int, title: str = "Task") -> SimpleNamespace:
@@ -87,7 +100,8 @@ class StopTests(unittest.TestCase):
         (self.project / ".git").mkdir()
         (self.project / "AGENTS.override.md").write_text("<!-- zcrew-codex:begin policy-sha256=x -->\n",
                                                          encoding="utf-8")
-        self.env = {"ZCODE_COMMANDER_STATE": str(root / "state")}
+        self.env = {"ZCODE_COMMANDER_STATE": str(root / "state"),
+                    "ZCREW_ZCODE_DB": str(root / "no-db.sqlite")}  # never the user's real db
         self.t = float(NOW // 1000)
         self.sleeps = 0
         self.gated: list[str] = []
@@ -146,6 +160,30 @@ class StopTests(unittest.TestCase):
         self.assertIn("STALLED", reason)
         self.assertIn('run_f "T run_f": failed after 10 min; .', reason)
         self.assertEqual(self.gated, [])  # no gate for a failed or stalled run
+
+    def test_failed_run_names_its_cause(self) -> None:
+        db = Path(self._tmp.name) / "usage.sqlite"
+        usage_db(db, [("sess_run_f", NOW, "rate_limited", QUOTA_1308)])
+        self.env["ZCREW_ZCODE_DB"] = str(db)
+        self.timeline = [[run_state("run_f", "ended", "failed")]]
+        reason = self.stop()["reason"]
+        self.assertIn('run_f "T run_f": failed after 10 min; .\n  Cause: [1308][Usage limit reached for 5 hour.',
+                      reason)
+        self.assertIn("GLM usage quota is used up", reason)
+        self.assertIn("Tell the user now", reason)
+
+    def test_completed_run_gets_no_cause(self) -> None:
+        self.timeline = [[run_state("run_a", "ended", "completed")]]
+        self.assertNotIn("Cause:", self.stop()["reason"])
+
+    def test_unreadable_db_gives_no_cause_and_no_crash(self) -> None:
+        broken = Path(self._tmp.name) / "broken"
+        broken.mkdir()
+        self.env["ZCREW_ZCODE_DB"] = str(broken)  # a directory: sqlite cannot open it
+        self.timeline = [[run_state("run_f", "ended", "failed")]]
+        answer = self.stop()
+        self.assertIn('run_f "T run_f": failed after 10 min; .', answer["reason"])
+        self.assertNotIn("Cause:", answer["reason"])
 
     def test_gate_skipped_without_time_left(self) -> None:
         def slow_gate(run):  # noqa: ANN001
