@@ -10,8 +10,10 @@ what a program can check, so the reviewer only spends judgment on the rest:
 - do-not     no changed file matches a DO NOT pattern
 - tests      removed test lines, skip markers and deleted test files (a warning:
              a person decides whether they were intended)
-- verify     every `backticked` VERIFY command, run here; full output goes to a
-             log file and only the failing lines are printed
+- verify     every `backticked` VERIFY command, run here; items that look like
+             file names are not run (listed for the reviewer instead), and on
+             Windows POSIX-only commands run through Git Bash when installed;
+             full output goes to a log file and only the failing lines are printed
 
 The verdict is MECHANICAL: PASS / FAIL. Acceptance criteria written as plain
 text are listed under JUDGMENT for the reviewer. ``--accept`` / ``--reject``
@@ -58,6 +60,8 @@ SKIP_RE = re.compile(
     r"^\+.*(@(unittest\.)?skip|pytest\.mark\.skip|\bxit\(|\bxdescribe\(|\.skip\(|\.only\(|\[Ignore|t\.Skip\()"
 )
 ERRORISH_RE = re.compile(r"fail|error|assert|expected|exception|traceback|cannot|not found", re.IGNORECASE)
+POSIX_HINT = ("this command uses POSIX shell syntax; cmd.exe cannot run it "
+              "(install Git for Windows, or write it for cmd)")
 
 Runner = Callable[..., "subprocess.CompletedProcess[str]"]
 
@@ -295,20 +299,70 @@ def check_tests(cwd: str, base: str, files: list[str], run: Runner = subprocess.
     return check("tests", "PASS", "no removed tests, skip markers or deleted test files")
 
 
+def find_git_bash(run: Runner = subprocess.run) -> str | None:
+    """Git for Windows' bash.exe, or None when it cannot be found.
+
+    ``shutil.which("bash")`` is not good enough on Windows: it can return the
+    WSL launcher ``C:\\Windows\\System32\\bash.exe``, which cannot run a VERIFY
+    command against the working tree. Derive bash from ``git --exec-path``
+    (``.../mingw64/libexec/git-core`` -> ``.../bin/bash.exe`` or
+    ``.../usr/bin/bash.exe``), else ``%ProgramFiles%\\Git\\bin\\bash.exe``;
+    anything in System32 is never used.
+    """
+    candidates: list[Path] = []
+    try:
+        done = run(["git", "--exec-path"], stdin=subprocess.DEVNULL, capture_output=True,
+                   text=True, timeout=15, check=False)
+    except (OSError, subprocess.SubprocessError):
+        done = None
+    if done is not None and done.returncode == 0 and (done.stdout or "").strip():
+        for parent in Path(done.stdout.strip()).parents:
+            candidates += [parent / "bin" / "bash.exe", parent / "usr" / "bin" / "bash.exe"]
+    program_files = os.environ.get("ProgramFiles")
+    if program_files:
+        candidates.append(Path(program_files) / "Git" / "bin" / "bash.exe")
+    for candidate in candidates:
+        if "system32" in str(candidate).lower():
+            continue
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
 def check_verify(
     commands: list[str], cwd: str, log_dir: Path, tag: str, timeout: int,
     run: Runner = subprocess.run,
+    bash_finder: Callable[[], str | None] | None = None,
 ) -> list[dict[str, Any]]:
     if not commands:
         return [check("verify", "SKIP", "no `backticked` command in VERIFY")]
+    compat = _compat()
+    bash_cache: dict[str, str | None] = {}
+
+    def find_bash() -> str | None:
+        if "bash" not in bash_cache:  # one git --exec-path lookup per gate run
+            bash_cache["bash"] = bash_finder() if bash_finder else find_git_bash(run)
+        return bash_cache["bash"]
+
     log_dir.mkdir(parents=True, exist_ok=True)
     out: list[dict[str, Any]] = []
     for n, command in enumerate(commands, 1):
         log = log_dir / f"{tag}-verify{n}.log"
         started = time.monotonic()
+        argv: list[str] | str = command
+        shell = True
+        via_bash = False
+        missing_bash = False
+        # cmd.exe cannot run POSIX syntax (rm, env assignments, $(...)); Git Bash can
+        if os.name == "nt" and compat.needs_posix_shell(command):
+            bash = find_bash()
+            if bash:
+                argv, shell, via_bash = [bash, "-c", command], False, True
+            else:
+                missing_bash = True
         try:
-            done = run(command, shell=True, cwd=cwd, capture_output=True, text=True, errors="replace",
-                       timeout=timeout, check=False)
+            done = run(argv, shell=shell, cwd=cwd, stdin=subprocess.DEVNULL, capture_output=True,
+                       text=True, errors="replace", timeout=timeout, check=False)
             text, code = (done.stdout or "") + (done.stderr or ""), done.returncode
         except subprocess.TimeoutExpired as exc:
             text = (exc.stdout or "") if isinstance(exc.stdout, str) else ""
@@ -320,13 +374,17 @@ def check_verify(
         except OSError:
             pass
         took = f"{time.monotonic() - started:.0f}s"
+        note = " (via bash)" if via_bash else ""
         if code == 0:
-            out.append(check("verify", "PASS", f"{command} -> exit 0 ({took})"))
-        elif code is None:
-            out.append(check("verify", "FAIL", f"{command} -> timed out after {timeout}s (log: {log})",
-                             failing_lines(text)))
+            out.append(check("verify", "PASS", f"{command} -> exit 0 ({took}){note}"))
         else:
-            out.append(check("verify", "FAIL", f"{command} -> exit {code} ({took}, log: {log})", failing_lines(text)))
+            lines = failing_lines(text)
+            if missing_bash:
+                lines = lines + [POSIX_HINT]
+            if code is None:
+                out.append(check("verify", "FAIL", f"{command} -> timed out after {timeout}s (log: {log}){note}", lines))
+            else:
+                out.append(check("verify", "FAIL", f"{command} -> exit {code} ({took}, log: {log}){note}", lines))
     return out
 
 
@@ -387,6 +445,12 @@ def build_report(
     queue_wait: float = QUEUE_WAIT_SECONDS, base_override: str | None = None,
 ) -> dict[str, Any]:
     contract = data.get("contract") or {}
+    compat = _compat()
+    # records written before is_verify_command filtering still carry file names as commands
+    verify_all = contract.get("verify") or []
+    commands = [c for c in verify_all if compat.is_verify_command(c)]
+    dropped = [c for c in verify_all if not compat.is_verify_command(c)]
+    dropped += list(contract.get("verify_skipped") or [])
     work_dir = data.get("cwd") or cwd
     base = data.get("base")
     if not base:
@@ -404,8 +468,7 @@ def build_report(
     tag = (data.get("runIds") or ["run"])[-1]
     queue: dict[str, Any] = {"waited": 0.0, "held": False}
     if verify:
-        commands = contract.get("verify") or []
-        lock = _compat().state_dir(env) / "verify.lock"
+        lock = compat.state_dir(env) / "verify.lock"
         with verify_queue(lock, queue_wait if commands else 0) as queue:
             checks.extend(check_verify(commands, work_dir, log_dir or (Path(tempfile.gettempdir()) / "zcrew-gate"),
                                        tag, timeout, run))
@@ -415,6 +478,8 @@ def build_report(
     sections = contract.get("sections") or {}
     judgment = list(sections.get("ACCEPTANCE CRITERIA") or [])
     judgment += [i for i in sections.get("SCOPE") or [] if not re.search(r"`[^`]+`", i)]
+    if dropped:
+        judgment.append(compat.verify_skipped_note(dropped))
     budget = max_rounds(work_dir, env)
     rnd = max(0, int(data.get("rounds", 1)) - 1)
     report: dict[str, Any] = {

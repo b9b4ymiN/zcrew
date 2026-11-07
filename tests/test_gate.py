@@ -188,6 +188,23 @@ class BuildReportTests(RepoFixture):
         self.assertTrue(list((self.root / "logs").glob("run_1-verify1.log")))
         self.assertIn("FAIL Hero renders", (self.root / "logs" / "run_1-verify1.log").read_text(encoding="utf-8"))
 
+    def test_old_records_junk_verify_items_are_not_run(self) -> None:
+        # a record written before the junk filter still has file names inside verify
+        report = self.report(self.record([".next", "tsconfig.tsbuildinfo", f"{PY} -c \"print('ok')\""]))
+        verifies = self.by_name(report, "verify")
+        self.assertEqual(len(verifies), 1)
+        self.assertEqual(verifies[0]["status"], "PASS")
+        self.assertIn("VERIFY items not run (they look like file names, not commands): .next, tsconfig.tsbuildinfo",
+                      report["judgment"])
+
+    def test_new_records_verify_skipped_show_in_judgment_only(self) -> None:
+        data = self.record([f"{PY} -c \"print('ok')\""])
+        data["contract"]["verify_skipped"] = ["results/trials.csv"]
+        report = self.report(data)
+        self.assertEqual(self.by_name(report, "verify")[0]["status"], "PASS")
+        self.assertIn("VERIFY items not run (they look like file names, not commands): results/trials.csv",
+                      report["judgment"])
+
     def test_verify_runs_inside_the_queue(self) -> None:
         lock = compat.state_dir(self.env) / "verify.lock"
         seen: list[bool] = []
@@ -281,6 +298,130 @@ class BuildReportTests(RepoFixture):
         self.assertIn("JUDGMENT", text)
         self.assertIn("MECHANICAL: FAIL  -> do not accept", text)
         self.assertIn("draft correction", text)
+
+
+class CheckVerifyShellTests(unittest.TestCase):
+    """check_verify routes POSIX-only commands through Git Bash on Windows, and
+    leaves everything else exactly on the cmd.exe path (fake runner, fake finder)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.finder_calls: list[None] = []
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def checked(self, command: str, *, os_name: str, bash: str | None,
+                exit_code: int = 0) -> tuple[list[dict], list[dict]]:
+        calls: list[dict] = []
+
+        def runner(argv: object, **kwargs: object) -> object:
+            calls.append({"argv": argv, **kwargs})
+            return subprocess.CompletedProcess(argv, exit_code, "out", "")
+
+        def finder() -> str | None:
+            self.finder_calls.append(None)
+            return bash
+
+        real_name = os.name
+        os.name = os_name  # gate reads os.name to pick the Windows bash path
+        try:
+            checks = gate.check_verify([command], self._tmp.name, self.root / "logs", "t1", 60,
+                                       run=runner, bash_finder=finder)
+        finally:
+            os.name = real_name
+        return checks, calls
+
+    def test_windows_posix_command_runs_through_bash(self) -> None:
+        checks, calls = self.checked("rm -rf .next", os_name="nt", bash="C:/Git/bin/bash.exe")
+        self.assertEqual(calls[0]["argv"], ["C:/Git/bin/bash.exe", "-c", "rm -rf .next"])
+        self.assertIs(calls[0]["shell"], False)
+        self.assertEqual(calls[0]["stdin"], subprocess.DEVNULL)
+        self.assertEqual(calls[0]["cwd"], self._tmp.name)
+        self.assertEqual(checks[0]["status"], "PASS")
+        self.assertIn("(via bash)", checks[0]["detail"])
+
+    def test_windows_cmd_command_runs_through_shell_as_before(self) -> None:
+        checks, calls = self.checked("npm test", os_name="nt", bash="C:/Git/bin/bash.exe")
+        self.assertEqual(calls[0]["argv"], "npm test")
+        self.assertIs(calls[0]["shell"], True)
+        self.assertEqual(calls[0]["stdin"], subprocess.DEVNULL)
+        self.assertEqual(self.finder_calls, [])
+        self.assertEqual(checks[0]["status"], "PASS")
+        self.assertNotIn("via bash", checks[0]["detail"])
+
+    def test_windows_posix_without_bash_keeps_the_fail_and_adds_the_hint(self) -> None:
+        checks, calls = self.checked("MEBJALOR_E2E_PORT=4541 npm run test:e2e", os_name="nt", bash=None, exit_code=1)
+        self.assertEqual(calls[0]["argv"], "MEBJALOR_E2E_PORT=4541 npm run test:e2e")
+        self.assertIs(calls[0]["shell"], True)
+        self.assertEqual(checks[0]["status"], "FAIL")
+        self.assertEqual(checks[0]["lines"][-1], gate.POSIX_HINT)
+        self.assertIn("install Git for Windows", checks[0]["lines"][-1])
+
+    def test_non_windows_is_unchanged(self) -> None:
+        checks, calls = self.checked("rm -rf .next", os_name="posix", bash="C:/Git/bin/bash.exe")
+        self.assertEqual(calls[0]["argv"], "rm -rf .next")
+        self.assertIs(calls[0]["shell"], True)
+        self.assertEqual(calls[0]["stdin"], subprocess.DEVNULL)
+        self.assertEqual(self.finder_calls, [])
+        self.assertEqual(checks[0]["status"], "PASS")
+        self.assertNotIn("via bash", checks[0]["detail"])
+
+
+class FindGitBashTests(unittest.TestCase):
+    def test_derives_bash_from_git_exec_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            core = Path(tmp) / "mingw64" / "libexec" / "git-core"
+            core.mkdir(parents=True)
+            bash = Path(tmp) / "bin" / "bash.exe"
+            bash.parent.mkdir(parents=True)
+            bash.write_bytes(b"")
+
+            def runner(argv: object, **kwargs: object) -> object:
+                return subprocess.CompletedProcess(argv, 0, str(core) + "\n", "")
+
+            self.assertEqual(Path(gate.find_git_bash(run=runner)), bash)
+
+    def test_program_files_fallback_when_git_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bash = Path(tmp) / "Git" / "bin" / "bash.exe"
+            bash.parent.mkdir(parents=True)
+            bash.write_bytes(b"")
+            saved = os.environ.get("ProgramFiles")
+            os.environ["ProgramFiles"] = tmp
+            try:
+
+                def runner(argv: object, **kwargs: object) -> object:
+                    raise OSError("no git")
+
+                self.assertEqual(Path(gate.find_git_bash(run=runner)), bash)
+            finally:
+                if saved is None:
+                    os.environ.pop("ProgramFiles", None)
+                else:
+                    os.environ["ProgramFiles"] = saved
+
+    def test_system32_is_never_returned(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            core = Path(tmp) / "System32" / "libexec" / "git-core"
+            core.mkdir(parents=True)
+            bash = Path(tmp) / "System32" / "bin" / "bash.exe"
+            bash.parent.mkdir(parents=True)
+            bash.write_bytes(b"")
+            saved = os.environ.get("ProgramFiles")
+            os.environ["ProgramFiles"] = tmp  # no Git here either, so nothing else matches
+            try:
+
+                def runner(argv: object, **kwargs: object) -> object:
+                    return subprocess.CompletedProcess(argv, 0, str(core) + "\n", "")
+
+                self.assertIsNone(gate.find_git_bash(run=runner))
+            finally:
+                if saved is None:
+                    os.environ.pop("ProgramFiles", None)
+                else:
+                    os.environ["ProgramFiles"] = saved
 
 
 class VerifyQueueTests(unittest.TestCase):

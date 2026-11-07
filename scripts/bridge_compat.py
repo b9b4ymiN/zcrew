@@ -648,14 +648,70 @@ def parse_timebox(prompt: str) -> int | None:
     return values[0] if values else None
 
 
+EXECUTABLE_SUFFIXES = (".sh", ".cmd", ".bat", ".ps1", ".exe")
+POSIX_ONLY_WORDS = frozenset(
+    {"rm", "cp", "mv", "test", "[", "touch", "export", "sed", "head", "tail",
+     "grep", "cat", "ls", "mkdir", "which"}
+)
+_ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def is_verify_command(item: str) -> bool:
+    """True when a backticked VERIFY item is a command to run, not a file name.
+
+    Contracts name files in VERIFY prose ("delete `.next` first"), and those must
+    never be executed. Only a single token can be a file name: anything with
+    whitespace is a command line, and a bare word (``pytest``, ``make``) is a
+    command. A lone token is a path when it starts with a dot (but not ``./x``
+    or ``.\\x``), or contains ``.`` / ``/`` / ``\\`` without an executable suffix
+    (``src/app/page.tsx``, ``package-lock.json``).
+    """
+    token = (item or "").strip()
+    if not token:
+        return False
+    if any(ch.isspace() for ch in token):
+        return True
+    if token.startswith(("./", ".\\")):
+        return True
+    if token.startswith("."):
+        return False
+    if ("." in token or "/" in token or "\\" in token) and not token.lower().endswith(EXECUTABLE_SUFFIXES):
+        return False
+    return True
+
+
+def needs_posix_shell(command: str) -> bool:
+    """True when cmd.exe cannot run this command (POSIX-only syntax).
+
+    Any segment (split on ``&&``, ``||``, ``;`` and ``|``) that starts with an
+    env assignment (``PORT=4541 npm test``) or a POSIX-only word (``rm``,
+    ``test``, ``export``, ...) needs a POSIX shell, as does ``$(...)`` command
+    substitution. Commands cmd.exe already runs (``npm ...``, ``git ...``,
+    ``node -e "..."``, ``cd x && npm run y``) stay False.
+    """
+    text = command or ""
+    if "$(" in text:
+        return True
+    for segment in re.split(r"\|\||&&|;|\|", text):
+        words = segment.split()
+        if words and (words[0] in POSIX_ONLY_WORDS or _ENV_ASSIGN_RE.match(words[0])):
+            return True
+    return False
+
+
+def verify_skipped_note(items: list[str]) -> str:
+    return "VERIFY items not run (they look like file names, not commands): %s" % ", ".join(items)
+
+
 def parse_contract(prompt: str) -> dict:
     """Split a worker contract into its sections.
 
     Returns ``sections`` (name -> bullet list; free text counts as one item),
     ``missing`` (required sections absent or empty), ``near_misses`` (for a missing
     section, the first line that looked like its heading), ``scope`` / ``do_not``
-    (backticked path patterns) and ``verify`` (backticked commands). Items
-    without backticks stay in ``sections`` for the reviewer's judgment.
+    (backticked path patterns) and ``verify`` (backticked commands; items that
+    look like file names are moved to ``verify_skipped`` so they are never run).
+    Items without backticks stay in ``sections`` for the reviewer's judgment.
     """
     sections: dict[str, list[str]] = {}
     near: dict[str, str] = {}
@@ -683,13 +739,15 @@ def parse_contract(prompt: str) -> dict:
         return [t for t in tokens if re.search(r"[/\\*.]", t) and " " not in t]
 
     missing = [n for n in REQUIRED_SECTIONS if not sections.get(n)]
+    verify_items = ticked("VERIFY")
     return {
         "sections": sections,
         "missing": missing,
         "near_misses": {n: near[n] for n in missing if n in near},
         "scope": pathlike(ticked("SCOPE")),
         "do_not": pathlike(ticked("DO NOT")),
-        "verify": ticked("VERIFY"),
+        "verify": [c for c in verify_items if is_verify_command(c)],
+        "verify_skipped": [c for c in verify_items if not is_verify_command(c)],
     }
 
 
@@ -794,6 +852,8 @@ def record_start(args: Mapping[str, Any], result: Any, env: Mapping[str, str], w
             shown = line if len(line) <= 60 else line[:59] + "..."
             text += '; heading not recognised: "%s" - write "%s:" or "%s (note):"' % (shown, name, name)
         warnings.append(text)
+    if contract["verify_skipped"]:
+        warnings.append(verify_skipped_note(contract["verify_skipped"]))
 
 
 class Timebox(NamedTuple):

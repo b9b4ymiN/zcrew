@@ -835,6 +835,76 @@ class ContractParseTests(unittest.TestCase):
         self.assertEqual(compat.parse_timebox("TIMEBOX: 10m then TIMEBOX: 20m"), 600)
 
 
+# real VERIFY items recorded from 421 contracts (must stay commands) and the junk
+# file names contracts mention in prose (must never be executed)
+REAL_VERIFY_COMMANDS = [
+    "npm test",
+    "npm run lint",
+    "npx vitest run src/x",
+    "npx next build --webpack",
+    "node -e \"require('fs').rmSync('.next',{recursive:true,force:true})\"",
+    "python -c \"import sys; sys.exit(0)\"",
+    "claude plugin validate mod/zcrew",
+    "cd engine/motion && npm run typecheck",
+    "git diff --check",
+    "ffprobe -v error -show_entries stream=width",
+    "C:\\Programing\\PersonalAI\\siangtts\\.venv\\Scripts\\python.exe -m pytest -q",
+    "pytest",
+    "make",
+    "./run.sh",
+    "scripts\\check.cmd",
+]
+VERIFY_FILE_NAMES = [".next", "tsconfig.tsbuildinfo", "package-lock.json", "src/app/page.tsx", "results/trials.csv"]
+
+
+class VerifyItemTests(unittest.TestCase):
+    def test_real_commands_stay_commands(self) -> None:
+        for item in REAL_VERIFY_COMMANDS:
+            self.assertTrue(compat.is_verify_command(item), item)
+
+    def test_file_names_are_not_commands(self) -> None:
+        for item in VERIFY_FILE_NAMES:
+            self.assertFalse(compat.is_verify_command(item), item)
+
+    def test_bare_words_are_commands(self) -> None:
+        for item in ("pytest", "make", "rg", "ffprobe", "python.exe"):
+            self.assertTrue(compat.is_verify_command(item), item)
+
+    def test_parse_contract_drops_junk_and_reports_it(self) -> None:
+        prompt = (
+            "OBJECTIVE\nClean the build.\n\nSCOPE\n- `src/a.py`\n\nDO NOT\n- `b.py`\n\n"
+            "ACCEPTANCE CRITERIA\n- the build works\n\nVERIFY\n"
+            "- delete `.next` and `tsconfig.tsbuildinfo` first\n- `npm test`\n"
+        )
+        c = compat.parse_contract(prompt)
+        self.assertEqual(c["verify"], ["npm test"])
+        self.assertEqual(c["verify_skipped"], [".next", "tsconfig.tsbuildinfo"])
+
+    def test_parse_contract_without_junk_skips_nothing(self) -> None:
+        c = compat.parse_contract(CONTRACT)
+        self.assertEqual(c["verify"], ["npm test -- Hero"])
+        self.assertEqual(c["verify_skipped"], [])
+
+
+class PosixShellTests(unittest.TestCase):
+    def test_posix_style_commands_need_a_posix_shell(self) -> None:
+        for command in (
+            "rm -rf .next tsconfig.tsbuildinfo",
+            "MEBJALOR_E2E_PORT=4541 npm run test:e2e",
+            "test -f docs/x.md",
+            "npm test && rm -rf .next",
+            "cat result.txt | grep ok",
+            "export PATH=$PWD/bin:$PATH",
+            "echo built at $(date)",
+            "touch marker && cp a b || mv a c",
+        ):
+            self.assertTrue(compat.needs_posix_shell(command), command)
+
+    def test_cmd_compatible_commands_do_not(self) -> None:
+        for command in REAL_VERIFY_COMMANDS:
+            self.assertFalse(compat.needs_posix_shell(command), command)
+
+
 class RunHookFixture(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -1019,6 +1089,20 @@ class PatchRunHooksTests(RunHookFixture):
         self.assertEqual(record["contract"]["verify"], ["npm test -- Hero"])
         self.assertEqual(record["rounds"], 1)
         self.assertEqual(record["verdicts"], [])
+
+    def test_verify_file_names_warn_at_start(self) -> None:
+        manager = self.patched()
+        prompt = CONTRACT.replace(
+            "- `npm test -- Hero`",
+            "- delete `.next` and `tsconfig.tsbuildinfo` first\n- `npm test -- Hero`")
+        result = self.run_start(manager, self.start_args(prompt=prompt))
+        self.assertEqual(
+            result["gate"]["warnings"],
+            ["VERIFY items not run (they look like file names, not commands): .next, tsconfig.tsbuildinfo"])
+        [record_path] = list((self.root / "state" / "gate").glob("*.json"))
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        self.assertEqual(record["contract"]["verify"], ["npm test -- Hero"])
+        self.assertEqual(record["contract"]["verify_skipped"], [".next", "tsconfig.tsbuildinfo"])
 
     def test_start_result_reports_the_effective_timebox(self) -> None:
         manager = self.patched()
