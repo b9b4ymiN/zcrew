@@ -22,7 +22,11 @@ provider push and runtime-headers answer.
 Run snapshots returned by agent-start/wait/observe/control/close/recover are
 compacted (timestamps, resource paths, permission policy and empty sections
 dropped) to save commander context; set ZCODE_COMMANDER_COMPACT=off to restore
-upstream output exactly.
+upstream output exactly. A snapshot that ended failed/timed_out (from
+agent-start/wait/observe) also carries a ``failure`` object (kind, message,
+advice, resetsAt) naming the cause - taken from the snapshot's own error or,
+when that is opaque ("Model request failed."), the newest model error ZCode
+logged for the session.
 
 Run hooks (``patch_run_hooks``) add two things around agent-start/agent-close:
 
@@ -46,6 +50,7 @@ queued. Set ZCODE_COMMANDER_WORKER_SLOTS=off to disable.
 
 from __future__ import annotations
 
+import calendar
 import hashlib
 import json
 import os
@@ -529,6 +534,175 @@ def compact_snapshot(tool_name: str, data: Any) -> Any:
     return out
 
 
+# --- failure classification: why a run ended failed/timed_out -------------------
+#
+# A failed run often reports only an opaque error ("Model request failed.",
+# "failed after 0 min"). The z.ai error codes say what to do (1308-1321: the GLM
+# quota is used up until a server-stated reset time; 1302: too many workers;
+# 1234 / 5xx: z.ai side), and when the snapshot's own error carries none of
+# them, ZCode's db still has the real model error for that session. Every
+# failed/timed_out snapshot from agent-start/wait/observe gets a small
+# ``failure`` object so any commander can act without digging.
+
+FAILURE_STATUSES = frozenset({"failed", "timed_out"})
+FAILURE_TOOLS = frozenset({"agent-start", "agent-wait", "agent-observe"})
+FAILURE_MESSAGE_MAX_CHARS = 160
+QUOTA_RESET_SERVER_OFFSET_SECONDS = 8 * 3600  # z.ai reset times are UTC+8 server time
+_NETWORK_RE = re.compile(r"\b1234\b|network failure|bad gateway|server error", re.IGNORECASE)
+_MODEL_TIMEOUT_RE = re.compile(r"timed out", re.IGNORECASE)
+_APP_SERVER_EXITED_RE = re.compile(r"app-server exited", re.IGNORECASE)
+_RUN_LOST_RE = re.compile(r"session not found", re.IGNORECASE)
+_REQUEST_ID_TAIL_RE = re.compile(r"\s*\[[0-9a-f]{8,}\]\s*$", re.IGNORECASE)
+_RESET_AT_RE = re.compile(r"reset at (\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})", re.IGNORECASE)
+FAILURE_ADVICE = {
+    "quota": "GLM usage quota is used up{resets}. Tell the user now: they can reset it; "
+             "a restart before then fails again.",
+    "concurrency": "Too many workers at once (1302); restart this task when a slot frees.",
+    "overload": "z.ai side error; restarting the task usually works.",
+    "network": "z.ai side error; restarting the task usually works.",
+    "model_timeout": "The model request timed out; restarting the task usually works.",
+    "app_server_exited": "The ZCode app-server died; check the worktree for partial work, "
+                         "then restart the task.",
+    "run_lost": "The bridge no longer knows this run (bridge restart); check the worktree, "
+                "then start a new run.",
+    "timed_out": "The run hit its time limit; check the worktree for partial work, "
+                 "then continue or restart it.",
+    "other": "Check agent-observe for details.",
+}
+
+
+def _failure_kind(text: str) -> str | None:
+    """The specific cause an error text carries, or None when it carries none."""
+    if _USAGE_LIMIT_RE.search(text):
+        return "quota"
+    if _CONCURRENCY_RE.search(text):
+        return "concurrency"
+    if _OVERLOAD_RE.search(text):
+        return "overload"
+    if _NETWORK_RE.search(text):
+        return "network"
+    if _MODEL_TIMEOUT_RE.search(text):
+        return "model_timeout"
+    if _APP_SERVER_EXITED_RE.search(text):
+        return "app_server_exited"
+    if _RUN_LOST_RE.search(text):
+        return "run_lost"
+    return None
+
+
+def _failure_message(text: str) -> str:
+    """The first meaningful line, its trailing ``[<request id>]`` noise removed,
+    capped at 160 chars."""
+    line = next((part.strip() for part in (text or "").splitlines() if part.strip()), "")
+    stripped = _REQUEST_ID_TAIL_RE.sub("", line).rstrip()
+    while stripped != line:
+        line, stripped = stripped, _REQUEST_ID_TAIL_RE.sub("", stripped).rstrip()
+    if len(line) > FAILURE_MESSAGE_MAX_CHARS:
+        line = line[:FAILURE_MESSAGE_MAX_CHARS] + "..."
+    return line
+
+
+def _quota_resets_at(text: str, now: float | None = None) -> str | None:
+    """``reset at YYYY-MM-DD HH:MM:SS`` (z.ai server time, UTC+8) as local
+    ``HH:MM``, with the date prefixed when that day is not today, local."""
+    found = _RESET_AT_RE.search(text or "")
+    if not found:
+        return None
+    try:
+        epoch = calendar.timegm(tuple(int(g) for g in found.groups())) - QUOTA_RESET_SERVER_OFFSET_SECONDS
+        local = time.localtime(epoch)
+        today = time.localtime(time.time() if now is None else now)
+        stamp = time.strftime("%H:%M", local)
+    except (OverflowError, ValueError):
+        return None
+    if local[:3] == today[:3]:
+        return stamp
+    return time.strftime("%Y-%m-%d %H:%M", local)
+
+
+def classify_failure(status: str, error: str | None, usage_error: str | None,
+                     now: float | None = None) -> dict | None:
+    """Classify why a run ended; None unless the status is failed/timed_out.
+
+    ``error`` is the snapshot's own error text; ``usage_error`` (the newest
+    ``model_usage.error_message`` of the session) is consulted only when that
+    text carries no recognisable cause.
+    """
+    if status not in FAILURE_STATUSES:
+        return None
+    text = str(error or "")
+    kind = _failure_kind(text)
+    if kind is None:
+        fallback = str(usage_error or "")
+        kind = _failure_kind(fallback)
+        if kind is not None:
+            text = fallback
+    if kind is None:
+        kind = "timed_out" if status == "timed_out" else "other"
+    failure = {
+        "kind": kind,
+        "message": _failure_message(text) or ("Run timed out." if kind == "timed_out" else "Run failed."),
+        "advice": FAILURE_ADVICE[kind],
+    }
+    if kind == "quota":
+        resets_at = _quota_resets_at(text, now)
+        failure["advice"] = FAILURE_ADVICE["quota"].replace(
+            "{resets}", " (resets %s)" % resets_at if resets_at else "")
+        if resets_at:
+            failure["resetsAt"] = resets_at
+    return failure
+
+
+def latest_usage_error(db_path: Path, session_id: str) -> str | None:
+    """The newest non-empty ``model_usage.error_message`` for a session
+    (read-only); None on any db problem, so the tool result never breaks."""
+    import sqlite3
+    from urllib.parse import quote
+
+    if not session_id:
+        return None
+    try:
+        uri = "file:" + quote(Path(db_path).resolve().as_posix(), safe="/:") + "?mode=ro"
+        conn = sqlite3.connect(uri, uri=True, timeout=2.0)
+    except (OSError, sqlite3.Error):
+        return None
+    try:
+        row = conn.execute(
+            "SELECT error_message FROM model_usage WHERE session_id = ?"
+            " AND COALESCE(error_message, '') != ''"
+            " ORDER BY started_at DESC LIMIT 1", (session_id,),
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+    return str(row[0]) if row else None
+
+
+def annotate_failure(tool_name: str, result: Any, env: Mapping[str, str], *,
+                     db_path: Path | None = None, now: float | None = None) -> Any:
+    """Add ``failure`` to a failed/timed_out run snapshot of agent-start/wait/observe.
+
+    The db lookup runs only when the snapshot's own error carries no recognisable
+    cause. Best effort: on any problem the result comes back unchanged.
+    """
+    try:
+        if tool_name not in FAILURE_TOOLS or not is_run_snapshot(result) \
+                or result.get("status") not in FAILURE_STATUSES:
+            return result
+        error = result.get("error")
+        usage_error = None
+        if _failure_kind(str(error or "")) is None and result.get("threadId"):
+            usage_error = latest_usage_error(
+                db_path if db_path is not None else zcode_db_path(env), str(result["threadId"]))
+        failure = classify_failure(str(result["status"]), str(error) if error else None, usage_error, now)
+        if failure is not None:
+            result["failure"] = failure
+    except Exception:  # noqa: BLE001 - the snapshot must survive this annotation
+        pass
+    return result
+
+
 def patch_backend_manager(cls: Any) -> None:
     """Wrap the BackendManager methods server.py calls per tool, so the dict
     it serializes (text and structuredContent alike) is already compact."""
@@ -542,6 +716,10 @@ def patch_backend_manager(cls: Any) -> None:
                 if tool_name != "agent-close":
                     note_snapshot(result, os.environ)
             except Exception:  # noqa: BLE001 - bookkeeping must never lose a result
+                pass
+            try:
+                result = annotate_failure(tool_name, result, os.environ)
+            except Exception:  # noqa: BLE001 - annotation must never lose a result
                 pass
             try:
                 return compact_snapshot(tool_name, result)

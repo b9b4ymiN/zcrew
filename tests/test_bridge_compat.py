@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import calendar
 import hashlib
 import importlib.util
 import json
 import os
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -486,6 +488,23 @@ def dumps(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
+# Real error strings recorded from failed runs (verbatim fixtures).
+QUOTA_1308 = (
+    "[1308][Usage limit reached for 5 hour. Your limit will reset at 2026-10-23 16:00:21]"
+    "[202610231508096f2364f7f30b4390]"
+)
+CONCURRENCY_1302 = "[1302][Rate limit reached for requests][20261104153219ca65dee3d0484334]"
+NETWORK_1234 = (
+    "[1234][Internal network failure, error id: 20261103082301abe13be996814bd4, "
+    "please try again later.][20261103082301abe13be996814bd4]"
+)
+
+
+def quota_reset_epoch() -> float:
+    """2026-10-23 16:00:21 z.ai server time (UTC+8) as a UTC epoch."""
+    return calendar.timegm((2026, 10, 23, 16, 0, 21)) - 8 * 3600
+
+
 class CompactSnapshotTests(unittest.TestCase):
     def assertValidRunOutput(self, data: dict) -> None:
         for key in RUN_OUTPUT_SCHEMA["required"]:
@@ -707,6 +726,211 @@ class PatchBackendManagerTests(unittest.TestCase):
         compat.patch_backend_manager(Failing)
         with self.assertRaises(LookupError):
             Failing().wait("r")
+
+
+class ClassifyFailureTests(unittest.TestCase):
+    def test_quota_fixture_kind_message_and_resets_today(self) -> None:
+        epoch = quota_reset_epoch()
+        failure = compat.classify_failure("failed", QUOTA_1308, None, now=epoch - 3600)
+        self.assertEqual(failure["kind"], "quota")
+        self.assertEqual(
+            failure["message"],
+            "[1308][Usage limit reached for 5 hour. Your limit will reset at 2026-10-23 16:00:21]",
+        )
+        # 16:00:21 UTC+8 is 15:00 local in Bangkok (UTC+7); expected computed with
+        # the same time functions, so the test holds in any local timezone
+        expected = time.strftime("%H:%M", time.localtime(epoch))
+        self.assertEqual(failure["resetsAt"], expected)
+        self.assertIn("resets %s)" % expected, failure["advice"])
+        self.assertIn("Tell the user now", failure["advice"])
+
+    def test_quota_resets_at_shows_the_date_when_not_today(self) -> None:
+        epoch = quota_reset_epoch()
+        failure = compat.classify_failure("failed", QUOTA_1308, None, now=epoch - 48 * 3600)
+        self.assertEqual(failure["resetsAt"], time.strftime("%Y-%m-%d %H:%M", time.localtime(epoch)))
+
+    def test_quota_without_reset_time_has_no_resets_at(self) -> None:
+        failure = compat.classify_failure("failed", "[1308][Usage limit reached for weekly quota]", None)
+        self.assertEqual(failure["kind"], "quota")
+        self.assertNotIn("resetsAt", failure)
+        self.assertNotIn("{resets}", failure["advice"])
+        self.assertIn("GLM usage quota is used up. Tell the user now", failure["advice"])
+
+    def test_real_error_strings_map_to_kinds(self) -> None:
+        cases = [
+            (CONCURRENCY_1302, "concurrency", "[1302][Rate limit reached for requests]"),
+            (NETWORK_1234, "network",
+             "[1234][Internal network failure, error id: 20261103082301abe13be996814bd4, "
+             "please try again later.]"),
+            ("Bad Gateway", "network", "Bad Gateway"),
+            ("Provider returned a server error.", "network", "Provider returned a server error."),
+            ("Model request timed out.", "model_timeout", "Model request timed out."),
+            ("ZCode app-server exited", "app_server_exited", "ZCode app-server exited"),
+            ("Session not found: run_e1f80bc58dcd4b3caf2f2509f17b7bc7", "run_lost",
+             "Session not found: run_e1f80bc58dcd4b3caf2f2509f17b7bc7"),
+            ("Model request failed.", "other", "Model request failed."),
+            ("Model request was cancelled.", "other", "Model request was cancelled."),
+        ]
+        for error, kind, message in cases:
+            failure = compat.classify_failure("failed", error, None)
+            self.assertEqual(failure["kind"], kind, error)
+            self.assertEqual(failure["message"], message, error)
+            self.assertTrue(failure["advice"], error)
+
+    def test_timed_out_status_without_a_better_cause(self) -> None:
+        failure = compat.classify_failure("timed_out", None, None)
+        self.assertEqual(failure["kind"], "timed_out")
+        self.assertEqual(failure["message"], "Run timed out.")
+        failure = compat.classify_failure("timed_out", "Model request timed out.", None)
+        self.assertEqual(failure["kind"], "model_timeout")
+
+    def test_usage_error_used_only_when_error_carries_no_cause(self) -> None:
+        failure = compat.classify_failure("failed", "Model request failed.", QUOTA_1308)
+        self.assertEqual(failure["kind"], "quota")
+        self.assertIn("reset at 2026-10-23 16:00:21", failure["message"])
+        failure = compat.classify_failure("failed", CONCURRENCY_1302, QUOTA_1308)
+        self.assertEqual(failure["kind"], "concurrency")  # the snapshot's own error wins
+        self.assertEqual(failure["message"], "[1302][Rate limit reached for requests]")
+
+    def test_non_failure_statuses_return_none(self) -> None:
+        for status in ("running", "queued", "stopping", "completed", "cancelled", "closed"):
+            self.assertIsNone(compat.classify_failure(status, QUOTA_1308, None), status)
+
+    def test_message_is_capped_and_first_line_wins(self) -> None:
+        failure = compat.classify_failure("failed", "E" * 300, None)
+        self.assertEqual(len(failure["message"]), compat.FAILURE_MESSAGE_MAX_CHARS + 3)
+        self.assertTrue(failure["message"].endswith("..."))
+        failure = compat.classify_failure("failed", "\n\nBad Gateway\nupstream stack details", None)
+        self.assertEqual(failure["message"], "Bad Gateway")
+
+
+USAGE_ROWS = [
+    ("sess_a", 1000, "rate_limited", QUOTA_1308),
+    ("sess_a", 900, "rate_limited", "[1302][Rate limit reached for requests]"),
+    ("sess_a", 800, None, ""),
+    ("sess_a", 700, None, None),
+    ("sess_b", 950, "rate_limited", CONCURRENCY_1302),
+    ("sess_clean", 990, None, None),
+]
+
+
+def make_usage_db(path: Path, rows: list = USAGE_ROWS) -> None:
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE model_usage (session_id TEXT, started_at INTEGER, error_type TEXT, error_message TEXT)")
+    conn.executemany("INSERT INTO model_usage VALUES (?,?,?,?)", rows)
+    conn.commit()
+    conn.close()
+
+
+class LatestUsageErrorTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db = Path(self._tmp.name) / "db.sqlite"
+        make_usage_db(self.db)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_newest_error_message_per_session(self) -> None:
+        self.assertEqual(compat.latest_usage_error(self.db, "sess_a"), QUOTA_1308)
+        self.assertEqual(compat.latest_usage_error(self.db, "sess_b"), CONCURRENCY_1302)
+        self.assertIsNone(compat.latest_usage_error(self.db, "sess_clean"))
+
+    def test_unknown_session_missing_table_and_db(self) -> None:
+        self.assertIsNone(compat.latest_usage_error(self.db, "sess_missing"))
+        empty = self.db.with_name("empty.sqlite")
+        sqlite3.connect(empty).close()
+        self.assertIsNone(compat.latest_usage_error(empty, "sess_a"))
+        self.assertIsNone(compat.latest_usage_error(self.db.with_name("absent.sqlite"), "sess_a"))
+        self.assertIsNone(compat.latest_usage_error(self.db, ""))
+
+
+class FailureAnnotationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db = Path(self._tmp.name) / "db.sqlite"
+        make_usage_db(self.db, [("sess_0123456789abcdef0123", 1000, "rate_limited", QUOTA_1308)])
+        self._saved = dict(os.environ)
+        os.environ["ZCREW_ZCODE_DB"] = str(self.db)
+        self.cls = type("Manager", (_FakeManager,), {})
+        compat.patch_backend_manager(self.cls)
+
+    def tearDown(self) -> None:
+        os.environ.clear()
+        os.environ.update(self._saved)
+        self._tmp.cleanup()
+
+    def test_opaque_error_gets_its_cause_from_the_db(self) -> None:
+        manager = self.cls()
+        manager.snap = running_snapshot(status="failed", error="Model request failed.")
+        out = manager.wait("r")
+        failure = out["failure"]
+        self.assertEqual(failure["kind"], "quota")
+        self.assertIn("reset at 2026-10-23 16:00:21", failure["message"])
+        epoch = quota_reset_epoch()
+        expected = time.strftime("%H:%M", time.localtime(epoch))
+        if time.localtime()[:3] != time.localtime(epoch)[:3]:
+            expected = time.strftime("%Y-%m-%d %H:%M", time.localtime(epoch))
+        self.assertEqual(failure["resetsAt"], expected)
+        self.assertNotIn("createdAtMs", out)  # still compacted alongside
+
+    def test_failed_without_db_entry_reports_other(self) -> None:
+        manager = self.cls()
+        manager.snap = running_snapshot(status="failed", error="Model request failed.",
+                                        threadId="sess_never_logged")
+        out = manager.observe("r")
+        self.assertEqual(out["failure"], {"kind": "other", "message": "Model request failed.",
+                                          "advice": "Check agent-observe for details."})
+
+    def test_timed_out_and_start_failures_annotated(self) -> None:
+        manager = self.cls()
+        manager.snap = running_snapshot(status="timed_out", error=None, threadId=None)
+        self.assertEqual(manager.wait("r")["failure"]["kind"], "timed_out")
+        manager.snap = running_snapshot(status="failed", error="ZCode app-server exited")
+        self.assertEqual(manager.start({})["failure"]["kind"], "app_server_exited")
+
+    def test_completed_cancelled_and_running_get_no_failure(self) -> None:
+        manager = self.cls()
+        for status in ("completed", "cancelled", "running", "queued"):
+            manager.snap = running_snapshot(status=status)
+            self.assertNotIn("failure", manager.wait("r"), status)
+            self.assertNotIn("failure", manager.observe("r"), status)
+            self.assertNotIn("failure", manager.start({}), status)
+
+    def test_control_close_and_recover_results_not_annotated(self) -> None:
+        manager = self.cls()
+        manager.snap = running_snapshot(status="failed", error="Bad Gateway")
+        self.assertNotIn("failure", manager.control("r", "cancel"))
+        self.assertNotIn("failure", manager.close_run("r"))
+        self.assertEqual(manager.recover({}), {"sessions": [], "count": 0})
+
+    def test_broken_db_still_classifies_from_the_error(self) -> None:
+        broken = self.db.with_name("broken.sqlite")
+        broken.write_bytes(b"this is not a sqlite database")
+        os.environ["ZCREW_ZCODE_DB"] = str(broken)
+        manager = self.cls()
+        manager.snap = running_snapshot(status="failed", error="Model request failed.")
+        out = manager.wait("r")
+        self.assertEqual(out["failure"]["kind"], "other")
+        self.assertEqual(out["error"], "Model request failed.")
+
+    def test_annotation_exception_leaves_the_result_intact(self) -> None:
+        manager = self.cls()
+        manager.snap = running_snapshot(status="failed", error="Model request failed.")
+
+        def explode(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("boom")
+
+        original = compat.classify_failure
+        compat.classify_failure = explode  # type: ignore[assignment]
+        try:
+            out = manager.wait("r")
+        finally:
+            compat.classify_failure = original  # type: ignore[assignment]
+        self.assertNotIn("failure", out)
+        self.assertEqual(out["runId"], "run_0123456789abcdef")
+        self.assertEqual(out["error"], "Model request failed.")
 
 
 CONTRACT = """OBJECTIVE
