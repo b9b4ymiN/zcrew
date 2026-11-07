@@ -300,6 +300,162 @@ class BuildReportTests(RepoFixture):
         self.assertIn("draft correction", text)
 
 
+class ScopeTestsWarnTests(RepoFixture):
+    """Test files outside SCOPE warn on their own line instead of failing scope."""
+
+    REAL_STRAY_TESTS = [
+        "src/components/bench/copilot/composerKeys.test.ts",
+        "tests/conftest.py",
+        "engine/stage/test/index.test.mjs",
+        "services/core/test/t09-repositories.mssql.test.ts",
+    ]
+
+    def test_only_test_files_outside_scope_warn_and_stay_pass(self) -> None:
+        for rel in self.REAL_STRAY_TESTS:
+            self.write(rel, "x\n")
+        report = self.report(self.record([]))
+        scope, stray = self.by_name(report, "scope")[0], self.by_name(report, "scope-tests")[0]
+        self.assertEqual((scope["status"], stray["status"]), ("PASS", "WARN"))
+        self.assertIn("4 test file(s) outside it", scope["detail"])
+        self.assertIn("4 test files outside SCOPE (check they belong to this task)", stray["detail"])
+        self.assertEqual(stray["lines"], sorted(self.REAL_STRAY_TESTS))
+        self.assertEqual(report["mechanical"], "PASS")
+        self.assertNotIn("draft", report)
+
+    def test_mixed_outside_files_fail_scope_and_warn_about_the_tests(self) -> None:
+        self.write("src/other/X.ts", "x\n")
+        self.write("tests/test_new.py", "x\n")
+        report = self.report(self.record([]))
+        scope, stray = self.by_name(report, "scope")[0], self.by_name(report, "scope-tests")[0]
+        self.assertEqual((scope["status"], scope["lines"]), ("FAIL", ["src/other/X.ts"]))
+        self.assertEqual((stray["status"], stray["lines"]), ("WARN", ["tests/test_new.py"]))
+        self.assertEqual(report["mechanical"], "FAIL")
+        self.assertIn("- scope-tests: 1 test files outside SCOPE (check they belong to this task)", report["draft"])
+
+    def test_test_file_matching_do_not_still_fails(self) -> None:
+        self.write("tests/test_new.py", "x\n")
+        report = self.report(self.record([], do_not=["tests/"]))
+        self.assertEqual(self.by_name(report, "do-not")[0]["status"], "FAIL")
+        self.assertEqual(self.by_name(report, "scope-tests")[0]["status"], "WARN")
+        self.assertEqual(report["mechanical"], "FAIL")
+
+    def test_no_stray_tests_no_scope_tests_check(self) -> None:
+        self.write("src/hero/Hero.test.ts", "it('more', () => {})\n")
+        report = self.report(self.record([]))
+        self.assertEqual(self.by_name(report, "scope-tests"), [])
+        self.assertEqual(self.by_name(report, "scope")[0]["status"], "PASS")
+
+
+class WorkerRanVerifyTests(unittest.TestCase):
+    @staticmethod
+    def command(summary: str, at_ms: int = 2000) -> SimpleNamespace:
+        return SimpleNamespace(kind="command", summary=summary, at_ms=at_ms)
+
+    def test_exact_redirection_and_clipped_commands_match(self) -> None:
+        ran = [
+            self.command("npm run lint"),
+            self.command("npm run lint 2>&1 | tail -5"),
+            self.command('python -m unittest discover -s tests -p "test_gate.py" -> OK'),
+            self.command("npm   run\tlint"),  # whitespace is collapsed on both sides
+        ]
+        verify = ["npm  run lint", "python -m unittest discover -s tests -p \"test_gate.py\""]
+        self.assertEqual(gate.worker_ran_verify(verify, ran, 1000), [])
+
+    def test_clipped_summary_matches_on_the_first_three_words(self) -> None:
+        clipped = self.command("python -m unittest discover -s tests -p test_very_long_na")
+        verify = ["python -m unittest discover -s tests -p test_very_long_name_file.py"]
+        self.assertEqual(gate.worker_ran_verify(verify, [clipped], 1000), [])
+
+    def test_other_commands_do_not_match(self) -> None:
+        ran = [self.command("npm run build"),
+               SimpleNamespace(kind="file_edit", summary="npm run lint", at_ms=2000)]
+        self.assertEqual(gate.worker_ran_verify(["npm run lint"], ran, 1000), ["npm run lint"])
+
+    def test_commands_before_since_ms_are_ignored(self) -> None:
+        ran = [self.command("npm run lint", at_ms=999)]
+        self.assertEqual(gate.worker_ran_verify(["npm run lint"], ran, 1000), ["npm run lint"])
+        self.assertEqual(gate.worker_ran_verify(["npm run lint"], ran, 999), [])
+
+    def test_quoted_executable_path_matches(self) -> None:
+        ran = [self.command(r'"C:\X\python.exe" -m pytest -q 2>&1 | tail -5')]
+        self.assertEqual(gate.worker_ran_verify([r"C:\X\python.exe -m pytest -q"], ran, 1000), [])
+        forward = [self.command('"C:/X/python.exe" -m pytest -q 2>&1 | tail -3')]
+        self.assertEqual(gate.worker_ran_verify([r"C:\X\python.exe -m pytest -q"], forward, 1000), [])
+
+    def test_env_assignment_prefix_matches(self) -> None:
+        ran = [self.command(r'PYTHONIOENCODING=utf-8 "C:\X\Python.EXE" -m pytest -q > /tmp/pytest.log')]
+        self.assertEqual(gate.worker_ran_verify([r"c:\x\python.exe -m pytest -q"], ran, 1000), [])
+
+    def test_unrelated_command_is_still_missing(self) -> None:
+        ran = [self.command("npx biome check src")]
+        self.assertEqual(gate.worker_ran_verify(["npm run lint"], ran, 1000), ["npm run lint"])
+
+    def test_partial_mismatch_lists_only_the_missing(self) -> None:
+        ran = [self.command("npm run lint")]
+        self.assertEqual(gate.worker_ran_verify(["npm run lint", "npm test"], ran, 0), ["npm test"])
+
+
+class WorkerVerifyJudgmentTests(RepoFixture):
+    """build_report turns a worker session that never ran VERIFY into JUDGMENT lines."""
+
+    MISSING_ALL = "the worker's session shows none of the VERIFY commands being run (check its REPORT claims)"
+
+    @staticmethod
+    def ran(*summaries: str) -> object:
+        def reader(session_id: str) -> list[object]:
+            return [SimpleNamespace(kind="command", summary=s, at_ms=9000) for s in summaries]
+
+        return reader
+
+    def verify_lines(self, report: dict) -> list[str]:
+        return [j for j in report["judgment"] if "VERIFY commands being run" in j]
+
+    def test_reader_gets_the_thread_id_and_missing_all_adds_the_line(self) -> None:
+        seen: list[str] = []
+
+        def reader(session_id: str) -> list[object]:
+            seen.append(session_id)
+            return [SimpleNamespace(kind="command", summary="git status", at_ms=9000)]
+
+        report = self.report(self.record(["npm run lint", "npm test"]), activity_reader=reader, verify=False)
+        self.assertEqual(seen, ["sess_abcd1234"])
+        self.assertEqual(self.verify_lines(report), [self.MISSING_ALL])
+        self.assertEqual(report["mechanical"], "PASS")  # a judgment line never fails the gate
+
+    def test_some_missing_lists_only_those_commands(self) -> None:
+        report = self.report(self.record(["npm run lint", "npm test"]),
+                             activity_reader=self.ran("npm run lint"), verify=False)
+        self.assertEqual(self.verify_lines(report),
+                         ["the worker's session does not show these VERIFY commands being run: npm test"])
+
+    def test_all_ran_or_reader_error_adds_nothing(self) -> None:
+        report = self.report(self.record(["npm run lint", "npm test"]),
+                             activity_reader=self.ran("npm run lint", "npm test"), verify=False)
+        self.assertEqual(self.verify_lines(report), [])
+
+        def broken(session_id: str) -> list[object]:
+            raise RuntimeError("no db")
+
+        report = self.report(self.record(["npm test"]), activity_reader=broken, verify=False)
+        self.assertEqual(self.verify_lines(report), [])
+
+    def test_since_round_start_ignores_commands_from_earlier_rounds(self) -> None:
+        def reader(session_id: str) -> list[object]:
+            return [SimpleNamespace(kind="command", summary="npm test", at_ms=2000)]
+
+        late = self.record(["npm test"])
+        late["roundStartedAt"] = 5000
+        self.assertEqual(self.verify_lines(self.report(late, activity_reader=reader, verify=False)), [self.MISSING_ALL])
+        early = self.record(["npm test"])
+        early["roundStartedAt"] = 1000
+        self.assertEqual(self.verify_lines(self.report(early, activity_reader=reader, verify=False)), [])
+
+    def test_record_without_a_thread_adds_nothing(self) -> None:
+        report = self.report(self.record(["npm test"], thread=None),
+                             activity_reader=self.ran(), verify=False)
+        self.assertEqual(self.verify_lines(report), [])
+
+
 class CheckVerifyShellTests(unittest.TestCase):
     """check_verify routes POSIX-only commands through Git Bash on Windows, and
     leaves everything else exactly on the cmd.exe path (fake runner, fake finder)."""

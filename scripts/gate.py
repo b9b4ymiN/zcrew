@@ -7,6 +7,9 @@ Reads the worker contract the bridge recorded at agent-start
 what a program can check, so the reviewer only spends judgment on the rest:
 
 - scope      changed files all match the SCOPE patterns written in `backticks`
+- scope-tests test files outside SCOPE are only a warning: a worker that adds a
+             test next to the code it changed is doing right, a person decides
+             whether those tests belong to the task
 - do-not     no changed file matches a DO NOT pattern
 - tests      removed test lines, skip markers and deleted test files (a warning:
              a person decides whether they were intended)
@@ -66,6 +69,7 @@ POSIX_HINT = ("this command uses POSIX shell syntax; cmd.exe cannot run it "
 Runner = Callable[..., "subprocess.CompletedProcess[str]"]
 
 _LIB_NAME = "_zcrew_bridge_compat"
+_ACTIVITY_NAME = "_zcrew_zcode_activity"
 
 
 def _compat() -> ModuleType:
@@ -78,6 +82,23 @@ def _compat() -> ModuleType:
         raise ImportError("cannot load bridge_compat.py next to gate.py")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _activity() -> ModuleType | None:
+    """zcode_activity.py next to this file, or None when it is absent."""
+    module = sys.modules.get(_ACTIVITY_NAME)
+    if module is not None:
+        return module
+    path = Path(__file__).resolve().parent / "zcode_activity.py"
+    if not path.is_file():
+        return None
+    spec = importlib.util.spec_from_file_location(_ACTIVITY_NAME, path)
+    if spec is None or spec.loader is None:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # registered first: the module has dataclasses
     spec.loader.exec_module(module)
     return module
 
@@ -153,6 +174,36 @@ def scan_test_diff(diff: str) -> dict[str, dict[str, int]]:
         elif SKIP_RE.match(line):
             found.setdefault(current, {"removed": 0, "skips": 0})["skips"] += 1
     return found
+
+
+def _norm_command(text: str) -> str:
+    """Comparable form of a command line: quotes stripped (workers quote the
+    executable path), whitespace collapsed, lower-case (Windows paths do not
+    care about case, nor about / versus \\)."""
+    return " ".join(text.replace('"', "").replace("'", "").replace("\\", "/").split()).lower()
+
+
+def worker_ran_verify(commands: list[str], session_activities: list[Any], since_ms: int) -> list[str]:
+    """VERIFY commands with no matching worker shell command at or after ``since_ms``.
+
+    A worker command (the one-line summary, leading ``cd <dir> &&`` already
+    stripped, possibly clipped) matches a VERIFY command when, normalised via
+    ``_norm_command``, it contains the whole command or its first three words -
+    so ``npm run lint 2>&1 | tail``, a quoted executable, an env-assignment
+    prefix and a clipped summary still match.
+    """
+    ran = [
+        _norm_command(str(a.summary))
+        for a in session_activities
+        if getattr(a, "kind", None) == "command" and int(getattr(a, "at_ms", 0)) >= since_ms
+    ]
+    missing: list[str] = []
+    for command in commands:
+        compact = _norm_command(command)
+        head = " ".join(compact.split()[:3])
+        if not any(compact in text or (head and head in text) for text in ran):
+            missing.append(command)
+    return missing
 
 
 # --- records and config --------------------------------------------------------------
@@ -262,13 +313,25 @@ def check(name: str, status: str, detail: str = "", lines: list[str] | None = No
     return {"name": name, "status": status, "detail": detail, "lines": lines or []}
 
 
-def check_scope(files: list[str], scope: list[str]) -> dict[str, Any]:
+def check_scope(files: list[str], scope: list[str]) -> list[dict[str, Any]]:
+    """The ``scope`` check, plus a ``scope-tests`` WARN when test files sit
+    outside SCOPE: adding a test next to the code a worker changes is good
+    behaviour, so the gate only points them out and a person decides."""
     if not scope:
-        return check("scope", "SKIP", "no `backticked` path in SCOPE, so nothing to check by program")
+        return [check("scope", "SKIP", "no `backticked` path in SCOPE, so nothing to check by program")]
     outside = [f for f in files if not matches_any(f, scope)]
-    if outside:
-        return check("scope", "FAIL", f"{len(outside)} of {len(files)} changed files outside SCOPE", outside[:8])
-    return check("scope", "PASS", f"{len(files)} files changed, all inside {', '.join(scope)}")
+    stray_tests = [f for f in outside if is_test_path(f)]
+    outside_rest = [f for f in outside if not is_test_path(f)]
+    out: list[dict[str, Any]] = []
+    if outside_rest:
+        out.append(check("scope", "FAIL", f"{len(outside_rest)} of {len(files)} changed files outside SCOPE", outside_rest[:8]))
+    else:
+        note = f" ({len(stray_tests)} test file(s) outside it, see scope-tests)" if stray_tests else ""
+        out.append(check("scope", "PASS", f"{len(files)} files changed, all inside {', '.join(scope)}{note}"))
+    if stray_tests:
+        out.append(check("scope-tests", "WARN",
+                         f"{len(stray_tests)} test files outside SCOPE (check they belong to this task)", stray_tests[:8]))
+    return out
 
 
 def check_do_not(files: list[str], do_not: list[str]) -> dict[str, Any]:
@@ -428,6 +491,39 @@ def verify_queue(
                 lock.unlink()
 
 
+def default_activity_reader(env: Mapping[str, str]) -> Callable[[str], list[Any]] | None:
+    """Read one session's activities from ZCode's db, or None without the reader module."""
+    mod = _activity()
+    if mod is None:
+        return None
+
+    def read(session_id: str) -> list[Any]:
+        activities, _cursor = mod.session_activity(mod.default_db_path(env), session_id)
+        return activities
+
+    return read
+
+
+def worker_verify_notes(
+    commands: list[str], thread: str, since_ms: int, reader: Callable[[str], list[Any]],
+) -> list[str]:
+    """JUDGMENT notes about VERIFY commands the worker's session never ran.
+
+    Any read problem (db missing, session unknown) only skips the note: the gate
+    reviews the diff, not the db. MECHANICAL never depends on this.
+    """
+    try:
+        activities = reader(thread)
+    except Exception:  # the db is optional context, never a reason to fail a review
+        return []
+    missing = worker_ran_verify(commands, activities, since_ms)
+    if not missing:
+        return []
+    if len(missing) == len(commands):
+        return ["the worker's session shows none of the VERIFY commands being run (check its REPORT claims)"]
+    return ["the worker's session does not show these VERIFY commands being run: " + ", ".join(missing)]
+
+
 def draft_correction(checks: list[dict[str, Any]], rnd: int, budget: int) -> str:
     lines = [f"REVIEW RESULT: FAIL (correction round {rnd} of {budget})"]
     for item in checks:
@@ -443,6 +539,7 @@ def build_report(
     data: dict[str, Any], *, cwd: str, env: Mapping[str, str], verify: bool, self_check: bool,
     timeout: int, run: Runner = subprocess.run, log_dir: Path | None = None,
     queue_wait: float = QUEUE_WAIT_SECONDS, base_override: str | None = None,
+    activity_reader: Callable[[str], list[Any]] | None = None,
 ) -> dict[str, Any]:
     contract = data.get("contract") or {}
     compat = _compat()
@@ -461,7 +558,7 @@ def build_report(
     else:
         base, history = diff_base(work_dir, base, run)
     files = changed_files(work_dir, base, data.get("dirty") or [], run)
-    checks = [check_scope(files, contract.get("scope") or []), check_do_not(files, contract.get("do_not") or []),
+    checks = [*check_scope(files, contract.get("scope") or []), check_do_not(files, contract.get("do_not") or []),
               check_tests(work_dir, base, files, run)]
     if history:
         checks.append(history)
@@ -480,6 +577,12 @@ def build_report(
     judgment += [i for i in sections.get("SCOPE") or [] if not re.search(r"`[^`]+`", i)]
     if dropped:
         judgment.append(compat.verify_skipped_note(dropped))
+    thread = str(data.get("threadId") or "")
+    if commands and thread:
+        reader = activity_reader or default_activity_reader(env)
+        if reader is not None:
+            since = int(data.get("roundStartedAt") or data.get("startedAt") or 0)
+            judgment += worker_verify_notes(commands, thread, since, reader)
     budget = max_rounds(work_dir, env)
     rnd = max(0, int(data.get("rounds", 1)) - 1)
     report: dict[str, Any] = {
