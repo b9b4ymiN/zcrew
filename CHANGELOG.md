@@ -2,7 +2,7 @@
 
 All notable changes to the Claude Commander × ZCode Executor Kit are recorded here.
 
-## Unreleased
+## 0.13.0 — 2026-11-07
 
 Fixes driven by 60 days of real logs across projects (466 worker tasks, 421 gate records): fewer false gate alarms, a named cause for every failed run, and a capacity estimate that survives outliers. Closes the rest of issue #2.
 
@@ -18,7 +18,7 @@ Fixes driven by 60 days of real logs across projects (466 worker tasks, 421 gate
 ### Changed
 
 - `zcrew gate`: test files a worker adds outside SCOPE give a `scope-tests` WARN instead of failing `scope` (DO NOT still fails them). A JUDGMENT line names VERIFY commands the worker's own session never ran (over 50 recent runs: 5 flagged, each confirmed by hand).
-- zcrew mod: the wake message, notification, band and pane show the failure cause (Thai: `โควต้า GLM หมด · รีเซ็ต 15:00`), and for a used-up quota Claude is told to tell the user. Each run's time bar uses its own `TIMEBOX` from agent-start (issue #2 A2).
+- zcrew mod 0.5.0: the wake message, notification, band and pane show the failure cause (Thai: `โควต้า GLM หมด · รีเซ็ต 15:00`), and for a used-up quota Claude is told to tell the user. Each run's time bar uses its own `TIMEBOX` from agent-start (issue #2 A2).
 - The Codex Stop hook adds a `Cause:` line for failed ZCode runs.
 
 ## 0.12.0 — 2026-11-07

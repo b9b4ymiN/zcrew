@@ -1,6 +1,6 @@
 {
   "name": "zcrew",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "author": { "name": "b9b4ymiN" },
   "description": "Watches ZCode and Codex worker runs for Claude Code: waits so the model does not, shows progress beside the prompt, runs zcrew gate and wakes Claude when work is ready to review.",
   "types": "./types/index.d.ts",
