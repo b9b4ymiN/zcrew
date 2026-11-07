@@ -36,6 +36,7 @@ Frontier models are strongest at understanding, design and review. Coding agents
 
 - **One conversation.** No `/zcode` command and no copy-paste relay. The commander decides when to delegate.
 - **Two commanders, one crew.** Use Claude Code for core logic and Codex for design work, or either one alone. Both drive the same ZCode crew, and the bridge's cross-process leases keep them from writing into the same folder at once.
+- **Codex as a worker.** Route a task to the Codex CLI with `zcrew cx` and it joins the crew: same worker contract, same review gate (`zcrew cx gate`), corrections on the same Codex thread (`zcrew cx fix`). Background runs wake the commander when they end.
 - **Plan-first.** You get a short plan with phases, tasks and a Definition of Done. Nothing is delegated until you approve it.
 - **Independent review loop.** The commander inspects the diff and runs your tests/build/lint itself. A rejection goes back to the same ZCode thread, so the worker keeps its context. Each task has a correction budget (default 4 rounds).
 - **Parallel crew.** Up to 5 ZCode workers run on independent tasks in separate `git worktree`s. Branches are merged back one at a time, and tests are re-run after every merge.
@@ -81,6 +82,7 @@ The commander asks a clarifying question or two, sends a plan for your approval,
 | Windows | 10 / 11 | PowerShell 5.1 or 7 |
 | [ZCode Desktop](https://z.ai) | **3.14.0** (tested) | Signed in with a **Z.ai individual GLM Coding Plan** |
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and/or [Codex](https://github.com/openai/codex) | recent (Codex CLI 0.157 tested) | At least one installed and signed in |
+| OpenAI Codex plugin for Claude Code (`codex@openai-codex`) + Node | recent | Optional: only `zcrew cx` (Codex as a worker) needs them, with the Codex CLI signed in |
 | Python | 3.10+ | Must be on `PATH` as `python`. zcrew uses the standard library only |
 | Git | any recent | Your projects must be git repos, because review relies on `git diff` |
 
@@ -157,11 +159,18 @@ zcrew stats [DIR] [--all] [--days N] [--json]          time, correction turns, e
 zcrew gate [RUN|THREAD] [--self] [--accept|--reject]   mechanical review gate: scope, DO NOT, tests, VERIFY
 zcrew capacity [--days N] [--apply [--limit N]] [--json]   how many workers the plan carries at once; set the cap
 zcrew codex-hook install|uninstall [DIR]               Codex Stop hook that wakes the commander (enable/disable do it)
+zcrew cx run CONTRACT.md [--write] [--background]      send a worker contract to the Codex CLI (also --effort, --allow-dirty, --report)
+zcrew cx fix RUN CORRECTION.md [--background]          correction round on the same Codex thread (also --effort)
+zcrew cx audit PROMPT.md [--report PATH]               read-only Codex review, foreground (also --effort)
+zcrew cx gate RUN [--json] [--accept|--reject]         the review gate for a Codex run, same checks as ZCode runs
+zcrew cx status [DIR] [--json] [--active]              list the repo's Codex runs; settle background jobs
 ```
 
 **Parallel workers and the plan's concurrency limit.** Z.ai does not publish how many requests a Coding Plan runs at once, and it moves the limit with load. Past the limit a request fails with `1302` ("Rate limit reached for requests" / "High concurrency usage of this API"). `zcrew capacity` measures the limit from your own history: it matches every 1302 in ZCode's database with the number of workers that were busy at that moment. `zcrew capacity --apply` stores the result as `concurrencyLimit`. The bridge then lets `concurrencyTarget` percent of it run at once (default 80%, never above `maxWorkers`), across every Claude Code and Codex session on the machine. Runs over the cap wait in the queue (`resource.waiting` on a `zcrew:worker-slot` key). After a fresh 1302 the cap drops by one for 10 minutes. Until a 1302 has happened, the limit is unknown and `maxWorkers` is the cap. GLM Coding Pro users report about 3 sessions at once; this is unofficial, so `zcrew capacity --apply --limit 3` is a starting point to replace with your own measurement.
 
 **Codex commanders** get the same hands-free waiting as the Claude Code mod through a Codex `Stop` hook. `zcrew enable --commander codex` adds it to `.codex/hooks.json`, and Codex asks you to trust it on the next start (or use `/hooks`). After starting workers, the commander ends its turn with `[zcrew:wait]`. The hook waits for up to 45 minutes and then wakes the commander with what ended or stalled, plus the `zcrew gate` result. The hook never blocks a turn that asks you a question.
+
+**Codex as a worker** is the mirror image: `zcrew cx` routes a worker contract to the Codex CLI through the OpenAI Codex plugin for Claude Code. Write the contract, run `zcrew cx run contract.md --write --background`, then end the turn — the mod follows the run (`zcrew cx status`) and wakes Claude when it ends, with its gate result and report path. Review with `zcrew cx gate RUN`, then accept it or send the fix back with `zcrew cx fix RUN fix.md --background`. Reports land in `.cx/`, which ignores itself so git and `zcrew gate` never count them.
 
 Claude Code users can add the zcrew mod: Claude stops polling workers (the mod watches them and wakes Claude when a run ends, with its gate result), and a band above the prompt shows what the workers are doing. See [mod/zcrew/README.md](mod/zcrew/README.md).
 

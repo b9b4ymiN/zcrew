@@ -95,6 +95,16 @@ Use parallel workers for tasks that are independent and touch disjoint files. Wh
 
 Sequential or overlapping work stays in one thread and one working copy.
 
+## Codex as a worker (optional)
+
+A project may route a task to Codex instead of a ZCode worker (`zcrew cx`; needs Node, the Codex CLI signed in, and the OpenAI Codex plugin for Claude Code, `codex@openai-codex`). The same contract and review rules apply, unchanged.
+
+1. Write the worker contract as for ZCode, then `zcrew cx run contract.md --write --background` and end your turn. The mod follows the run and wakes you when it ends, with its gate result and report path (reports go to `<repo>/.cx/`, which ignores itself). Without the mod, settle the run with `zcrew cx status`.
+2. `zcrew cx gate RUN` is the review gate for Codex runs — the same checks as ZCode runs. Read the report file too, then record `zcrew cx gate RUN --accept "..."` / `--reject "..."`.
+3. Corrections go through `zcrew cx fix RUN fix.md --background`: the next round on the same Codex thread (`.r2`, `.r3` run ids). A read-only review is `zcrew cx audit prompt.md`.
+
+`--allow-dirty` dispatches although SCOPE files were already dirty — the gate cannot review those. Every round is a gate record with `"worker": "codex"`; a Codex commander checks its Codex workers with `zcrew cx status`, not the Stop hook.
+
 ## Progress visibility
 
 The user wants to follow what ZCode is doing. During long runs, post a one-line update when something meaningful changes (a file edited, tests started or failed, a correction sent). Use `agent-wait` and `agent-observe` summaries. Keep it short, and never paste raw event JSON.

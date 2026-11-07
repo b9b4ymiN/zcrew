@@ -74,6 +74,8 @@ ZCode ติดตั้งได้ทั้ง `C:\Program Files\ZCode` (ต�
 
 > **แพลนอื่น** (Start / Team / Off-peak): ยังใช้กับโหมดเบื้องหลังไม่ได้ ต้องใช้ผ่านแอป ZCode เท่านั้น (ดูข้อ 11)
 
+> ถ้าจะใช้ **Codex เป็นช่าง** (`zcrew cx`) เท่านั้นที่ต้องมีเพิ่ม: Node, Codex CLI ที่ login แล้ว และ plugin `codex@openai-codex` ใน Claude Code การใช้งานส่วนอื่นไม่ต้องมีสามอย่างนี้
+
 ---
 
 ## 3. ติดตั้งบนเครื่องใหม่ (คำสั่งเดียว)
@@ -235,6 +237,11 @@ zcrew show sess_83cb        # ดูรายละเอียดงานเ�
 zcrew stats                 # สรุป 7 วันล่าสุด: เวลาต่องาน, ส่งแก้กี่รอบ, ผ่านรอบแรกกี่ %, ทำพร้อมกันกี่คน
 zcrew gate                  # ตรวจรับแบบอัตโนมัติ: แก้นอก SCOPE? แตะไฟล์ DO NOT? เทสต์ถูกลบ? VERIFY ผ่านไหม
 zcrew capacity              # แพลนรับ worker พร้อมกันได้กี่ตัว (วัดจาก error 1302) และเพดานที่ใช้อยู่
+zcrew cx run                # ส่ง contract ให้ Codex เป็นช่าง (เช่น zcrew cx run contract.md --write --background)
+zcrew cx fix                # สั่งแก้งาน Codex รอบถัดไปใน thread เดิม (zcrew cx fix RUN fix.md)
+zcrew cx audit              # ให้ Codex ตรวจอ่านอย่างเดียว (zcrew cx audit prompt.md)
+zcrew cx gate               # ตรวจรับงาน Codex ด้วย gate เดียวกับของ ZCode (zcrew cx gate RUN)
+zcrew cx status             # รายการงาน Codex ของ repo + เก็บผลงานที่รันเบื้องหลัง
 ```
 
 ผู้ใช้ Claude Code ติดตั้ง mod ได้: Claude ไม่ต้องคอยเช็กช่างทุกนาที (mod เฝ้าแทนและปลุก Claude เมื่องานจบ พร้อมผลตรวจ) และมีแถบเหนือช่องพิมพ์บอกว่าช่างทำอะไรอยู่ ถึงไหนแล้ว
@@ -244,6 +251,8 @@ zcrew capacity              # แพลนรับ worker พร้อมกั
 ```
 
 ผู้ใช้ Codex ได้การรอแบบเดียวกันผ่าน `Stop` hook ของ Codex: `zcrew enable --commander codex` จะเพิ่ม hook ลงใน `.codex/hooks.json` ให้ และ Codex จะถามให้กดยืนยันว่าเชื่อถือ hook ตอนเปิดครั้งถัดไป (หรือสั่ง `/hooks`) เมื่อสั่ง worker แล้ว commander จะจบ turn ด้วย `[zcrew:wait]` จากนั้น hook จะรอให้ (นานสุด 45 นาที) และปลุกเมื่องานจบหรือค้าง พร้อมผล `zcrew gate`
+
+นอกจากเป็นหัวหน้า Codex ยังเป็น**ช่าง**ได้ด้วยคำสั่ง `zcrew cx`: เขียน contract เหมือนส่งให้ ZCode แล้วสั่ง `zcrew cx run contract.md --write --background` แล้วจบ turn ได้เลย mod จะเฝ้างานผ่าน `zcrew cx status` และปลุก Claude เมื่องานจบ พร้อมผล gate และตำแหน่งไฟล์รายงาน จากนั้นตรวจรับด้วย `zcrew cx gate RUN` ถ้าไม่ผ่านส่งกลับไปแก้ด้วย `zcrew cx fix RUN fix.md --background` (แก้ต่อใน thread เดิมของ Codex) รายงานอยู่ใน `.cx/` ซึ่งกันตัวเองออกจาก git อยู่แล้ว
 
 **ทำงานพร้อมกันกี่ตัวดี:** Z.ai ไม่ประกาศว่าแพลนรับ request พร้อมกันได้กี่ตัว และปรับตามโหลดของระบบ ถ้าเกินจะได้ error `1302` ("Rate limit reached for requests" / "High concurrency usage of this API") คำสั่ง `zcrew capacity` วัดค่านี้จากประวัติในเครื่องคุณเอง โดยดูว่าตอนเกิด 1302 มี worker ทำงานอยู่กี่ตัว ส่วน `zcrew capacity --apply` จะบันทึกค่าที่วัดได้เป็น `concurrencyLimit` จากนั้น bridge จะปล่อยให้ worker รันพร้อมกันได้ `concurrencyTarget`% ของค่านั้น (default 80% และไม่เกิน `maxWorkers`) โดยนับรวมทุก session ของ Claude Code และ Codex ในเครื่อง ตัวที่เกินจะรอคิวเอง และถ้าเพิ่งเกิด 1302 จะลดเพดานลง 1 เป็นเวลา 10 นาที ผู้ใช้ GLM Coding Pro เล่ากันว่าได้ประมาณ 3 ตัว (ไม่เป็นทางการ) จึงเริ่มจาก `zcrew capacity --apply --limit 3` (= 2 ตัวพร้อมกัน) ได้ แล้วค่อยเปลี่ยนเป็นค่าที่วัดได้จริงทีหลัง
 
