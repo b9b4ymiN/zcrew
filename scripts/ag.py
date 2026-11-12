@@ -89,13 +89,14 @@ class CaptureClient:
     def __init__(self, report: Path, events: Path):
         self.report, self.events = report, events
         self.denied = 0
-        self.chunks: list[str] = []
         self.errors: list[str] = []
 
     async def request_permission(self, session_id: str, tool_call: Any, options: Any, **kwargs: Any):
         self.denied += 1
         title = str(_obj(tool_call).get("title") or "tool call")[:160]
         self.errors.append(f"ACP permission needed, refused: {title}")
+        with self.report.open("a", encoding="utf-8") as out:
+            out.write(f"\n[ACP] Permission denied (requires interactive approval): {title}\n")
         return {"outcome": {"outcome": "cancelled"}}
 
     async def session_update(self, session_id: str, update: Any, **kwargs: Any) -> None:
@@ -105,7 +106,6 @@ class CaptureClient:
             content = event.get("content") or {}
             if isinstance(content, dict) and content.get("type") == "text":
                 text = str(content.get("text") or "")
-                self.chunks.append(text)
                 with self.report.open("a", encoding="utf-8") as out:
                     out.write(text)
         # Do not persist raw tool arguments, model reasoning, filesystem contents,
@@ -200,6 +200,8 @@ def execute(args: argparse.Namespace, *, repo: Path, env: Mapping[str, str]) -> 
     if not executable:
         raise AgError("agy executable not found; install Antigravity CLI and log in with 'agy'")
     text = file_prompt(args.prompt, repo)
+    if args.timeout <= 0:
+        raise AgError("--timeout must be a positive number of seconds")
     now = int(time.time() * 1000)
     if args.command == "run":
         contract = compat.parse_contract(text)
@@ -255,6 +257,11 @@ def execute(args: argparse.Namespace, *, repo: Path, env: Mapping[str, str]) -> 
         record["antigravity"].update({"sessionId": actual, "stopReason": reason,
                                       "deniedPermissions": denied,
                                       "status": "completed" if reason == "end_turn" and denied == 0 else "blocked"})
+    except KeyboardInterrupt:
+        record["antigravity"].update({"status": "cancelled", "endedAt": int(time.time() * 1000)})
+        compat.save_record(record_path, record)
+        print("ag: interrupted; inspect partial changes before retrying", file=sys.stderr)
+        return 130
     except Exception as exc:
         # Always retain the gate record and partial files for recovery.
         record["antigravity"].update({"status": "failed", "error": str(exc)[:300]})
