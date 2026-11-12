@@ -547,6 +547,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("rest", nargs=argparse.REMAINDER, metavar="COMMAND",
                    help="cx subcommand and options (run/fix/audit/gate/status)")
+    p = sub.add_parser("ag", help="experimental Antigravity ACP worker (run/fix/status/gate/doctor)")
+    p.add_argument("rest", nargs=argparse.REMAINDER, metavar="COMMAND")
     p = sub.add_parser(
         "codex-hook", help="Codex Stop hook that wakes the commander when ZCode workers end",
         description=(
@@ -618,6 +620,8 @@ def main(
         return int(_load_sibling("gate").run(args, env=env))
     if args.command == "cx":
         return int(_load_sibling("cx").main(args.rest, env=env))
+    if args.command == "ag":
+        return int(_load_sibling("ag").main(args.rest, env=env))
     if args.command == "capacity":
         return int(_load_sibling("capacity").run(args, env=env))
     if args.command == "codex-hook":
