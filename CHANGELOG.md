@@ -2,6 +2,18 @@
 
 All notable changes to the Claude Commander × ZCode Executor Kit are recorded here.
 
+## 0.15.0 — 2026-11-12
+
+An experimental third kind of worker: Google's Antigravity CLI, driven over its native Agent Client Protocol (`agy acp`). Opt-in, foreground only; ZCode and Codex are unchanged.
+
+### Added
+
+- **`zcrew ag` — Antigravity ACP worker (pilot).** `zcrew ag run CONTRACT.md` sends a worker contract to `agy acp --sandbox --disable-telemetry` in mode `auto`; `zcrew ag fix RUN CORRECTION.md` resumes the same ACP session in a fresh process, so the worker keeps its context. `zcrew ag gate RUN` is the usual review gate (SCOPE / DO NOT / tests / VERIFY) and refuses `--accept` on a run that did not complete; `zcrew ag status` lists the repo's runs. Permission requests are denied and the round is marked `blocked`, never successful. Reports and reduced event logs stay outside the repo in `~/.zcode-commander/ag/`.
+- `zcrew ag doctor`: checks the CLI and the SDK, then a live `initialize` + `new_session` handshake with no model call — agy version, session resume, offered modes, account tier. `--offline` skips the handshake.
+- Needs Antigravity CLI 1.5.5+ signed in, and the optional SDK in the Python that runs zcrew: `python -m pip install "agent-client-protocol>=1.0,<2"`. zcrew itself stays stdlib-only; without the SDK every other command works as before. Guide: [docs/ANTIGRAVITY-ACP.md](docs/ANTIGRAVITY-ACP.md).
+
+Live-tested on Windows 11 with agy 1.5.5 and SDK 1.0.0 (run, gate, fix via resume, timeout, permission denial). Not yet tested live: Ctrl+C mid-turn. Mode `default` does not stop file edits, and writes outside the repo are invisible to the gate — use a committed or throwaway working tree.
+
 ## 0.14.0 — 2026-11-07
 
 The Claude Code mod (0.6.0) gets a new look: numbers first on the status line, and a sectioned worker pane that shows what each worker is really doing.
