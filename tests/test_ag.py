@@ -121,7 +121,8 @@ class AcpInterfaceTests(unittest.TestCase):
                 await cap.session_update('session-3', {'sessionUpdate':'tool_call','title':'Read file','raw':'SECRET'})
                 await cap.session_update('session-3', {'sessionUpdate':'agent_message_chunk','content':{'type':'text','text':'hello'}})
                 self.assertNotIn('SECRET', (root/'events').read_text())
-                self.assertEqual((root/'report').read_text(), 'hello')
+                self.assertIn('Permission denied', (root/'report').read_text())
+                self.assertTrue((root/'report').read_text().endswith('hello'))
                 self.assertEqual(cap.denied, 1)
         asyncio.run(go())
 
