@@ -1,7 +1,8 @@
 """Optional Antigravity ACP worker for zcrew (foreground pilot).
 
-Requires `pip install agent-client-protocol` and Antigravity CLI >=1.5.4.
-Existing ZCode/Codex adapters remain untouched. No model call in `doctor`.
+Requires `python -m pip install "agent-client-protocol>=1.0,<2"` and
+Antigravity CLI >=1.5.5. Existing ZCode/Codex adapters remain untouched.
+`doctor` runs a live handshake that makes no model call; `--offline` skips it.
 
 ACP mode `auto` is explicitly requested within `--sandbox`. If a tool still
 requests an interactive permission, reject it rather than silently escalating.
@@ -19,7 +20,7 @@ import shutil
 import subprocess
 import sys
 import time
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any, Mapping
 
 HERE = Path(__file__).resolve().parent
@@ -28,6 +29,78 @@ MODES = ("auto", "accept-edits", "default", "plan")
 
 class AgError(Exception):
     pass
+
+
+SDK_PACKAGE = "agent-client-protocol"
+SDK_RANGE = ">=1.0,<2"
+SDK_INSTALL = f'{SDK_PACKAGE}{SDK_RANGE}'
+AUTH_MARKERS = ("auth", "unauthor", "401", "403", "credential", "sign in", "signin", "login")
+
+
+def _sdk_version() -> str:
+    try:
+        from importlib.metadata import version
+        return str(version(SDK_PACKAGE))
+    except Exception:
+        return "unknown"
+
+
+def _version_supported(installed: str) -> bool:
+    numbers: list[int] = []
+    for part in installed.split(".")[:2]:
+        digits = ""
+        for char in part:
+            if not char.isdigit():
+                break
+            digits += char
+        if not digits:
+            return False
+        numbers.append(int(digits))
+    if len(numbers) == 1:
+        numbers.append(0)
+    return (1, 0) <= tuple(numbers) < (2, 0)
+
+
+def load_sdk() -> SimpleNamespace:
+    """Import the optional SDK lazily; separate missing from incompatible."""
+    try:
+        import acp  # noqa: F401
+    except ImportError as exc:
+        raise AgError(f'missing optional dependency: python -m pip install "{SDK_INSTALL}"') from exc
+    try:
+        from acp import PROTOCOL_VERSION, spawn_agent_process
+        from acp.schema import TextContentBlock
+    except ImportError as exc:
+        raise AgError(f"incompatible {SDK_PACKAGE} {_sdk_version()} installed "
+                      f"(supported {SDK_RANGE}): {exc}") from exc
+    installed = _sdk_version()
+    if not _version_supported(installed):
+        raise AgError(f'incompatible {SDK_PACKAGE} {installed} installed; supported {SDK_RANGE}: '
+                      f'python -m pip install "{SDK_INSTALL}"')
+    return SimpleNamespace(PROTOCOL_VERSION=PROTOCOL_VERSION,
+                                 spawn_agent_process=spawn_agent_process,
+                                 TextContentBlock=TextContentBlock)
+
+
+def _auth_hint(exc: Exception) -> str:
+    text = str(exc).lower()
+    return "; run 'agy' interactively and sign in, then retry" if any(m in text for m in AUTH_MARKERS) else ""
+
+
+def _dig(value: Any, *keys: str) -> Any:
+    for key in keys:
+        value = _obj(value).get(key)
+        if value is None:
+            return None
+    return value
+
+
+def _same_repo(cwd: Any, repo: Path) -> bool:
+    """Case-folded absolute comparison; a missing/empty cwd never matches."""
+    text = str(cwd or "")
+    if not text:
+        return False
+    return os.path.normcase(str(Path(text).resolve())) == os.path.normcase(str(repo.resolve()))
 
 
 def sibling(name: str) -> ModuleType:
@@ -53,7 +126,7 @@ def find_run(compat: ModuleType, env: Mapping[str, str], ident: str, repo: Path)
         raise AgError("unknown or ambiguous Antigravity run; give a longer run id" if hits else
                       "no Antigravity run matches that id")
     path, data = hits[0]
-    if Path(str(data.get("cwd") or "")).resolve() != repo.resolve():
+    if not _same_repo(data.get("cwd"), repo):
         raise AgError("run belongs to a different repository; open its working directory")
     return path, data
 
@@ -122,14 +195,10 @@ async def acp_turn(agy: str, cwd: Path, prompt: str, session_id: str | None,
                    mode: str, timeout: int, report: Path, events: Path,
                    on_session: Any = None) -> tuple[str, str, int]:
     """One ACP turn; process is short-lived, session is resumed on corrections."""
-    try:
-        from acp import PROTOCOL_VERSION, spawn_agent_process, text_block
-    except ImportError as exc:
-        raise AgError("missing optional dependency: python -m pip install agent-client-protocol") from exc
-
+    sdk = load_sdk()
     client = CaptureClient(report, events)
-    async with spawn_agent_process(client, agy, "acp", "--sandbox", "--disable-telemetry") as (conn, _):
-        await asyncio.wait_for(conn.initialize(protocol_version=PROTOCOL_VERSION), timeout=30)
+    async with sdk.spawn_agent_process(client, agy, "acp", "--sandbox", "--disable-telemetry") as (conn, _):
+        await asyncio.wait_for(conn.initialize(protocol_version=sdk.PROTOCOL_VERSION), timeout=30)
         if session_id:
             await asyncio.wait_for(conn.resume_session(session_id=session_id, cwd=str(cwd),
                                                        mcp_servers=[]), timeout=30)
@@ -143,7 +212,8 @@ async def acp_turn(agy: str, cwd: Path, prompt: str, session_id: str | None,
         await asyncio.wait_for(conn.set_session_mode(session_id=actual, mode_id=mode), timeout=30)
         try:
             result = await asyncio.wait_for(conn.prompt(session_id=actual,
-                                                        prompt=[text_block(prompt)]), timeout=timeout)
+                                                        prompt=[sdk.TextContentBlock(type="text", text=prompt)]),
+                                            timeout=timeout)
         except asyncio.TimeoutError:
             try:
                 await asyncio.wait_for(conn.cancel(session_id=actual), timeout=3)
@@ -154,7 +224,38 @@ async def acp_turn(agy: str, cwd: Path, prompt: str, session_id: str | None,
         return actual, reason, client.denied
 
 
-def doctor(agy: str | None = None) -> int:
+class _ProbeClient:
+    """No-op client for doctor: handshake only, no model call, nothing recorded."""
+
+    async def request_permission(self, session_id: str, tool_call: Any, options: Any, **kwargs: Any):
+        return {"outcome": {"outcome": "cancelled"}}
+
+    async def session_update(self, session_id: str, update: Any, **kwargs: Any) -> None:
+        return None
+
+
+async def _handshake(sdk: Any, executable: str, repo: Path) -> dict[str, Any]:
+    async def probe() -> dict[str, Any]:
+        async with sdk.spawn_agent_process(_ProbeClient(), executable, "acp",
+                                           "--sandbox", "--disable-telemetry") as (conn, _):
+            init = await conn.initialize(protocol_version=sdk.PROTOCOL_VERSION)
+            session = await conn.new_session(cwd=str(repo), mcp_servers=[])
+        modes = [_obj(mode).get("id") for mode in (_dig(session, "modes", "availableModes") or [])]
+        # resume is a presence marker object on the wire, not a boolean
+        return {"version": _dig(init, "agentInfo", "version"),
+                "resume": _dig(init, "agentCapabilities", "sessionCapabilities", "resume") is not None,
+                "modes": [str(mode) for mode in modes if mode],
+                "tier": _dig(session, "_meta", "antigravity", "tier", "name")}
+
+    try:
+        return await asyncio.wait_for(probe(), timeout=60)
+    except asyncio.TimeoutError:
+        raise AgError("agy acp handshake timed out after 60s; check 'agy' version and sign-in") from None
+    except Exception as exc:
+        raise AgError(f"agy acp handshake failed: {exc}{_auth_hint(exc)}") from exc
+
+
+def doctor(repo: Path, agy: str | None = None, offline: bool = False) -> int:
     executable = agy or shutil.which("agy")
     if not executable:
         print("ag: agy not found on PATH; install official Antigravity CLI")
@@ -168,20 +269,42 @@ def doctor(agy: str | None = None) -> int:
     if r.returncode:
         print(f"ag: agy acp --help failed (exit {r.returncode})")
         return 1
-    if importlib.util.find_spec("acp") is None:
-        print("ag: ACP available; install Python SDK: python -m pip install agent-client-protocol")
+    try:
+        sdk = load_sdk()
+    except AgError as exc:
+        print(f"ag: {exc}")
         return 1
-    print("ag: ACP CLI and Python SDK found; sign in once with 'agy' (not checked)")
+    if offline:
+        print("ag: ACP CLI and Python SDK found; live handshake skipped (--offline)")
+        return 0
+    try:
+        facts = asyncio.run(_handshake(sdk, executable, repo))
+    except AgError as exc:
+        print(f"ag: {exc}")
+        return 1
+    print(f"ag: agy agent version: {facts['version'] or 'unknown'}")
+    print(f"ag: session resume: {'supported' if facts['resume'] else 'NOT supported'}")
+    print(f"ag: session modes: {', '.join(facts['modes']) or 'none offered'}")
+    if facts["tier"]:
+        print(f"ag: account tier: {facts['tier']}")
+    if not facts["resume"]:
+        print("ag: handshake failed: session resume not advertised; upgrade Antigravity CLI")
+        return 1
+    if "auto" not in facts["modes"]:
+        print("ag: handshake failed: default mode 'auto' not offered by this agent/account")
+        return 1
+    print("ag: handshake OK (no model call was made)")
     return 0
 
 
 def execute(args: argparse.Namespace, *, repo: Path, env: Mapping[str, str]) -> int:
     if args.command == "doctor":
-        return doctor(args.agy)
+        return doctor(repo, args.agy, offline=args.offline)
     compat = sibling("bridge_compat")
     if args.command == "gate":
         _, record = find_run(compat, env, args.run_id, repo)
-        if any(x == "--accept" for x in args.extra) and record.get("antigravity", {}).get("status") != "completed":
+        accepting = any(flag == "--accept" or flag.startswith("--accept=") for flag in args.extra)
+        if accepting and record.get("antigravity", {}).get("status") != "completed":
             raise AgError("cannot accept a worker that is not completed; inspect the report and retry")
         result = subprocess.run([sys.executable, str(HERE / "zcrew.py"), "gate", args.run_id,
                                  *args.extra], cwd=repo)
@@ -189,7 +312,7 @@ def execute(args: argparse.Namespace, *, repo: Path, env: Mapping[str, str]) -> 
     if args.command == "status":
         for path in compat.record_files(env):
             data = compat._read_json(path)
-            if data and data.get("worker") == "antigravity" and Path(data.get("cwd", "")).resolve() == repo:
+            if data and data.get("worker") == "antigravity" and _same_repo(data.get("cwd"), repo):
                 meta = data.get("antigravity") or {}
                 print(f"{(data.get('runIds') or ['?'])[-1]}  {meta.get('status', 'unknown')}  "
                       f"session={data.get('threadId') or 'pending'}  "
@@ -290,6 +413,8 @@ def parser() -> argparse.ArgumentParser:
             x.add_argument("--allow-dirty", action="store_true")
     x = sub.add_parser("doctor")
     x.add_argument("--agy")
+    x.add_argument("--offline", action="store_true",
+                   help="skip the live handshake (CLI and SDK checks only)")
     sub.add_parser("status")
     x = sub.add_parser("gate")
     x.add_argument("run_id")

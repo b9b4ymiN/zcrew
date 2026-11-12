@@ -6,10 +6,17 @@ using the [Python ACP SDK](https://github.com/agentclientprotocol/python-sdk) as
 
 ## Prerequisites (Windows / Python 3.10+)
 
-1. Install official Antigravity CLI **1.5.4 or newer** and confirm `agy acp --help` works.
+1. Install official Antigravity CLI **1.5.5 or newer** and confirm `agy acp --help` works.
 2. Run `agy` interactively once to sign in. A CLI installation alone does **not** mean the account can run an ACP turn.
-3. Install the optional SDK into the same Python that runs zcrew: `python -m pip install agent-client-protocol`.
-4. In your git repository, run `zcrew ag doctor` (no model call).
+3. Install the optional SDK into the same Python that runs zcrew:
+   `python -m pip install "agent-client-protocol>=1.0,<2"`.
+   A missing SDK and an installed-but-incompatible one (wrong version or missing names) are reported separately.
+4. In your git repository, run `zcrew ag doctor`. Besides the CLI/SDK checks it now performs a **live handshake
+   with no model call**: it spawns `agy acp --sandbox --disable-telemetry`, runs `initialize` + `new_session(cwd=repo)`,
+   and prints the agy agent version, whether session `resume` is supported, the offered session-mode ids, and the
+   account tier when present. It exits 1 if resume is unsupported, the default mode `auto` is not offered, or the
+   handshake errors or times out (60 s); auth-looking failures suggest signing in with `agy` interactively.
+   Use `zcrew ag doctor --offline` to run only the CLI and SDK checks.
 5. Check that your account's quota, organization data policy and local sandbox settings allow the intended task.
 
 ## Foreground pilot
@@ -37,22 +44,28 @@ Results and reduced event traces stay outside the project under
 ## Permission and safety model
 
 - zcrew launches `agy acp --sandbox --disable-telemetry`.
-- The default ACP session mode is `auto` (available in Antigravity CLI 1.5.4 if offered by the account).
-- If a tool still asks for permission, **the noninteractive ACP client rejects it**. The round is marked `blocked`, not successful.
+- The default ACP session mode is `auto`: the agent itself approves edits and "safe" commands. zcrew's noninteractive
+  client still rejects any tool call that does reach it as an interactive permission request, and the round is
+  marked `blocked` (observed live: a denied shell command).
+- In `default` mode the agent does **not** stop for file edits — edits follow your own interactive `agy` permission
+  settings, not zcrew's. Only tool calls routed to the ACP permission request (observed live: shell commands) hit
+  zcrew's client, which denies them.
+- `zcrew ag gate` only sees changes inside the repository. Writes outside the repo are invisible to it — run the
+  pilot on a throwaway or fully committed working tree.
 - The adapter does not use `--dangerously-skip-permissions` and does not grant ACP client-side filesystem or terminal services.
-- Use an isolated throwaway Git working directory for the pilot. The agent's own runtime tools still have the permissions that Google's CLI sandbox allows.
 - Dirty files inside the contract's SCOPE block are **blocked by default**; `--allow-dirty` opts out, but the gate cannot attribute preexisting edits.
-- An already accepted run cannot receive a correction, and no failed/blocked run may be accepted through `zcrew ag gate`.
+- An already accepted run cannot receive a correction, and no failed/blocked run may be accepted through `zcrew ag gate` (both `--accept TEXT` and `--accept=TEXT` forms are guarded).
 - `auto` mode can still consume plan quota and may require account review. It is not a promise of zero-cost or no user interaction.
 
 ## Not yet included
 
 - Background process/job queue, hands-free commander wakeups, dashboard support, or managed worktree cleanup.
-- End-to-end authenticated testing on a Windows machine running Antigravity CLI.
 - A generic provider scheduler; selecting Antigravity remains an explicit decision.
 
-**Current validation:** Python unit tests with mocked ACP transport (`python -m unittest discover -s tests -p test_ag.py -v`).
-Before production adoption, test a real `agy acp` session on Windows: login, new session, tool call,
-permission rejection, cancel/timeout, resume after subprocess exit, and independent gate.
+**Current validation:** live-tested on Windows 11 with Antigravity CLI 1.5.5 and `agent-client-protocol` 1.0.0:
+run, fix via `session/resume` across separate processes, gate, status, and permission denial → `blocked`.
+The offline unit tests (`python -m unittest discover -s tests -p "test_ag.py"`) also run a real-SDK contract
+check whenever the SDK is installed, which is what catches SDK API drift such as removed names. Timeout handling
+and Ctrl+C interruption remain untested live.
 
 References: https://antigravity.google/docs/cli/acp and https://antigravity.google/docs/ide/extensions/acp/.
