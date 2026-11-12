@@ -41,7 +41,7 @@ Results and reduced event traces stay outside the project under
 - If a tool still asks for permission, **the noninteractive ACP client rejects it**. The round is marked `blocked`, not successful.
 - The adapter does not use `--dangerously-skip-permissions` and does not grant ACP client-side filesystem or terminal services.
 - Use an isolated throwaway Git working directory for the pilot. The agent's own runtime tools still have the permissions that Google's CLI sandbox allows.
-- Dirty files inside the contract's SCOPE block dispatch unless you explicitly supply `--allow-dirty`; the normal gate cannot attribute preexisting edits.
+- Dirty files inside the contract's SCOPE block are **blocked by default**; `--allow-dirty` opts out, but the gate cannot attribute preexisting edits.
 - An already accepted run cannot receive a correction, and no failed/blocked run may be accepted through `zcrew ag gate`.
 - `auto` mode can still consume plan quota and may require account review. It is not a promise of zero-cost or no user interaction.
 
@@ -51,7 +51,7 @@ Results and reduced event traces stay outside the project under
 - End-to-end authenticated testing on a Windows machine running Antigravity CLI.
 - A generic provider scheduler; selecting Antigravity remains an explicit decision.
 
-**Current validation:** Python unit tests with mocked ACP transport (`python -m unittest tests/test_ag.py`).
+**Current validation:** Python unit tests with mocked ACP transport (`python -m unittest discover -s tests -p test_ag.py -v`).
 Before production adoption, test a real `agy acp` session on Windows: login, new session, tool call,
 permission rejection, cancel/timeout, resume after subprocess exit, and independent gate.
 
