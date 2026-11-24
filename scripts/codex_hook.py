@@ -358,6 +358,12 @@ def hook_command(python: str | None = None, zcrew_py: Path | None = None) -> str
     return f'"{python or sys.executable}" "{zcrew_py or HERE / "zcrew.py"}" {HOOK_MARK}'
 
 
+def hook_command_windows(python: str | None = None, zcrew_py: Path | None = None) -> str:
+    # Codex on Windows runs the command through PowerShell, which cannot parse a quoted
+    # executable without the call operator; ``exit`` keeps the python exit code
+    return f"& {hook_command(python, zcrew_py)}; exit $LASTEXITCODE"
+
+
 def _is_ours(handler: Any) -> bool:
     return isinstance(handler, dict) and HOOK_MARK in str(handler.get("command") or "")
 
@@ -400,8 +406,9 @@ def install(project_dir: Path, command: str | None = None) -> tuple[bool, str]:
         data = _read_hooks(path)
     except (OSError, ValueError) as exc:
         return False, f"Codex hook: cannot read {path} ({exc}); fix it, then run: zcrew codex-hook install"
-    entry = {"type": "command", "command": command or hook_command(), "timeout": HOOK_TIMEOUT_SECONDS,
-             "statusMessage": STATUS_MESSAGE}
+    entry = {"type": "command", "command": command or hook_command(),
+             "commandWindows": f"& {command}; exit $LASTEXITCODE" if command else hook_command_windows(),
+             "timeout": HOOK_TIMEOUT_SECONDS, "statusMessage": STATUS_MESSAGE}
     current = [h for g in (data.get("hooks") or {}).get("Stop") or [] if isinstance(g, dict)
                for h in g.get("hooks") or [] if _is_ours(h)]
     if current == [entry]:

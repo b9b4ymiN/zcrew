@@ -275,11 +275,30 @@ class InstallTests(unittest.TestCase):
         data = json.loads(self.file.read_text(encoding="utf-8"))
         [entry] = data["hooks"]["Stop"][0]["hooks"]
         self.assertEqual((entry["type"], entry["timeout"]), ("command", 3600))
+        self.assertEqual(entry["commandWindows"], '& "py" "zcrew.py" codex-hook stop; exit $LASTEXITCODE')
         self.assertFalse(hook.install(self.project, command='"py" "zcrew.py" codex-hook stop')[0])
         self.assertTrue(hook.uninstall(self.project)[0])
         self.assertFalse(self.file.exists())
         self.assertFalse(self.file.parent.exists())
         self.assertFalse(hook.uninstall(self.project)[0])
+
+    def test_hook_command_windows_is_powershell(self) -> None:
+        cmd = hook.hook_command_windows("C:\\Py\\python.exe", Path("C:/z/zcrew.py"))
+        self.assertTrue(cmd.startswith('& "'))
+        self.assertIn("codex-hook stop", cmd)
+
+    def test_upgrades_old_entry_without_command_windows(self) -> None:
+        old = {"type": "command", "command": '"py" "zcrew.py" codex-hook stop', "timeout": 3600,
+               "statusMessage": hook.STATUS_MESSAGE}
+        self.file.parent.mkdir()
+        self.file.write_text(json.dumps({"hooks": {"Stop": [{"hooks": [old]}]}}), encoding="utf-8")
+        changed, _message = hook.install(self.project, command='"py" "zcrew.py" codex-hook stop')
+        self.assertTrue(changed)
+        data = json.loads(self.file.read_text(encoding="utf-8"))
+        entries = [h for g in data["hooks"]["Stop"] for h in g["hooks"]]
+        self.assertEqual(len(entries), 1)  # replaced, never duplicated
+        self.assertEqual(entries[0]["commandWindows"], '& "py" "zcrew.py" codex-hook stop; exit $LASTEXITCODE')
+        self.assertFalse(hook.install(self.project, command='"py" "zcrew.py" codex-hook stop')[0])
 
     def test_keeps_other_hooks(self) -> None:
         other = {"type": "command", "command": "lint-on-stop"}
