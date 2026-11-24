@@ -2,6 +2,12 @@
 
 All notable changes to the Claude Commander × ZCode Executor Kit are recorded here.
 
+## 0.15.1 — 2026-11-24
+
+### Fixed
+
+- **Codex Stop hook failed on every turn on Windows.** Codex runs hook commands through PowerShell there, and PowerShell cannot parse `"python.exe" "zcrew.py" codex-hook stop` (ParserError: Unexpected token). `zcrew codex-hook install` / `zcrew enable --commander codex` now also write `commandWindows` (`& "python.exe" "zcrew.py" codex-hook stop; exit $LASTEXITCODE`). Existing installs are upgraded in place: run `zcrew codex-hook install` in the project again, then trust the changed hook in Codex (`/hooks`).
+
 ## 0.15.0 — 2026-11-12
 
 An experimental third kind of worker: Google's Antigravity CLI, driven over its native Agent Client Protocol (`agy acp`). Opt-in, foreground only; ZCode and Codex are unchanged.
